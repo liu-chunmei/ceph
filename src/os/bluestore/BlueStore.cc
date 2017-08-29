@@ -3477,8 +3477,8 @@ BlueStore::BlueStore(CephContext *cct, const string& path)
     throttle_deferred_bytes(cct, "bluestore_throttle_deferred_bytes",
 		       cct->_conf->bluestore_throttle_bytes +
 		       cct->_conf->bluestore_throttle_deferred_bytes),
-    kv_sync_thread(this),
-    kv_finalize_thread(this),
+    //kv_sync_thread(this),
+    //kv_finalize_thread(this),
     mempool_thread(this)
 {
   _init_logger();
@@ -3495,8 +3495,8 @@ BlueStore::BlueStore(CephContext *cct,
     throttle_deferred_bytes(cct, "bluestore_throttle_deferred_bytes",
 		       cct->_conf->bluestore_throttle_bytes +
 		       cct->_conf->bluestore_throttle_deferred_bytes),
-    kv_sync_thread(this),
-    kv_finalize_thread(this),
+    //kv_sync_thread(this),
+    //kv_finalize_thread(this),
     min_alloc_size(_min_alloc_size),
     min_alloc_size_order(ctz(_min_alloc_size)),
     mempool_thread(this)
@@ -3512,6 +3512,25 @@ BlueStore::~BlueStore()
     delete f;
   }
   finishers.clear();
+
+  for (auto ksth : kv_sync_thread_list) {
+    delete ksth;
+  }
+  kv_sync_thread_list.clear();
+  for (auto kssh : kv_sync_shard_list) {
+    delete kssh;
+  }
+  kv_sync_shard_list.clear();
+
+ for (auto kfth : kv_final_thread_list) {
+    delete kfth;
+  }
+  kv_final_thread_list.clear();
+  for (auto kfsh : kv_final_shard_list) {
+    delete kfsh;
+  }
+  kv_final_shard_list.clear();
+
 
   cct->_conf->remove_observer(this);
   _shutdown_logger();
@@ -7763,16 +7782,26 @@ void BlueStore::_txc_state_proc(TransContext *txc)
 	}
       }
       {
-	std::lock_guard<std::mutex> l(kv_lock);
-	kv_queue.push_back(txc);
-	kv_cond.notify_one();
+	//std::lock_guard<std::mutex> l(kv_lock);
+	//kv_queue.push_back(txc);
+	//kv_cond.notify_one();
+        uint32_t shard_no = txc->osr->parent->shard_hint.hash_to_shard( 
+                              kv_sync_thread_list.size()); 
+        dout(20) << __func__ << " Assigned IO shard Q = " << shard_no << dendl;
+        kv_sync_thread_shard* kv_shard = kv_sync_shard_list[shard_no]; 
+        std::lock_guard<std::mutex> l(kv_shard->kv_sync_lock_shard);
+        kv_shard->kv_queue_shard.push_back(txc); 
+        kv_shard->kv_sync_cond_shard.notify_one(); 
+
 	if (txc->state != TransContext::STATE_KV_SUBMITTED) {
-	  kv_queue_unsubmitted.push_back(txc);
+	  //kv_queue_unsubmitted.push_back(txc);
+          kv_shard->kv_queue_unsubmitted_shard.push_back(txc); 
 	  ++txc->osr->kv_committing_serially;
 	}
 	if (txc->had_ios)
 	  kv_ios++;
-	kv_throttle_costs += txc->cost;
+	kv_shard->kv_throttle_costs += txc->cost;
+      ++(kv_shard->kv_pending_commits);
       }
       return;
     case TransContext::STATE_KV_SUBMITTED:
@@ -8140,8 +8169,14 @@ void BlueStore::_osr_drain_preceding(TransContext *txc)
   }
   {
     // wake up any previously finished deferred events
-    std::lock_guard<std::mutex> l(kv_lock);
-    kv_cond.notify_one();
+    //std::lock_guard<std::mutex> l(kv_lock);
+    //kv_cond.notify_one();
+    uint32_t shard_no = txc->osr->parent->shard_hint.hash_to_shard(
+                              kv_sync_thread_list.size());
+    kv_sync_thread_shard* kv_shard = kv_sync_shard_list[shard_no];
+    std::lock_guard<std::mutex> l(kv_shard->kv_sync_lock_shard);
+    kv_shard->kv_sync_cond_shard.notify_one();
+
   }
   osr->drain_preceding(txc);
   --deferred_aggressive;
@@ -8164,15 +8199,31 @@ void BlueStore::_osr_drain_all()
     // submit anything pending
     deferred_try_submit();
   }
-  {
+  
     // wake up any previously finished deferred events
-    std::lock_guard<std::mutex> l(kv_lock);
-    kv_cond.notify_one();
+    //std::lock_guard<std::mutex> l(kv_lock);
+    //kv_cond.notify_one();
+  
+  //for (auto osr: s) {
+  //  uint32_t shard_no = osr->parent->shard_hint.hash_to_shard(
+  //                          kv_sync_thread_list.size());
+  for (uint32_t i = 0; i < kv_sync_shard_list.size(); i++){
+    kv_sync_thread_shard* kv_shard = kv_sync_shard_list[i];
+    std::lock_guard<std::mutex> l(kv_shard->kv_sync_lock_shard);
+    kv_shard->kv_sync_cond_shard.notify_one();
+    
   }
-  {
-    std::lock_guard<std::mutex> l(kv_finalize_lock);
-    kv_finalize_cond.notify_one();
-  }
+  //for (auto osr: s) {
+  //uint32_t shard_no = osr->parent->shard_hint.hash_to_shard(
+  //                            kv_final_thread_list.size());
+  for (uint32_t i = 0; i < kv_sync_shard_list.size(); i++) {
+    kv_final_thread_shard* kv_final_shard = kv_final_shard_list[i];
+    std::lock_guard<std::mutex> l(kv_final_shard->kv_final_lock_shard);
+    kv_final_shard->kv_final_cond_shard.notify_one();
+
+    //std::lock_guard<std::mutex> l(kv_finalize_lock);
+    //kv_finalize_cond.notify_one();
+  } 
   for (auto osr : s) {
     dout(20) << __func__ << " drain " << osr << dendl;
     osr->drain();
@@ -8237,39 +8288,100 @@ void BlueStore::_kv_start()
   for (auto f : finishers) {
     f->start();
   }
-  kv_sync_thread.create("bstore_kv_sync");
-  kv_finalize_thread.create("bstore_kv_final");
+  //kv_sync_thread.create("bstore_kv_sync");
+  //kv_finalize_thread.create("bstore_kv_final");
+    kv_sync_thread_list.clear();
+    kv_sync_shard_list.clear();
+    kv_final_thread_list.clear();
+    kv_final_shard_list.clear();
+  for (int i = 0; i < cct->_conf->bluestore_num_kv_threads; i++) { 
+    KVSyncThread* kv_sync_thread = new KVSyncThread(this, i);
+    kv_sync_thread_shard* kv_sync_shard = new kv_sync_thread_shard(i); 
+    kv_sync_thread_list.push_back(kv_sync_thread);
+    kv_sync_shard_list.push_back(kv_sync_shard);
+    
+    KVFinalizeThread* kv_final_thread = new KVFinalizeThread(this, i);
+    kv_final_thread_shard* kv_final_shard = new kv_final_thread_shard(i);
+    kv_final_thread_list.push_back(kv_final_thread);
+    kv_final_shard_list.push_back(kv_final_shard);
+ 
+  }
+  for (int i = 0; i < cct->_conf->bluestore_num_kv_threads ; i++) {
+    char kv_sync_th_name[16] = {0};
+    snprintf(kv_sync_th_name, sizeof(kv_sync_th_name),"%s_%d","bstor_kv_sync", i);
+    kv_sync_thread_list[i]->create(kv_sync_th_name); 
+
+    char kv_final_th_name[16] = {0};
+    snprintf(kv_final_th_name, sizeof(kv_final_th_name),"%s_%d","bstor_kv_finl", i);
+    kv_final_thread_list[i]->create(kv_final_th_name);
+  }
+
 }
 
 void BlueStore::_kv_stop()
 {
   dout(10) << __func__ << dendl;
-  {
-    std::unique_lock<std::mutex> l(kv_lock);
-    while (!kv_sync_started) {
-      kv_cond.wait(l);
+  
+    //std::unique_lock<std::mutex> l(kv_lock);
+    //while (!kv_sync_started) {
+    //  kv_cond.wait(l);
+    //}
+    //kv_stop = true;
+    //kv_cond.notify_all();
+  for (uint32_t i = 0; i < kv_sync_shard_list.size(); i++) {
+    kv_sync_thread_shard* kv_shard = kv_sync_shard_list[i];
+    std::unique_lock<std::mutex> slock(kv_shard->kv_sync_lock_shard);
+    while(!kv_shard->kv_sync_thread_started) {
+      kv_shard->kv_sync_cond_shard.wait(slock);
     }
-    kv_stop = true;
-    kv_cond.notify_all();
+    kv_shard->kv_sync_thread_stop = true;
+    kv_shard->kv_sync_cond_shard.notify_all();
+  }  
+    //std::unique_lock<std::mutex> l(kv_finalize_lock);
+    //while (!kv_finalize_started) {
+      //kv_finalize_cond.wait(l);
+    //}
+    //kv_finalize_stop = true;
+    //kv_finalize_cond.notify_all();
+  for (uint32_t i = 0; i < kv_final_shard_list.size(); i++) {
+    kv_final_thread_shard* kv_final_shard = kv_final_shard_list[i];
+    std::unique_lock<std::mutex> flock(kv_final_shard->kv_final_lock_shard);
+    while(!kv_final_shard->kv_finalize_thread_started) {
+      kv_final_shard->kv_final_cond_shard.wait(flock);
+    }  
+    kv_final_shard->kv_finalize_thread_stop = true;
+    kv_final_shard->kv_final_cond_shard.notify_all();
+  }  
+  //kv_sync_thread.join();
+  //kv_finalize_thread.join();
+  
+  for (uint32_t i =0; i < kv_sync_thread_list.size(); i++) { 
+    kv_sync_thread_list[i]->join(); 
   }
-  {
-    std::unique_lock<std::mutex> l(kv_finalize_lock);
-    while (!kv_finalize_started) {
-      kv_finalize_cond.wait(l);
-    }
-    kv_finalize_stop = true;
-    kv_finalize_cond.notify_all();
+
+  for (uint32_t i =0; i < kv_final_thread_list.size(); i++) {
+    kv_final_thread_list[i]->join();
   }
-  kv_sync_thread.join();
-  kv_finalize_thread.join();
-  {
-    std::lock_guard<std::mutex> l(kv_lock);
-    kv_stop = false;
+
+  //{
+  //  std::lock_guard<std::mutex> l(kv_lock);
+  //  kv_stop = false;
+  //}
+  for (int i = 0; i < cct->_conf->bluestore_num_kv_threads; i++) {
+    kv_sync_thread_shard* kv_shard = kv_sync_shard_list[i];
+    std::unique_lock<std::mutex> sl(kv_shard->kv_sync_lock_shard);
+    kv_shard->kv_sync_thread_stop = false;
   }
-  {
-    std::lock_guard<std::mutex> l(kv_finalize_lock);
-    kv_finalize_stop = false;
-  }
+  
+  for (int i = 0; i < cct->_conf->bluestore_num_kv_threads; i++) {
+    kv_final_thread_shard* kv_final_shard = kv_final_shard_list[i];
+    std::unique_lock<std::mutex> fl(kv_final_shard->kv_final_lock_shard);
+    kv_final_shard->kv_finalize_thread_stop = false;
+  }  
+  //{
+  //  std::lock_guard<std::mutex> l(kv_finalize_lock);
+  //  kv_finalize_stop = false;
+  //}
   dout(10) << __func__ << " stopping finishers" << dendl;
   for (auto f : finishers) {
     f->wait_for_empty();
@@ -8278,41 +8390,62 @@ void BlueStore::_kv_stop()
   dout(10) << __func__ << " stopped" << dendl;
 }
 
-void BlueStore::_kv_sync_thread()
+//void BlueStore::_kv_sync_thread()
+void BlueStore::_kv_sync_thread(uint32_t tid)
 {
   dout(10) << __func__ << " start" << dendl;
-  std::unique_lock<std::mutex> l(kv_lock);
-  assert(!kv_sync_started);
-  kv_sync_started = true;
-  kv_cond.notify_all();
+  //std::unique_lock<std::mutex> l(kv_lock);
+  kv_sync_thread_shard* kv_shard = kv_sync_shard_list[tid];
+  kv_final_thread_shard* kv_final_shard = kv_final_shard_list[tid];
+  assert(kv_shard->attached_tid == tid); 
+  std::unique_lock<std::mutex> l(kv_shard->kv_sync_lock_shard); 
+
+  assert(!kv_shard->kv_sync_thread_started);
+  kv_shard->kv_sync_thread_started = true;
+//  kv_cond.notify_all();
+  kv_shard->kv_sync_cond_shard.notify_all();
   while (true) {
-    assert(kv_committing.empty());
-    if (kv_queue.empty() &&
-	((deferred_done_queue.empty() && deferred_stable_queue.empty()) ||
-	 !deferred_aggressive)) {
-      if (kv_stop)
-	break;
-      dout(20) << __func__ << " sleep" << dendl;
-      kv_cond.wait(l);
-      dout(20) << __func__ << " wake" << dendl;
+    //assert(kv_committing.empty());
+   // if (kv_queue.empty() &&
+	//((deferred_done_queue.empty() && deferred_stable_queue.empty()) ||
+	// !deferred_aggressive)) {
+       // if (kv_stop)
+	//  break;
+      //dout(20) << __func__ << " sleep" << dendl;
+      //kv_cond.wait(l);
+    if (kv_shard->kv_queue_shard.empty() && 
+      ((kv_shard->deferred_done_queue_shard.empty() &&
+        kv_shard->deferred_stable_queue_shard.empty()) ||
+        !deferred_aggressive)){
+        if (kv_shard->kv_sync_thread_stop)  
+          break;
+        dout(20) << __func__ << " sleep" << dendl; 
+        kv_shard->kv_sync_cond_shard.wait(l);
+        dout(20) << __func__ << " wake" << dendl;
     } else {
       deque<TransContext*> kv_submitting;
-      deque<DeferredBatch*> deferred_done, deferred_stable;
+      deque<TransContext*> kv_committing;
+      deque<DeferredBatch*> deferred_done,deferred_stable;
       uint64_t aios = 0, costs = 0;
 
-      dout(20) << __func__ << " committing " << kv_queue.size()
-	       << " submitting " << kv_queue_unsubmitted.size()
-	       << " deferred done " << deferred_done_queue.size()
-	       << " stable " << deferred_stable_queue.size()
-	       << dendl;
-      kv_committing.swap(kv_queue);
-      kv_submitting.swap(kv_queue_unsubmitted);
-      deferred_done.swap(deferred_done_queue);
-      deferred_stable.swap(deferred_stable_queue);
+     // dout(20) << __func__ << " committing " << kv_queue.size()
+     //	       << " submitting " << kv_queue_unsubmitted.size()
+     //	       << " deferred done " << deferred_done_queue.size()
+     //	       << " stable " << deferred_stable_queue.size()
+     //	       << dendl;
+     // kv_committing.swap(kv_queue);
+     // kv_submitting.swap(kv_queue_unsubmitted);
+     // deferred_done.swap(deferred_done_queue);
+     // deferred_stable.swap(deferred_stable_queue);
+      kv_committing.swap(kv_shard->kv_queue_shard);
+      kv_submitting.swap(kv_shard->kv_queue_unsubmitted_shard);
+      deferred_done.swap(kv_shard->deferred_done_queue_shard);
+      deferred_stable.swap(kv_shard->deferred_stable_queue_shard);
+
       aios = kv_ios;
-      costs = kv_throttle_costs;
+      costs = kv_shard->kv_throttle_costs;
       kv_ios = 0;
-      kv_throttle_costs = 0;
+      kv_shard->kv_throttle_costs = 0;
       utime_t start = ceph_clock_now();
       l.unlock();
 
@@ -8355,11 +8488,14 @@ void BlueStore::_kv_sync_thread()
       // we will use one final transaction to force a sync
       KeyValueDB::Transaction synct = db->get_transaction();
 
-      // increase {nid,blobid}_max?  note that this covers both the
+// increase {nid,blobid}_max?  note that this covers both the
       // case where we are approaching the max and the case we passed
       // it.  in either case, we increase the max in the earlier txn
       // we submit.
+    
       uint64_t new_nid_max = 0, new_blobid_max = 0;
+    {
+      std::lock_guard<std::mutex> l (nbid_lock);
       if (nid_last + cct->_conf->bluestore_nid_prealloc/2 > nid_max) {
 	KeyValueDB::Transaction t =
 	  kv_submitting.empty() ? synct : kv_submitting.front()->t;
@@ -8378,7 +8514,7 @@ void BlueStore::_kv_sync_thread()
 	t->set(PREFIX_SUPER, "blobid_max", bl);
 	dout(10) << __func__ << " new_blobid_max " << new_blobid_max << dendl;
       }
-
+    }
       for (auto txc : kv_committing) {
 	if (txc->state == TransContext::STATE_KV_QUEUED) {
 	  txc->log_state_latency(logger, l_bluestore_state_kv_queued_lat);
@@ -8387,6 +8523,7 @@ void BlueStore::_kv_sync_thread()
 	  _txc_applied_kv(txc);
 	  --txc->osr->kv_committing_serially;
 	  txc->state = TransContext::STATE_KV_SUBMITTED;
+          --kv_shard->kv_pending_commits;
 	  if (txc->osr->kv_submitted_waiters) {
 	    std::lock_guard<std::mutex> l(txc->osr->qlock);
 	    if (txc->osr->_is_all_kv_submitted()) {
@@ -8408,10 +8545,12 @@ void BlueStore::_kv_sync_thread()
       // the kv commit sync/flush.  then hopefully on the next
       // iteration there will already be ops awake.  otherwise, we
       // end up going to sleep, and then wake up when the very first
-      // transaction is ready for commit.
+      // transaction is ready for commit. 
       throttle_bytes.put(costs);
-
+      
       PExtentVector bluefs_gift_extents;
+    {
+      std::lock_guard<std::mutex> l(bluefs_lock);    
       if (bluefs &&
 	  after_flush - bluefs_last_balance >
 	  cct->_conf->bluestore_bluefs_balance_interval) {
@@ -8429,7 +8568,7 @@ void BlueStore::_kv_sync_thread()
 	  synct->set(PREFIX_SUPER, "bluefs_extents", bl);
 	}
       }
-
+     }
       // cleanup sync deferred keys
       for (auto b : deferred_stable) {
 	for (auto& txc : b->txcs) {
@@ -8452,7 +8591,8 @@ void BlueStore::_kv_sync_thread()
       // submit synct synchronously (block and wait for it to commit)
       int r = cct->_conf->bluestore_debug_omit_kv_commit ? 0 : db->submit_transaction_sync(synct);
       assert(r == 0);
-
+    {
+      std::lock_guard<std::mutex> l (nbid_lock);
       if (new_nid_max) {
 	nid_max = new_nid_max;
 	dout(10) << __func__ << " nid_max now " << nid_max << dendl;
@@ -8461,7 +8601,7 @@ void BlueStore::_kv_sync_thread()
 	blobid_max = new_blobid_max;
 	dout(10) << __func__ << " blobid_max now " << blobid_max << dendl;
       }
-
+    }
       {
 	utime_t finish = ceph_clock_now();
 	utime_t dur_flush = after_flush - start;
@@ -8476,7 +8616,8 @@ void BlueStore::_kv_sync_thread()
 	logger->tinc(l_bluestore_kv_commit_lat, dur_kv);
 	logger->tinc(l_bluestore_kv_lat, dur);
       }
-
+    {
+      std::lock_guard<std::mutex> l(bluefs_lock);    
       if (bluefs) {
 	if (!bluefs_gift_extents.empty()) {
 	  _commit_bluefs_freespace(bluefs_gift_extents);
@@ -8491,62 +8632,69 @@ void BlueStore::_kv_sync_thread()
 	}
 	bluefs_extents_reclaiming.clear();
       }
+    }
 
       {
-	std::unique_lock<std::mutex> m(kv_finalize_lock);
-	if (kv_committing_to_finalize.empty()) {
-	  kv_committing_to_finalize.swap(kv_committing);
+	std::unique_lock<std::mutex> m(kv_final_shard->kv_final_lock_shard);
+	if (kv_final_shard->kv_committing_to_finalize_shard.empty()) {
+	  kv_final_shard->kv_committing_to_finalize_shard.swap(kv_committing);
 	} else {
-	  kv_committing_to_finalize.insert(
-	    kv_committing_to_finalize.end(),
+	  kv_final_shard->kv_committing_to_finalize_shard.insert(
+	    kv_final_shard->kv_committing_to_finalize_shard.end(),
 	    kv_committing.begin(),
 	    kv_committing.end());
 	  kv_committing.clear();
 	}
-	if (deferred_stable_to_finalize.empty()) {
-	  deferred_stable_to_finalize.swap(deferred_stable);
+	if (kv_final_shard->deferred_stable_to_finalize_shard.empty()) {
+	  kv_final_shard->deferred_stable_to_finalize_shard.swap(deferred_stable);
 	} else {
-	  deferred_stable_to_finalize.insert(
-	    deferred_stable_to_finalize.end(),
+	  kv_final_shard->deferred_stable_to_finalize_shard.insert(
+	    kv_final_shard->deferred_stable_to_finalize_shard.end(),
 	    deferred_stable.begin(),
 	    deferred_stable.end());
           deferred_stable.clear();
 	}
-	kv_finalize_cond.notify_one();
+	kv_final_shard->kv_final_cond_shard.notify_one();
       }
 
       l.lock();
       // previously deferred "done" are now "stable" by virtue of this
       // commit cycle.
-      deferred_stable_queue.swap(deferred_done);
+      kv_shard->deferred_stable_queue_shard.swap(deferred_done);
+      
     }
   }
   dout(10) << __func__ << " finish" << dendl;
-  kv_sync_started = false;
+  kv_shard->kv_sync_thread_started = false;
 }
 
-void BlueStore::_kv_finalize_thread()
+//void BlueStore::_kv_finalize_thread()
+void BlueStore::_kv_finalize_thread(uint32_t tid)
 {
   deque<TransContext*> kv_committed;
   deque<DeferredBatch*> deferred_stable;
   dout(10) << __func__ << " start" << dendl;
-  std::unique_lock<std::mutex> l(kv_finalize_lock);
-  assert(!kv_finalize_started);
-  kv_finalize_started = true;
-  kv_finalize_cond.notify_all();
+  kv_final_thread_shard* kv_final_shard = kv_final_shard_list[tid];
+  assert(kv_final_shard->attached_tid == tid);
+  std::unique_lock<std::mutex> l(kv_final_shard->kv_final_lock_shard);
+
+ // std::unique_lock<std::mutex> l(kv_finalize_lock);
+  assert(!kv_final_shard->kv_finalize_thread_started);
+  kv_final_shard->kv_finalize_thread_started = true;
+  kv_final_shard->kv_final_cond_shard.notify_all();
   while (true) {
     assert(kv_committed.empty());
     assert(deferred_stable.empty());
-    if (kv_committing_to_finalize.empty() &&
-	deferred_stable_to_finalize.empty()) {
-      if (kv_finalize_stop)
+    if (kv_final_shard->kv_committing_to_finalize_shard.empty() &&
+	kv_final_shard->deferred_stable_to_finalize_shard.empty()) {
+      if (kv_final_shard->kv_finalize_thread_stop)
 	break;
       dout(20) << __func__ << " sleep" << dendl;
-      kv_finalize_cond.wait(l);
+      kv_final_shard->kv_final_cond_shard.wait(l);
       dout(20) << __func__ << " wake" << dendl;
     } else {
-      kv_committed.swap(kv_committing_to_finalize);
-      deferred_stable.swap(deferred_stable_to_finalize);
+      kv_committed.swap(kv_final_shard->kv_committing_to_finalize_shard);
+      deferred_stable.swap(kv_final_shard->deferred_stable_to_finalize_shard);
       l.unlock();
       dout(20) << __func__ << " kv_committed " << kv_committed << dendl;
       dout(20) << __func__ << " deferred_stable " << deferred_stable << dendl;
@@ -8583,7 +8731,7 @@ void BlueStore::_kv_finalize_thread()
     }
   }
   dout(10) << __func__ << " finish" << dendl;
-  kv_finalize_started = false;
+  kv_final_shard->kv_finalize_thread_started = false;
 }
 
 bluestore_deferred_op_t *BlueStore::_get_deferred_op(
@@ -8724,6 +8872,14 @@ void BlueStore::_deferred_aio_finish(OpSequencer *osr)
     }
   }
 
+    uint32_t shard_no;
+    if(osr->parent){
+      shard_no = osr->parent->shard_hint.hash_to_shard(
+                               kv_sync_thread_list.size());}
+    else 
+      shard_no = 0;
+
+    kv_sync_thread_shard*  kv_shard = kv_sync_shard_list[shard_no];
   {
     uint64_t costs = 0;
     std::lock_guard<std::mutex> l2(osr->qlock);
@@ -8735,15 +8891,17 @@ void BlueStore::_deferred_aio_finish(OpSequencer *osr)
     }
     osr->qcond.notify_all();
     throttle_deferred_bytes.put(costs);
-    std::lock_guard<std::mutex> l(kv_lock);
-    deferred_done_queue.emplace_back(b);
+    //std::lock_guard<std::mutex> l(kv_lock);
+    //deferred_done_queue.emplace_back(b);
+    std::lock_guard<std::mutex> l(kv_shard->kv_sync_lock_shard);
+    kv_shard->deferred_done_queue_shard.emplace_back(b);
   }
 
   // in the normal case, do not bother waking up the kv thread; it will
   // catch us on the next commit anyway.
   if (deferred_aggressive) {
-    std::lock_guard<std::mutex> l(kv_lock);
-    kv_cond.notify_one();
+    std::lock_guard<std::mutex> l(kv_shard->kv_sync_lock_shard);
+    kv_shard->kv_sync_cond_shard.notify_one();
   }
 }
 

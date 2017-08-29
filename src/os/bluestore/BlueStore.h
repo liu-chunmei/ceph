@@ -1680,13 +1680,14 @@ public:
       // _osr_drain_all clean up later.
       assert(!zombie);
       zombie = true;
-      parent = nullptr;
+      //parent = nullptr;
       bool empty;
       {
 	std::lock_guard<std::mutex> l(qlock);
 	empty = q.empty();
       }
       if (empty) {
+        parent = nullptr;
 	_unregister();
       }
     }
@@ -1766,17 +1767,21 @@ public:
 
   struct KVSyncThread : public Thread {
     BlueStore *store;
-    explicit KVSyncThread(BlueStore *s) : store(s) {}
+    //explicit KVSyncThread(BlueStore *s) : store(s) {}
+    uint32_t tid;
+    explicit KVSyncThread(BlueStore *s, uint32_t id) : store(s), tid(id) {} 
     void *entry() override {
-      store->_kv_sync_thread();
+      store->_kv_sync_thread(tid);
       return NULL;
     }
   };
   struct KVFinalizeThread : public Thread {
     BlueStore *store;
-    explicit KVFinalizeThread(BlueStore *s) : store(s) {}
+    //explicit KVFinalizeThread(BlueStore *s) : store(s) {}
+    uint32_t tid;
+    explicit KVFinalizeThread(BlueStore *s, uint32_t id) : store(s), tid(id) {}
     void *entry() {
-      store->_kv_finalize_thread();
+      store->_kv_finalize_thread(tid);
       return NULL;
     }
   };
@@ -1829,7 +1834,8 @@ private:
 
   std::mutex osr_lock;              ///< protect osd_set
   std::set<OpSequencerRef> osr_set; ///< set of all OpSequencers
-
+  
+  std::mutex nbid_lock;
   std::atomic<uint64_t> nid_last = {0};
   std::atomic<uint64_t> nid_max = {0};
   std::atomic<uint64_t> blobid_last = {0};
@@ -1838,6 +1844,7 @@ private:
   Throttle throttle_bytes;          ///< submit to commit
   Throttle throttle_deferred_bytes;  ///< submit to deferred complete
 
+  std::mutex bluefs_lock;
   interval_set<uint64_t> bluefs_extents;  ///< block extents owned by bluefs
   interval_set<uint64_t> bluefs_extents_reclaiming; ///< currently reclaiming
 
@@ -1850,24 +1857,54 @@ private:
   int m_finisher_num = 1;
   vector<Finisher*> finishers;
 
-  KVSyncThread kv_sync_thread;
-  std::mutex kv_lock;
-  std::condition_variable kv_cond;
-  bool kv_sync_started = false;
-  bool kv_stop = false;
-  bool kv_finalize_started = false;
-  bool kv_finalize_stop = false;
-  deque<TransContext*> kv_queue;             ///< ready, already submitted
-  deque<TransContext*> kv_queue_unsubmitted; ///< ready, need submit by kv thread
-  deque<TransContext*> kv_committing;        ///< currently syncing
-  deque<DeferredBatch*> deferred_done_queue;   ///< deferred ios done
-  deque<DeferredBatch*> deferred_stable_queue; ///< deferred ios done + stable
+  //KVSyncThread kv_sync_thread;
+  vector<KVSyncThread*> kv_sync_thread_list;
+  //std::mutex kv_lock;
+  //std::condition_variable kv_cond;
+  //deque<TransContext*> kv_queue;             ///< ready, already submitted
+  //deque<TransContext*> kv_queue_unsubmitted; ///< ready, need submit by kv thread
+  //deque<TransContext*> kv_committing;        ///< currently syncing
+  //deque<DeferredBatch*> deferred_done_queue;   ///< deferred ios done
+  //deque<DeferredBatch*> deferred_stable_queue; ///< deferred ios done + stable
+  
+  //KVFinalizeThread kv_finalize_thread;
+  vector<KVFinalizeThread*> kv_final_thread_list;
+  //std::mutex kv_finalize_lock;
+  //std::condition_variable kv_finalize_cond;
+  //deque<TransContext*> kv_committing_to_finalize;   ///< pending finalization
+  //deque<DeferredBatch*> deferred_stable_to_finalize; ///< pending finalization
 
-  KVFinalizeThread kv_finalize_thread;
-  std::mutex kv_finalize_lock;
-  std::condition_variable kv_finalize_cond;
-  deque<TransContext*> kv_committing_to_finalize;   ///< pending finalization
-  deque<DeferredBatch*> deferred_stable_to_finalize; ///< pending finalization
+  struct kv_sync_thread_shard {
+    std::condition_variable kv_sync_cond_shard;
+    std::mutex kv_sync_lock_shard;
+    bool kv_sync_thread_started = false;
+    bool kv_sync_thread_stop = false;
+    uint64_t kv_throttle_costs = 0;
+    deque<TransContext*> kv_queue_shard;             ///< ready,already submitted
+    deque<TransContext*> kv_queue_unsubmitted_shard; ///< ready,need submit by kv thread
+    deque<TransContext*> kv_committing_shard;        ///< currently syncing
+    deque<DeferredBatch*> deferred_done_queue_shard;   ///< deferred ios done
+    deque<DeferredBatch*> deferred_stable_queue_shard; ///< deferred ios done + stable
+    std::atomic_int kv_pending_commits = {0};
+    uint32_t attached_tid;
+    kv_sync_thread_shard(uint32_t tid): attached_tid(tid) {} 
+  };
+  vector<kv_sync_thread_shard*> kv_sync_shard_list;
+
+  
+  struct kv_final_thread_shard {
+    std::condition_variable kv_final_cond_shard;
+    std::mutex kv_final_lock_shard;
+    bool kv_finalize_thread_started = false;
+    bool kv_finalize_thread_stop = false;
+    deque<TransContext*> kv_committing_to_finalize_shard;   ///< pending finalization 
+    deque<DeferredBatch*> deferred_stable_to_finalize_shard; ///< pending finalization
+    std::atomic_int kv_pending_final = {0};
+    uint32_t attached_tid;
+    kv_final_thread_shard(uint32_t tid): attached_tid(tid) {}
+  };
+  vector<kv_final_thread_shard*> kv_final_shard_list;
+ 
 
   PerfCounters *logger = nullptr;
 
@@ -1912,7 +1949,7 @@ private:
   std::atomic<uint64_t> max_blob_size = {0};  ///< maximum blob size
 
   uint64_t kv_ios = 0;
-  uint64_t kv_throttle_costs = 0;
+  //uint64_t kv_throttle_costs = 0;
 
   // cache trim control
   uint64_t cache_size = 0;      ///< total cache size
@@ -2030,8 +2067,8 @@ private:
 
   void _kv_start();
   void _kv_stop();
-  void _kv_sync_thread();
-  void _kv_finalize_thread();
+  void _kv_sync_thread(uint32_t tid);
+  void _kv_finalize_thread(uint32_t tid);
 
   bluestore_deferred_op_t *_get_deferred_op(TransContext *txc, OnodeRef o);
   void _deferred_queue(TransContext *txc);
