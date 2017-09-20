@@ -1680,13 +1680,14 @@ public:
       // _osr_drain_all clean up later.
       assert(!zombie);
       zombie = true;
-      parent = nullptr;
+      //parent = nullptr;
       bool empty;
       {
 	std::lock_guard<std::mutex> l(qlock);
 	empty = q.empty();
       }
       if (empty) {
+        parent = nullptr;
 	_unregister();
       }
     }
@@ -1774,9 +1775,11 @@ public:
   };
   struct KVFinalizeThread : public Thread {
     BlueStore *store;
-    explicit KVFinalizeThread(BlueStore *s) : store(s) {}
+    //explicit KVFinalizeThread(BlueStore *s) : store(s) {}
+    uint32_t tid;
+    explicit KVFinalizeThread(BlueStore *s, uint32_t id) : store(s), tid(id) {}
     void *entry() {
-      store->_kv_finalize_thread();
+      store->_kv_finalize_thread(tid);
       return NULL;
     }
   };
@@ -1856,19 +1859,29 @@ private:
   std::condition_variable kv_cond;
   bool kv_sync_started = false;
   bool kv_stop = false;
-  bool kv_finalize_started = false;
-  bool kv_finalize_stop = false;
+  //bool kv_finalize_started = false;
+  //bool kv_finalize_stop = false;
   deque<TransContext*> kv_queue;             ///< ready, already submitted
   deque<TransContext*> kv_queue_unsubmitted; ///< ready, need submit by kv thread
   deque<TransContext*> kv_committing;        ///< currently syncing
   deque<DeferredBatch*> deferred_done_queue;   ///< deferred ios done
   deque<DeferredBatch*> deferred_stable_queue; ///< deferred ios done + stable
 
-  KVFinalizeThread kv_finalize_thread;
+  //KVFinalizeThread kv_finalize_thread;
+  vector<KVFinalizeThread*> kv_final_thread_list;
   std::mutex kv_finalize_lock;
   std::condition_variable kv_finalize_cond;
   deque<TransContext*> kv_committing_to_finalize;   ///< pending finalization
   deque<DeferredBatch*> deferred_stable_to_finalize; ///< pending finalization
+  struct kv_final_thread_shard {
+    std::condition_variable kv_final_cond_shard;
+    std::mutex kv_final_lock_shard;
+    bool kv_finalize_thread_started = false;
+    bool kv_finalize_thread_stop = false;
+    uint32_t attached_tid;
+    kv_final_thread_shard(uint32_t tid): attached_tid(tid) {}
+  };
+  vector<kv_final_thread_shard*> kv_final_shard_list;
 
   PerfCounters *logger = nullptr;
 
@@ -2032,7 +2045,7 @@ private:
   void _kv_start();
   void _kv_stop();
   void _kv_sync_thread();
-  void _kv_finalize_thread();
+  void _kv_finalize_thread(uint32_t tid);
 
   bluestore_deferred_op_t *_get_deferred_op(TransContext *txc, OnodeRef o);
   void _deferred_queue(TransContext *txc);

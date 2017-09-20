@@ -3479,7 +3479,7 @@ BlueStore::BlueStore(CephContext *cct, const string& path)
 		       cct->_conf->bluestore_throttle_deferred_bytes),
     deferred_finisher(cct, "defered_finisher", "dfin"),
     kv_sync_thread(this),
-    kv_finalize_thread(this),
+    //kv_finalize_thread(this),
     mempool_thread(this)
 {
   _init_logger();
@@ -3498,7 +3498,7 @@ BlueStore::BlueStore(CephContext *cct,
 		       cct->_conf->bluestore_throttle_deferred_bytes),
     deferred_finisher(cct, "defered_finisher", "dfin"),
     kv_sync_thread(this),
-    kv_finalize_thread(this),
+    //kv_finalize_thread(this),
     min_alloc_size(_min_alloc_size),
     min_alloc_size_order(ctz(_min_alloc_size)),
     mempool_thread(this)
@@ -3514,6 +3514,15 @@ BlueStore::~BlueStore()
     delete f;
   }
   finishers.clear();
+
+  for (auto kfth : kv_final_thread_list) {
+    delete kfth;
+  }
+  kv_final_thread_list.clear();
+  for (auto kfsh : kv_final_shard_list) {
+    delete kfsh;
+  }
+  kv_final_shard_list.clear();
 
   cct->_conf->remove_observer(this);
   _shutdown_logger();
@@ -8193,8 +8202,14 @@ void BlueStore::_osr_drain_all()
     kv_cond.notify_one();
   }
   {
-    std::lock_guard<std::mutex> l(kv_finalize_lock);
-    kv_finalize_cond.notify_one();
+    //std::lock_guard<std::mutex> l(kv_finalize_lock);
+    //kv_finalize_cond.notify_one();
+    for (uint32_t i = 0; i < kv_final_shard_list.size(); i++) {
+      kv_final_thread_shard* kv_final_shard = kv_final_shard_list[i];
+      std::unique_lock<std::mutex> f(kv_final_shard->kv_final_lock_shard);
+      kv_final_shard->kv_final_cond_shard.notify_one();
+    }
+
   }
   for (auto osr : s) {
     dout(20) << __func__ << " drain " << osr << dendl;
@@ -8262,7 +8277,21 @@ void BlueStore::_kv_start()
     f->start();
   }
   kv_sync_thread.create("bstore_kv_sync");
-  kv_finalize_thread.create("bstore_kv_final");
+  //kv_finalize_thread.create("bstore_kv_final");
+  kv_final_thread_list.clear();
+  kv_final_shard_list.clear();
+  for (int i = 0; i < cct->_conf->bluestore_num_kv_finalize_threads; i++) {
+    KVFinalizeThread* kv_final_thread = new KVFinalizeThread(this, i);
+    kv_final_thread_shard* kv_final_shard = new kv_final_thread_shard(i);
+    kv_final_thread_list.push_back(kv_final_thread);
+    kv_final_shard_list.push_back(kv_final_shard);
+  }
+  for (int i = 0; i < cct->_conf->bluestore_num_kv_finalize_threads ; i++) {
+    char kv_final_th_name[16] = {0};
+    snprintf(kv_final_th_name, sizeof(kv_final_th_name),"%s_%d","bstor_kv_finl", i);
+    kv_final_thread_list[i]->create(kv_final_th_name);
+  }
+
 }
 
 void BlueStore::_kv_stop()
@@ -8277,22 +8306,40 @@ void BlueStore::_kv_stop()
     kv_cond.notify_all();
   }
   {
-    std::unique_lock<std::mutex> l(kv_finalize_lock);
-    while (!kv_finalize_started) {
-      kv_finalize_cond.wait(l);
-    }
-    kv_finalize_stop = true;
-    kv_finalize_cond.notify_all();
+    //std::unique_lock<std::mutex> l(kv_finalize_lock);
+    //while (!kv_finalize_started) {
+      //kv_finalize_cond.wait(l);
+    //}
+    //kv_finalize_stop = true;
+    //kv_finalize_cond.notify_all();
+   for (uint32_t i = 0; i < kv_final_shard_list.size(); i++) {
+      kv_final_thread_shard* kv_final_shard = kv_final_shard_list[i];
+      std::unique_lock<std::mutex> l(kv_final_shard->kv_final_lock_shard);
+      while(!kv_final_shard->kv_finalize_thread_started) {
+        kv_final_shard->kv_final_cond_shard.wait(l);
+      }
+      kv_final_shard->kv_finalize_thread_stop = true;
+      kv_final_shard->kv_final_cond_shard.notify_all();
+   }
+
   }
   kv_sync_thread.join();
-  kv_finalize_thread.join();
+  //kv_finalize_thread.join();
+  for (uint32_t i =0; i < kv_final_thread_list.size(); i++) {
+    kv_final_thread_list[i]->join();
+  }
   {
     std::lock_guard<std::mutex> l(kv_lock);
     kv_stop = false;
   }
   {
-    std::lock_guard<std::mutex> l(kv_finalize_lock);
-    kv_finalize_stop = false;
+    //std::lock_guard<std::mutex> l(kv_finalize_lock);
+    //kv_finalize_stop = false;
+    for (uint32_t i = 0; i < kv_final_shard_list.size(); i++) {
+      kv_final_thread_shard* kv_final_shard = kv_final_shard_list[i];
+      std::unique_lock<std::mutex> fl(kv_final_shard->kv_final_lock_shard);
+      kv_final_shard->kv_finalize_thread_stop = false;
+    }
   }
   dout(10) << __func__ << " stopping finishers" << dendl;
   deferred_finisher.wait_for_empty();
@@ -8530,7 +8577,12 @@ void BlueStore::_kv_sync_thread()
 	    deferred_stable.end());
           deferred_stable.clear();
 	}
-	kv_finalize_cond.notify_one();
+	//kv_finalize_cond.notify_one();
+      }
+      for (uint32_t i = 0; i < kv_final_shard_list.size(); i++) {
+        kv_final_thread_shard* kv_final_shard = kv_final_shard_list[i];
+        std::unique_lock<std::mutex> f(kv_final_shard->kv_final_lock_shard);
+        kv_final_shard->kv_final_cond_shard.notify_one();
       }
 
       l.lock();
@@ -8543,29 +8595,68 @@ void BlueStore::_kv_sync_thread()
   kv_sync_started = false;
 }
 
-void BlueStore::_kv_finalize_thread()
+void BlueStore::_kv_finalize_thread(uint32_t tid)
 {
-  deque<TransContext*> kv_committed;
-  deque<DeferredBatch*> deferred_stable;
+  deque<TransContext*> kv_committed,temp_committed;
+  deque<DeferredBatch*> deferred_stable,temp_stable;
   dout(10) << __func__ << " start" << dendl;
-  std::unique_lock<std::mutex> l(kv_finalize_lock);
-  assert(!kv_finalize_started);
-  kv_finalize_started = true;
-  kv_finalize_cond.notify_all();
+  //std::unique_lock<std::mutex> l(kv_finalize_lock);
+  //assert(!kv_finalize_started);
+  //kv_finalize_started = true;
+  //kv_finalize_cond.notify_all();
+  kv_final_thread_shard* kv_final_shard = kv_final_shard_list[tid];
+  assert(kv_final_shard->attached_tid == tid);
+  std::unique_lock<std::mutex> l(kv_final_shard->kv_final_lock_shard);
+  assert(!kv_final_shard->kv_finalize_thread_started);
+  kv_final_shard->kv_finalize_thread_started = true;
+  kv_final_shard->kv_final_cond_shard.notify_all();
+
   while (true) {
     assert(kv_committed.empty());
     assert(deferred_stable.empty());
     if (kv_committing_to_finalize.empty() &&
 	deferred_stable_to_finalize.empty()) {
-      if (kv_finalize_stop)
+      if (kv_final_shard->kv_finalize_thread_stop)
 	break;
       dout(20) << __func__ << " sleep" << dendl;
-      kv_finalize_cond.wait(l);
+      //kv_finalize_cond.wait(l);
+      kv_final_shard->kv_final_cond_shard.wait(l);
       dout(20) << __func__ << " wake" << dendl;
     } else {
-      kv_committed.swap(kv_committing_to_finalize);
-      deferred_stable.swap(deferred_stable_to_finalize);
+      //kv_committed.swap(kv_committing_to_finalize);
+      //deferred_stable.swap(deferred_stable_to_finalize);
       l.unlock();
+      {
+        std::unique_lock<std::mutex> fl(kv_finalize_lock);
+        while (!kv_committing_to_finalize.empty()){
+           TransContext *txc = kv_committing_to_finalize.front();
+           if ( tid== txc->osr->parent->shard_hint.hash_to_shard(
+                              kv_final_thread_list.size())){
+             kv_committed.push_back(txc);
+           }else {
+             temp_committed.push_back(txc);
+           }
+            kv_committing_to_finalize.pop_front();
+         }
+            kv_committing_to_finalize.swap(temp_committed);
+            temp_committed.clear();
+         while (!deferred_stable_to_finalize.empty()) {
+             auto b = deferred_stable_to_finalize.front();
+             auto p = b->txcs.begin();
+             TransContext *txc = &*p;
+             if ( tid== txc->osr->parent->shard_hint.hash_to_shard(
+                             kv_final_thread_list.size())){
+                deferred_stable.push_back(b);
+             }
+             else {
+               temp_stable.push_back(b);
+             }
+             deferred_stable_to_finalize.pop_front();
+         }
+         deferred_stable_to_finalize.swap(temp_stable);
+         temp_stable.clear();
+      }
+
       dout(20) << __func__ << " kv_committed " << kv_committed << dendl;
       dout(20) << __func__ << " deferred_stable " << deferred_stable << dendl;
 
@@ -8601,7 +8692,8 @@ void BlueStore::_kv_finalize_thread()
     }
   }
   dout(10) << __func__ << " finish" << dendl;
-  kv_finalize_started = false;
+  //kv_finalize_started = false;
+  kv_final_shard->kv_finalize_thread_started = false;
 }
 
 bluestore_deferred_op_t *BlueStore::_get_deferred_op(

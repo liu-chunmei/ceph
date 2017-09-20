@@ -1119,6 +1119,7 @@ OPTION(bluestore_debug_fsck_abort, OPT_BOOL)
 OPTION(bluestore_debug_omit_kv_commit, OPT_BOOL)
 OPTION(bluestore_debug_permit_any_bdev_label, OPT_BOOL)
 OPTION(bluestore_shard_finishers, OPT_BOOL)
+OPTION(bluestore_num_kv_finalize_threads, OPT_INT)
 OPTION(bluestore_debug_random_read_err, OPT_DOUBLE)
 
 OPTION(kstore_max_ops, OPT_U64)
