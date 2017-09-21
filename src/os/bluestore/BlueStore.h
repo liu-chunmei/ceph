@@ -1871,11 +1871,13 @@ private:
   vector<KVFinalizeThread*> kv_final_thread_list;
   std::mutex kv_finalize_lock;
   std::condition_variable kv_finalize_cond;
-  deque<TransContext*> kv_committing_to_finalize;   ///< pending finalization
-  deque<DeferredBatch*> deferred_stable_to_finalize; ///< pending finalization
+  //deque<TransContext*> kv_committing_to_finalize;   ///< pending finalization
+  //deque<DeferredBatch*> deferred_stable_to_finalize; ///< pending finalization
   struct kv_final_thread_shard {
     std::condition_variable kv_final_cond_shard;
     std::mutex kv_final_lock_shard;
+    deque<TransContext*> kv_committed;
+    deque<DeferredBatch*> deferred_stable;
     bool kv_finalize_thread_started = false;
     bool kv_finalize_thread_stop = false;
     uint32_t attached_tid;

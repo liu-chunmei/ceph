@@ -8559,7 +8559,7 @@ void BlueStore::_kv_sync_thread()
 
       {
 	std::unique_lock<std::mutex> m(kv_finalize_lock);
-	if (kv_committing_to_finalize.empty()) {
+	/*if (kv_committing_to_finalize.empty()) {
 	  kv_committing_to_finalize.swap(kv_committing);
 	} else {
 	  kv_committing_to_finalize.insert(
@@ -8576,13 +8576,39 @@ void BlueStore::_kv_sync_thread()
 	    deferred_stable.begin(),
 	    deferred_stable.end());
           deferred_stable.clear();
-	}
+	}*/
+         while (!kv_committing.empty()){
+           TransContext *txc = kv_committing.front();
+           int i = txc->osr->parent->shard_hint.hash_to_shard(
+                              kv_final_thread_list.size());
+           kv_final_thread_shard* kv_final_shard = kv_final_shard_list[i];
+           {
+           std::unique_lock<std::mutex> f(kv_final_shard->kv_final_lock_shard);
+           kv_final_shard->kv_committed.push_back(txc);
+           }
+           kv_committing.pop_front();
+         }
+         while (!deferred_stable.empty()){
+            auto b = deferred_stable.front();
+            auto p = b->txcs.begin();
+            TransContext *txc = &*p;
+            int i = txc->osr->parent->shard_hint.hash_to_shard(
+                              kv_final_thread_list.size());
+            kv_final_thread_shard* kv_final_shard = kv_final_shard_list[i];
+           {
+            std::unique_lock<std::mutex> f(kv_final_shard->kv_final_lock_shard);
+            kv_final_shard->deferred_stable.push_back(b);
+           }
+           deferred_stable.pop_front();
+         }     
 	//kv_finalize_cond.notify_one();
       }
       for (uint32_t i = 0; i < kv_final_shard_list.size(); i++) {
         kv_final_thread_shard* kv_final_shard = kv_final_shard_list[i];
-        std::unique_lock<std::mutex> f(kv_final_shard->kv_final_lock_shard);
-        kv_final_shard->kv_final_cond_shard.notify_one();
+        if (!kv_final_shard->kv_committed.empty()||!kv_final_shard->deferred_stable.empty()){
+          std::unique_lock<std::mutex> f(kv_final_shard->kv_final_lock_shard);
+          kv_final_shard->kv_final_cond_shard.notify_one();
+        }
       }
 
       l.lock();
@@ -8597,8 +8623,8 @@ void BlueStore::_kv_sync_thread()
 
 void BlueStore::_kv_finalize_thread(uint32_t tid)
 {
-  deque<TransContext*> kv_committed,temp_committed;
-  deque<DeferredBatch*> deferred_stable,temp_stable;
+  deque<TransContext*> kv_committed;
+  deque<DeferredBatch*> deferred_stable;
   dout(10) << __func__ << " start" << dendl;
   //std::unique_lock<std::mutex> l(kv_finalize_lock);
   //assert(!kv_finalize_started);
@@ -8614,8 +8640,8 @@ void BlueStore::_kv_finalize_thread(uint32_t tid)
   while (true) {
     assert(kv_committed.empty());
     assert(deferred_stable.empty());
-    if (kv_committing_to_finalize.empty() &&
-	deferred_stable_to_finalize.empty()) {
+    if (kv_final_shard->kv_committed.empty() &&
+	kv_final_shard->deferred_stable.empty()) {
       if (kv_final_shard->kv_finalize_thread_stop)
 	break;
       dout(20) << __func__ << " sleep" << dendl;
@@ -8623,40 +8649,9 @@ void BlueStore::_kv_finalize_thread(uint32_t tid)
       kv_final_shard->kv_final_cond_shard.wait(l);
       dout(20) << __func__ << " wake" << dendl;
     } else {
-      //kv_committed.swap(kv_committing_to_finalize);
-      //deferred_stable.swap(deferred_stable_to_finalize);
+      kv_committed.swap(kv_final_shard->kv_committed);
+      deferred_stable.swap(kv_final_shard->deferred_stable);
       l.unlock();
-      {
-        std::unique_lock<std::mutex> fl(kv_finalize_lock);
-        while (!kv_committing_to_finalize.empty()){
-           TransContext *txc = kv_committing_to_finalize.front();
-           if ( tid== txc->osr->parent->shard_hint.hash_to_shard(
-                              kv_final_thread_list.size())){
-             kv_committed.push_back(txc);
-           }else {
-             temp_committed.push_back(txc);
-           }
-            kv_committing_to_finalize.pop_front();
-         }
-            kv_committing_to_finalize.swap(temp_committed);
-            temp_committed.clear();
-         while (!deferred_stable_to_finalize.empty()) {
-             auto b = deferred_stable_to_finalize.front();
-             auto p = b->txcs.begin();
-             TransContext *txc = &*p;
-             if ( tid== txc->osr->parent->shard_hint.hash_to_shard(
-                             kv_final_thread_list.size())){
-                deferred_stable.push_back(b);
-             }
-             else {
-               temp_stable.push_back(b);
-             }
-             deferred_stable_to_finalize.pop_front();
-         }
-         deferred_stable_to_finalize.swap(temp_stable);
-         temp_stable.clear();
-      }
-
       dout(20) << __func__ << " kv_committed " << kv_committed << dendl;
       dout(20) << __func__ << " deferred_stable " << deferred_stable << dendl;
 
