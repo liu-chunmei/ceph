@@ -415,25 +415,35 @@ seastar::future<> OSD::store_maps(ceph::os::Transaction& t,
       return seastar::now();
     } else if (auto p = m->incremental_maps.find(e);
                p != m->incremental_maps.end()) {
-      OSDMap::Incremental inc;
-      auto i = p->second.cbegin();
-      inc.decode(i);
-      return load_map_bl(e - 1)
-        .then([&t, e, inc=std::move(inc), this](bufferlist bl) {
-          auto o = std::make_unique<OSDMap>();
-          o->decode(bl);
-          o->apply_incremental(inc);
-          bufferlist fbl;
-          o->encode(fbl, inc.encode_features | CEPH_FEATURE_RESERVED);
-          store_map_bl(t, e, std::move(fbl));
-          osdmaps.insert(e, std::move(o));
-          return seastar::now();
+      return load_map(e-1).then([e, bl=p->second, &t, this](auto o) {
+        OSDMap::Incremental inc;
+        auto i = bl.cbegin();
+        inc.decode(i);
+        o->apply_incremental(inc);
+        bufferlist fbl;
+        o->encode(fbl, inc.encode_features | CEPH_FEATURE_RESERVED);
+        store_map_bl(t, e, std::move(fbl));
+        osdmaps.insert(e, std::move(o));
+        return seastar::now();
       });
     } else {
       logger().error("MOSDMap lied about what maps it had?");
       return seastar::now();
     }
   });
+}
+seastar::future<std::unique_ptr<OSDMap>> OSD::load_map(epoch_t e)
+{
+  logger().info("calling load_map");
+  auto o = std::make_unique<OSDMap>();
+  if (e > 0) {
+    return load_map_bl(e).then([e, o=std::move(o), this](bufferlist bl) mutable {
+      o->decode(bl);
+      return seastar::make_ready_future<unique_ptr<OSDMap>>(std::move(o));
+    });
+  } else {
+    return seastar::make_ready_future<unique_ptr<OSDMap>>(std::move(o));
+  }
 }
 
 seastar::future<> OSD::osdmap_subscribe(version_t epoch, bool force_request)
