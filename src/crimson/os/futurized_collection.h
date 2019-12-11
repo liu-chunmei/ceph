@@ -6,10 +6,12 @@
 #include <boost/intrusive_ptr.hpp>
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <seastar/core/future.hh>
+#include <seastar/core/future-util.hh>
 
 #include "osd/osd_types.h"
 
 namespace crimson::os {
+class FuturizedStore;
 
 class FuturizedCollection
   : public boost::intrusive_ref_counter<FuturizedCollection,
@@ -25,6 +27,10 @@ public:
   virtual seastar::future<bool> flush_commit() {
     return seastar::make_ready_future<bool>(true);
   }
+  virtual seastar::future<> clear(FuturizedStore* store) {
+    return seastar::now();
+  }
+
   const coll_t& get_cid() const {
     return cid;
   }

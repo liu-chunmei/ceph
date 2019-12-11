@@ -28,6 +28,7 @@
 #include "include/ceph_features.h"
 #include "include/health.h"
 #include "include/CompatSet.h"
+#include "include/common_fwd.h"
 
 #include "common/Clock.h"
 #include "common/Formatter.h"
@@ -36,7 +37,6 @@
 
 #include "mds/mdstypes.h"
 
-class CephContext;
 class health_check_map_t;
 
 #define MDS_FEATURE_INCOMPAT_BASE CompatSet::Feature(1, "base v0.20")

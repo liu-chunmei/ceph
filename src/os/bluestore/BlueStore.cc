@@ -10582,6 +10582,47 @@ int BlueStore::omap_get_values(
 	   << dendl;
   return r;
 }
+#ifdef WITH_SEASTAR
+int BlueStore::omap_get_values(
+  CollectionHandle &c_,        ///< [in] Collection containing oid
+  const ghobject_t &oid,       ///< [in] Object containing omap
+  const std::optional<string> &start_after,     ///< [in] Keys to get
+  map<string, bufferlist> *output ///< [out] Returned keys and values
+  )
+{
+  Collection *c = static_cast<Collection *>(c_.get());
+  dout(15) << __func__ << " " << c->get_cid() << " oid " << oid << dendl;
+  if (!c->exists)
+    return -ENOENT;
+  std::shared_lock l(c->lock);
+  int r = 0;
+  OnodeRef o = c->get_onode(oid, false);
+  if (!o || !o->exists) {
+    r = -ENOENT;
+    goto out;
+  }
+  if (!o->onode.has_omap()) {
+    goto out;
+  }
+  o->flush();
+  {
+    ObjectMap::ObjectMapIterator iter = get_omap_iterator(c_, oid);
+    if (!iter) {
+      r = -ENOENT;
+      goto out;
+    }
+    iter->upper_bound(*start_after);
+    for (; iter->valid(); iter->next()) {
+      output->insert(make_pair(iter->key(), iter->value()));
+    }
+  }
+
+ out:
+  dout(10) << __func__ << " " << c->get_cid() << " oid " << oid << " = " << r
+	   << dendl;
+  return r;
+}
+#endif
 
 int BlueStore::omap_check_keys(
   CollectionHandle &c_,    ///< [in] Collection containing oid
@@ -12192,9 +12233,10 @@ int BlueStore::queue_transactions(
   }
 
   _txc_finalize_kv(txc, txc->t);
+#ifndef WITH_SEASTAR
   if (handle)
     handle->suspend_tp_timeout();
-
+#endif
   auto tstart = mono_clock::now();
 
   if (!throttle.try_start_transaction(
@@ -12218,10 +12260,10 @@ int BlueStore::queue_transactions(
     --deferred_aggressive;
   }
   auto tend = mono_clock::now();
-
+#ifndef WITH_SEASTAR
   if (handle)
     handle->reset_tp_timeout();
-
+#endif
   logger->inc(l_bluestore_txc);
 
   // execute (start)

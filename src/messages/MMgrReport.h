@@ -19,9 +19,10 @@
 
 #include "msg/Message.h"
 #include "mgr/OSDPerfMetricTypes.h"
+#include "mgr/DaemonHealthMetric.h"
 
 #include "common/perf_counters.h"
-#include "mgr/DaemonHealthMetric.h"
+#include "include/common_fwd.h"
 
 class PerfCounterType
 {

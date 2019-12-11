@@ -134,7 +134,7 @@ int MDSDaemon::asok_command(std::string_view command, const cmdmap_t& cmdmap,
     } else {
       try {
 	r = mds_rank->handle_asok_command(command, cmdmap, f, ss);
-      } catch (const bad_cmd_get& e) {
+      } catch (const TOPNSPC::common::bad_cmd_get& e) {
 	ss << e.what();
 	r = -EINVAL;
       }
@@ -495,13 +495,13 @@ void MDSDaemon::handle_command(const cref_t<MCommand> &m)
     r = -EINVAL;
     ss << "no command given";
     outs = ss.str();
-  } else if (!cmdmap_from_json(m->cmd, &cmdmap, ss)) {
+  } else if (!TOPNSPC::common::cmdmap_from_json(m->cmd, &cmdmap, ss)) {
     r = -EINVAL;
     outs = ss.str();
   } else {
     try {
       r = _handle_command(cmdmap, m, &outbl, &outs, &run_after, &need_reply);
-    } catch (const bad_cmd_get& e) {
+    } catch (const TOPNSPC::common::bad_cmd_get& e) {
       outs = e.what();
       r = -EINVAL;
     }
@@ -611,7 +611,7 @@ int MDSDaemon::_handle_command(
     for (auto& c : get_commands()) {
       ostringstream secname;
       secname << "cmd" << setfill('0') << std::setw(3) << cmdnum;
-      dump_cmddesc_to_json(f.get(), m->get_connection()->get_features(),
+      TOPNSPC::common::dump_cmddesc_to_json(f.get(), m->get_connection()->get_features(),
                            secname.str(), c.cmdstring, c.helpstring,
 			   c.module, "*", 0);
       cmdnum++;
@@ -723,7 +723,7 @@ int MDSDaemon::_handle_command(
 	  ss << "unrecognized command! " << prefix;
 	  r = -EINVAL;
 	}
-      } catch (const bad_cmd_get& e) {
+      } catch (const TOPNSPC::common::bad_cmd_get& e) {
 	ss << e.what();
 	r = -EINVAL;
       }

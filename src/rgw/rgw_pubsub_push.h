@@ -5,6 +5,7 @@
 #include <string>
 #include <memory>
 #include <stdexcept>
+#include "include/common_fwd.h"
 #include "include/buffer_fwd.h"
 #include "common/async/yield_context.h"
 
@@ -12,7 +13,6 @@
 class RGWDataSyncEnv;
 class RGWCoroutine;
 class RGWHTTPArgs;
-class CephContext;
 struct rgw_pubsub_event;
 struct rgw_pubsub_s3_record;
 

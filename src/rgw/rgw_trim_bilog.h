@@ -20,9 +20,9 @@
 #include <memory>
 #include <boost/utility/string_view.hpp>
 #include "include/encoding.h"
+#include "include/common_fwd.h"
 #include "common/ceph_time.h"
 
-class CephContext;
 class RGWCoroutine;
 class RGWHTTPManager;
 

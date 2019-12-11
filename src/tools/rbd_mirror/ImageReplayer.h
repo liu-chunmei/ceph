@@ -7,6 +7,7 @@
 #include "common/AsyncOpTracker.h"
 #include "common/ceph_mutex.h"
 #include "common/WorkQueue.h"
+#include "include/common_fwd.h"
 #include "include/rados/librados.hpp"
 #include "cls/journal/cls_journal_types.h"
 #include "cls/rbd/cls_rbd_types.h"
@@ -29,7 +30,6 @@
 #include <vector>
 
 class AdminSocketHook;
-class PerfCounters;
 
 namespace journal {
 

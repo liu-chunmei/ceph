@@ -2382,7 +2382,7 @@ public:
     std::function<void(int,const std::string&,bufferlist&)> on_finish) override {
     try {
       osd->asok_command(prefix, cmdmap, f, inbl, on_finish);
-    } catch (const bad_cmd_get& e) {
+    } catch (const TOPNSPC::common::bad_cmd_get& e) {
       bufferlist empty;
       on_finish(-EINVAL, e.what(), empty);
     }
@@ -2440,7 +2440,7 @@ void OSD::asok_command(
 	  pg->do_command(prefix, new_cmdmap, inbl, on_finish);
 	  pg->unlock();
 	  return; // the pg handler calls on_finish directly
-	} catch (const bad_cmd_get& e) {
+	} catch (const TOPNSPC::common::bad_cmd_get& e) {
 	  pg->unlock();
 	  ss << e.what();
 	  ret = -EINVAL;
@@ -3142,7 +3142,7 @@ public:
     try {
       test_ops(service, store, command, cmdmap, outss);
       out.append(outss);
-    } catch (const bad_cmd_get& e) {
+    } catch (const TOPNSPC::common::bad_cmd_get& e) {
       errss << e.what();
       r = -EINVAL;
     }

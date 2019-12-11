@@ -31,6 +31,7 @@
 /*
  * GenContext - abstract callback class
  */
+
 template <typename T>
 class GenContext {
   GenContext(const GenContext& other);
@@ -75,7 +76,9 @@ class Context {
   virtual ~Context() {}       // we want a virtual destructor!!!
   virtual void complete(int r) {
     finish(r);
+#ifndef WITH_SEASTAR
     delete this;
+#endif
   }
   virtual bool sync_complete(int r) {
     if (sync_finish(r)) {
