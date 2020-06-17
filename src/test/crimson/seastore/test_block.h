@@ -20,6 +20,27 @@ struct test_extent_desc_t {
   }
 };
 
+struct test_block_delta_t {
+  uint8_t val = 0;
+  uint16_t offset = 0;
+  uint16_t len = 0;
+
+  
+  DENC(test_block_delta_t, v, p) {
+    DENC_START(1, 1, p);
+    denc(v.val, p);
+    denc(v.offset, p);
+    denc(v.len, p);
+    DENC_FINISH(p);
+  }
+};
+
+}
+
+WRITE_CLASS_DENC_BOUNDED(crimson::os::seastore::test_block_delta_t)
+
+namespace crimson::os::seastore {
+
 inline std::ostream &operator<<(
   std::ostream &lhs, const test_extent_desc_t &rhs) {
   return lhs << "test_extent_desc_t(len=" << rhs.len
@@ -29,6 +50,8 @@ inline std::ostream &operator<<(
 struct TestBlock : crimson::os::seastore::LogicalCachedExtent {
   constexpr static segment_off_t SIZE = 4<<10;
   using Ref = TCachedExtentRef<TestBlock>;
+
+  std::vector<test_block_delta_t> delta = {};
 
   TestBlock(ceph::bufferptr &&ptr) : LogicalCachedExtent(std::move(ptr)) {}
   TestBlock(const TestBlock &other) : LogicalCachedExtent(other) {}
@@ -43,11 +66,17 @@ struct TestBlock : crimson::os::seastore::LogicalCachedExtent {
   }
 
   ceph::bufferlist get_delta() final {
-    return ceph::bufferlist();
+    ceph::bufferlist bl;
+    ::encode(delta, bl);
+    return bl;
+  }
+
+  void set_contents(char c, uint16_t offset, uint16_t len) {
+    ::memset(get_bptr().c_str() + offset, c, len);
   }
 
   void set_contents(char c) {
-    ::memset(get_bptr().c_str(), c, get_length());
+    set_contents(c, 0, get_length());
   }
 
   int checksum() {
@@ -62,7 +91,13 @@ struct TestBlock : crimson::os::seastore::LogicalCachedExtent {
   }
 
   void apply_delta(paddr_t delta_base, const ceph::bufferlist &bl) final {
-    ceph_assert(0 == "TODO");
+    auto biter = bl.begin();
+    decltype(delta) deltas;
+    ::decode(deltas, biter);
+    for (auto &&d : deltas) {
+      set_contents(d.val, d.offset, d.len);
+    }
+    set_last_committed_crc(get_crc32c());
   }
 };
 using TestBlockRef = TCachedExtentRef<TestBlock>;
