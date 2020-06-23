@@ -9,6 +9,9 @@ add_library(crimson-seastore
   lba_manager.cc
   lba_manager/btree/btree_lba_manager.cc
   lba_manager/btree/lba_btree_node_impl.cc
+  extentmap_manager/extentmap_manager.cc
+  extentmap_manager/btree/extentmap_btree_node_impl.cc
+  extentmap_manager/btree/btree_extentmap_manager.cc
   seastore.cc
 	)
 target_link_libraries(crimson-seastore

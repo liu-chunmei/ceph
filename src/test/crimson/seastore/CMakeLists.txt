@@ -7,6 +7,15 @@ target_link_libraries(
   ${CMAKE_DL_LIBS}
   crimson-seastore)
 
+add_executable(unittest_extmap_manager
+  test_extmap_manager.cc
+  ../gtest_seastar.cc)
+add_ceph_unittest(unittest_extmap_manager)
+target_link_libraries(
+  unittest_extmap_manager
+  ${CMAKE_DL_LIBS}
+  crimson-seastore)
+
 add_executable(unittest_btree_lba_manager
   test_btree_lba_manager.cc
   ../gtest_seastar.cc)
