@@ -167,6 +167,7 @@ struct paddr_le_t {
 
 std::ostream &operator<<(std::ostream &out, const paddr_t &rhs);
 
+constexpr uint32_t OBJ_ADDR_MIN = std::numeric_limits<uint32_t>::min();
 // logical addr, see LBAManager, TransactionManager
 using laddr_t = uint64_t;
 constexpr laddr_t L_ADDR_MIN = std::numeric_limits<laddr_t>::min();
@@ -175,8 +176,31 @@ constexpr laddr_t L_ADDR_NULL = std::numeric_limits<laddr_t>::max();
 constexpr laddr_t L_ADDR_ROOT = std::numeric_limits<laddr_t>::max() - 1;
 constexpr laddr_t L_ADDR_LBAT = std::numeric_limits<laddr_t>::max() - 2;
 
-using laddr_le_t = ceph_le64;
+struct laddr_le_t {
+private: 
+  laddr_t laddr;
+public:
+  laddr_le_t() = default;
+  laddr_le_t& operator=(laddr_t nv){
+    laddr = nv;
+    return *this;
+  }
+//  explicit laddr_le_t(laddr_t addr)
+//  : laddr(addr) {}
 
+  laddr_le_t(const laddr_t &addr)
+  : laddr(addr) {}
+
+  operator laddr_t() const {
+    return laddr;
+  }
+};
+inline laddr_le_t init_laddr_le_t(laddr_t addr) {
+  laddr_le_t v;
+  v = addr;
+  return v;
+}
+//using laddr_le_t = ceph_le64;
 // logical offset, see LBAManager, TransactionManager
 using extent_len_t = uint32_t;
 constexpr extent_len_t EXTENT_LEN_MAX =
@@ -200,7 +224,6 @@ struct paddr_list_t : std::list<std::pair<paddr_t, extent_len_t>> {
 
 std::ostream &operator<<(std::ostream &out, const laddr_list_t &rhs);
 std::ostream &operator<<(std::ostream &out, const paddr_list_t &rhs);
-
 /* identifies type of extent, used for interpretting deltas, managing
  * writeback */
 enum class extent_types_t : uint8_t {
@@ -209,6 +232,8 @@ enum class extent_types_t : uint8_t {
   LADDR_INTERNAL = 2,
   LADDR_LEAF = 3,
   LBA_BLOCK = 4,
+  EXTMAP_INNER = 5,
+  EXTMAP_LEAF = 6,
 
   // Test Block Types
   TEST_BLOCK = 0xF0,
