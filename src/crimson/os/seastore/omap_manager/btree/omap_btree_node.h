@@ -15,6 +15,7 @@
 namespace crimson::os::seastore::omap_manager{
 
 struct omap_context_t {
+  omap_root_t &omap_root;
   TransactionManager &tm;
   Transaction &t;
 };
@@ -45,6 +46,7 @@ struct omap_node_meta_t {
 
 struct OMapNode : LogicalCachedExtent {
   using OMapNodeRef = TCachedExtentRef<OMapNode>;
+  OMapNodeRef parent = nullptr;
 
   OMapNode(ceph::bufferptr &&ptr) : LogicalCachedExtent(std::move(ptr)) {}
   OMapNode(const OMapNode &other)
@@ -78,16 +80,16 @@ struct OMapNode : LogicalCachedExtent {
   using split_children_ertr = TransactionManager::alloc_extent_ertr;
   using split_children_ret = split_children_ertr::future
           <std::tuple<OMapNodeRef, OMapNodeRef, std::string>>;
-  virtual split_children_ret make_split_children(omap_context_t oc) = 0;
+  virtual split_children_ret make_split_children(omap_context_t oc, OMapNodeRef pnode) = 0;
 
   using full_merge_ertr = TransactionManager::alloc_extent_ertr;
   using full_merge_ret = full_merge_ertr::future<OMapNodeRef>;
-  virtual full_merge_ret make_full_merge(omap_context_t oc, OMapNodeRef right) = 0;
+  virtual full_merge_ret make_full_merge(omap_context_t oc, OMapNodeRef right, OMapNodeRef pnode) = 0;
 
   using make_balanced_ertr = TransactionManager::alloc_extent_ertr;
   using make_balanced_ret = make_balanced_ertr::future
           <std::tuple<OMapNodeRef, OMapNodeRef, std::string>>;
-  virtual make_balanced_ret make_balanced(omap_context_t oc, OMapNodeRef _right, bool prefer_left) = 0;
+  virtual make_balanced_ret make_balanced(omap_context_t oc, OMapNodeRef _right, bool prefer_left, OMapNodeRef pnode) = 0;
 
   virtual omap_node_meta_t get_node_meta() const = 0;
   virtual bool extent_is_overflow(size_t size) = 0;
@@ -98,28 +100,33 @@ struct OMapNode : LogicalCachedExtent {
   using alloc_ertr = TransactionManager::alloc_extent_ertr;
   template<class T>
   alloc_ertr::future<TCachedExtentRef<T>>
-  omap_alloc_extent(omap_context_t oc, extent_len_t len) {
+  omap_alloc_extent(omap_context_t oc, OMapNodeRef pnode, extent_len_t len) {
     return oc.tm.alloc_extent<T>(oc.t, L_ADDR_MIN, len).safe_then(
-      [this](auto&& extent) {
+      [this, pnode](auto&& extent) {
+      extent->parent = pnode;
       return alloc_ertr::make_ready_future<TCachedExtentRef<T>>(std::move(extent));
     });
   }
 
   template<class T>
   alloc_ertr::future<std::pair<TCachedExtentRef<T>, TCachedExtentRef<T>>>
-  omap_alloc_2extents(omap_context_t oc, extent_len_t len) {
+  omap_alloc_2extents(omap_context_t oc, OMapNodeRef pnode, extent_len_t len) {
     return seastar::do_with(std::pair<TCachedExtentRef<T>, TCachedExtentRef<T>>(),
-      [this, oc, len] (auto &extents) {
+      [this, oc, pnode, len] (auto &extents) {
       return crimson::do_for_each(
                       boost::make_counting_iterator(0),
                       boost::make_counting_iterator(2),
-        [this, oc, len, &extents] (auto i) {
+        [this, oc, pnode, len, &extents] (auto i) {
         return oc.tm.alloc_extent<T>(oc.t, L_ADDR_MIN, len).safe_then(
-          [this, i, &extents](auto &&node) {
-          if (i == 0)
+          [this, i, pnode, &extents](auto &&node) {
+          if (i == 0) {
+            node->parent = pnode;
             extents.first = node;
-          if (i == 1)
+          }  
+          if (i == 1) {
+            node->parent = pnode;
             extents.second = node;
+          }
         });
       }).safe_then([&extents] {
         return alloc_ertr::make_ready_future
@@ -152,6 +159,6 @@ struct OMapNode : LogicalCachedExtent {
 using OMapNodeRef = OMapNode::OMapNodeRef;
 
 TransactionManager::read_extent_ertr::future<OMapNodeRef>
-omap_load_extent(omap_context_t oc, laddr_t laddr, depth_t depth);
+omap_load_extent(omap_context_t oc, OMapNodeRef pnode, laddr_t laddr, depth_t depth);
 
 }

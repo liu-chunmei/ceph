@@ -19,8 +19,8 @@ namespace crimson::os::seastore::omap_manager {
 class BtreeOMapManager : public OMapManager {
   TransactionManager &tm;
 
-  omap_context_t get_omap_context(Transaction &t) {
-    return omap_context_t{tm, t};
+  omap_context_t get_omap_context(omap_root_t &omap_root, Transaction &t) {
+    return omap_context_t{omap_root, tm, t};
   }
 
   /* get_omap_root
@@ -29,7 +29,7 @@ class BtreeOMapManager : public OMapManager {
    */
   using get_root_ertr = TransactionManager::read_extent_ertr;
   using get_root_ret = get_root_ertr::future<OMapNodeRef>;
-  get_root_ret get_omap_root(const omap_root_t &omap_root, Transaction &t);
+  get_root_ret get_omap_root(omap_root_t &omap_root, Transaction &t);
 
   using insert_key_ertr = TransactionManager::read_extent_ertr;
   using insert_key_ret = insert_key_ertr::future<std::pair<std::string, std::string>>;
@@ -42,7 +42,7 @@ public:
 
   initialize_omap_ret initialize_omap(Transaction &t) final;
 
-  omap_get_value_ret omap_get_value(const omap_root_t &omap_root, Transaction &t,
+  omap_get_value_ret omap_get_value(omap_root_t &omap_root, Transaction &t,
 		                    const std::string &key) final;
 
   omap_set_key_ret omap_set_key(omap_root_t &omap_root, Transaction &t,

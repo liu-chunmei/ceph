@@ -112,12 +112,12 @@ struct OMapInnerNode
 
   clear_ret clear(omap_context_t oc) final;
 
-  split_children_ret make_split_children(omap_context_t oc) final;
+  split_children_ret make_split_children(omap_context_t oc, OMapNodeRef pnode) final;
 
-  full_merge_ret make_full_merge(omap_context_t oc, OMapNodeRef right) final;
+  full_merge_ret make_full_merge(omap_context_t oc, OMapNodeRef right, OMapNodeRef pnode) final;
 
   make_balanced_ret
-    make_balanced(omap_context_t oc, OMapNodeRef right, bool prefer_left) final;
+    make_balanced(omap_context_t oc, OMapNodeRef right, bool prefer_left, OMapNodeRef pnode) final;
 
   std::ostream &print_detail_l(std::ostream &out) const final;
 
@@ -242,11 +242,12 @@ struct OMapLeafNode
 
   clear_ret clear(omap_context_t oc) final;
 
-  split_children_ret make_split_children(omap_context_t oc) final;
+  split_children_ret make_split_children(omap_context_t oc, OMapNodeRef pnode) final;
 
-  full_merge_ret make_full_merge(omap_context_t oc, OMapNodeRef right) final;
+  full_merge_ret make_full_merge(omap_context_t oc, OMapNodeRef right, OMapNodeRef pnode) final;
 
-  make_balanced_ret make_balanced(omap_context_t oc, OMapNodeRef _right, bool prefer_left) final;
+  make_balanced_ret make_balanced(omap_context_t oc, OMapNodeRef _right, bool prefer_left,
+                                  OMapNodeRef pnode) final;
 
   extent_types_t get_type() const final {
     return type;

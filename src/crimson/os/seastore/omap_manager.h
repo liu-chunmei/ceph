@@ -46,7 +46,7 @@ public:
    */
   using omap_get_value_ertr = TransactionManager::read_extent_ertr;
   using omap_get_value_ret = omap_get_value_ertr::future<std::pair<std::string, std::string>>;
-  virtual omap_get_value_ret omap_get_value(const omap_root_t &omap_root, Transaction &t,
+  virtual omap_get_value_ret omap_get_value(omap_root_t &omap_root, Transaction &t,
 		                            const std::string &key) = 0;
 
   /* set value by key
