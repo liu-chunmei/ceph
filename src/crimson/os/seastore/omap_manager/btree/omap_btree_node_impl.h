@@ -77,7 +77,7 @@ struct OMapInnerNode
     StringKVInnerNodeLayout<
     omap_node_meta_t, omap_node_meta_le_t,
     omap_inner_key_t, omap_inner_key_le_t> {
-
+  using OMapInnerNodeRef = TCachedExtentRef<OMapInnerNode>;
   using internal_iterator_t = const_iterator;
   template <typename... T>
   OMapInnerNode(T&&... t) :
@@ -144,6 +144,18 @@ struct OMapInnerNode
   split_entry_ret split_entry(omap_context_t oc, std::string &key,
                               internal_iterator_t, OMapNodeRef entry);
 
+  using make_split_entry_ertr = TransactionManager::read_extent_ertr;
+  using make_split_entry_ret = make_split_entry_ertr::future
+        <std::tuple<OMapNodeRef, OMapNodeRef, std::string>>;
+  make_split_entry_ret make_split_entry(omap_context_t oc, std::string key,
+                              internal_iterator_t, OMapNodeRef entry);
+
+  using checking_parent_ertr = TransactionManager::read_extent_ertr;
+  using checking_parent_ret = checking_parent_ertr::future
+        <std::pair<OMapInnerNodeRef, internal_iterator_t>>;
+  checking_parent_ret checking_parent(omap_context_t oc, std::string key,
+                                     internal_iterator_t, OMapInnerNodeRef entry);
+
   using merge_entry_ertr = TransactionManager::read_extent_ertr;
   using merge_entry_ret = merge_entry_ertr::future<OMapNodeRef>;
   merge_entry_ret merge_entry(omap_context_t oc, const std::string &key,
@@ -152,7 +164,7 @@ struct OMapInnerNode
   internal_iterator_t get_containing_child(const std::string &key);
 
 };
-
+using OMapInnerNodeRef = OMapInnerNode::OMapInnerNodeRef;
 /**
  * OMapLeafNode
  *

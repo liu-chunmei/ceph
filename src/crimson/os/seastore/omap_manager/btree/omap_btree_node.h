@@ -102,7 +102,7 @@ struct OMapNode : LogicalCachedExtent {
   alloc_ertr::future<TCachedExtentRef<T>>
   omap_alloc_extent(omap_context_t oc, OMapNodeRef pnode, extent_len_t len) {
     return oc.tm.alloc_extent<T>(oc.t, L_ADDR_MIN, len).safe_then(
-      [this, pnode](auto&& extent) {
+      [pnode](auto&& extent) {
       extent->parent = pnode;
       return alloc_ertr::make_ready_future<TCachedExtentRef<T>>(std::move(extent));
     });
@@ -112,13 +112,13 @@ struct OMapNode : LogicalCachedExtent {
   alloc_ertr::future<std::pair<TCachedExtentRef<T>, TCachedExtentRef<T>>>
   omap_alloc_2extents(omap_context_t oc, OMapNodeRef pnode, extent_len_t len) {
     return seastar::do_with(std::pair<TCachedExtentRef<T>, TCachedExtentRef<T>>(),
-      [this, oc, pnode, len] (auto &extents) {
+      [oc, pnode, len] (auto &extents) {
       return crimson::do_for_each(
                       boost::make_counting_iterator(0),
                       boost::make_counting_iterator(2),
-        [this, oc, pnode, len, &extents] (auto i) {
+        [oc, pnode, len, &extents] (auto i) {
         return oc.tm.alloc_extent<T>(oc.t, L_ADDR_MIN, len).safe_then(
-          [this, i, pnode, &extents](auto &&node) {
+          [i, pnode, &extents](auto &&node) {
           if (i == 0) {
             node->parent = pnode;
             extents.first = node;
@@ -142,9 +142,9 @@ struct OMapNode : LogicalCachedExtent {
   retire_ret
   omap_retire_node(omap_context_t oc, std::list<laddr_t> dec_laddrs) {
     return seastar::do_with(std::move(dec_laddrs), std::list<unsigned>(),
-      [this, oc] (auto &&dec_laddrs, auto &refcnt) {
+      [oc] (auto &&dec_laddrs, auto &refcnt) {
       return crimson::do_for_each(dec_laddrs.begin(), dec_laddrs.end(),
-        [this, oc, &refcnt] (auto &laddr) {
+        [oc, &refcnt] (auto &laddr) {
         return oc.tm.dec_ref(oc.t, laddr).safe_then([&refcnt] (auto ref) {
           refcnt.push_back(ref);
         });

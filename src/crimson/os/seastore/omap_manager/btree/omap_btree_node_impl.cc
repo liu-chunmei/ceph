@@ -177,40 +177,136 @@ OMapInnerNode::make_balanced(omap_context_t oc, OMapNodeRef _right,
   });
 }
 
-OMapInnerNode::split_entry_ret
-OMapInnerNode::split_entry(omap_context_t oc, std::string &key,
+OMapInnerNode::checking_parent_ret
+OMapInnerNode::checking_parent(omap_context_t oc, std::string key,
+               internal_iterator_t iter, OMapInnerNodeRef entry)
+{
+  logger().debug("{}: {}","OMapInnerNode",  __func__);
+  if (extent_is_overflow(key.size() + 1)){
+    if (get_node_meta().depth == oc.omap_root.depth) { //root node
+      assert (parent == nullptr);
+      logger().debug("{}: {}----{}","OMapInnerNode",  __func__, "root");
+      return omap_alloc_extent<OMapInnerNode>(oc, nullptr, OMAP_BLOCK_SIZE)
+        .safe_then([this, oc, key, iter, entry](auto&& nroot) {
+        omap_node_meta_t meta{get_node_meta().depth + 1};
+        nroot->set_meta(meta);
+        entry->parent = nroot;
+        omap_inner_key_t node_key;
+        node_key.laddr = get_laddr();
+        node_key.key_off = 1;
+        node_key.key_len = 1;
+        nroot->journal_inner_insert(nroot->iter_begin(), node_key, "\0", nullptr);
+        oc.omap_root.omap_root_laddr = nroot->get_laddr();
+        oc.omap_root.depth = get_node_meta().depth + 1;
+        oc.omap_root.state = omap_root_state_t::MUTATED;
+        return nroot->make_split_entry(oc, key, nroot->iter_begin(), entry)
+          .safe_then([key, iter] (auto tuple) {
+          auto left_node = std::get<0>(tuple);
+          auto left = TCachedExtentRef<OMapInnerNode>(static_cast<OMapInnerNode*>(left_node.get()));
+          auto right_node = std::get<1>(tuple);
+          auto right = TCachedExtentRef<OMapInnerNode>(static_cast<OMapInnerNode*>(right_node.get()));
+          auto pivot = std::get<2>(tuple);
+          if (pivot >key)
+            return checking_parent_ret(
+                   checking_parent_ertr::ready_future_marker{},
+                   std::make_pair(left, left->iter_idx(iter.get_index())));
+          else
+            return checking_parent_ret(
+                   checking_parent_ertr::ready_future_marker{},
+                   std::make_pair(right,
+                    right->iter_idx(iter.get_index() - left->get_size())));
+         });
+      });
+    } else {
+      logger().debug("{}: {}----{}","OMapInnerNode",  __func__, "parent");
+      auto parent_key = iter_begin().get_node_val();
+      auto parent_entry = TCachedExtentRef<OMapInnerNode>(static_cast<OMapInnerNode*>(parent.get()));
+      auto parent_ite = parent_entry->get_containing_child(parent_key);
+      return parent_entry->make_split_entry(oc, key, parent_ite, entry)
+        .safe_then([iter, key] (auto tuple){
+          //auto [left, right, pivot] = tuple;
+          auto left_node = std::get<0>(tuple);
+          auto left = TCachedExtentRef<OMapInnerNode>(static_cast<OMapInnerNode*>(left_node.get()));
+          auto right_node = std::get<1>(tuple);
+          auto right = TCachedExtentRef<OMapInnerNode>(static_cast<OMapInnerNode*>(right_node.get()));
+          auto pivot = std::get<2>(tuple);
+          if (pivot >key)
+            return checking_parent_ret(
+                   checking_parent_ertr::ready_future_marker{},
+                   std::make_pair(left, left->iter_idx(iter.get_index())));
+          else
+            return checking_parent_ret(
+                   checking_parent_ertr::ready_future_marker{},
+                   std::make_pair(right,
+                     right->iter_idx(iter.get_index() - left->get_size())));
+      });
+    }
+  } else {
+    logger().debug("{}: {}----{}","OMapInnerNode",  __func__, "parent not overflow");
+    return checking_parent_ret(
+      checking_parent_ertr::ready_future_marker{},
+      std::make_pair(entry, iter));
+  }
+}
+
+
+OMapInnerNode::make_split_entry_ret
+OMapInnerNode::make_split_entry(omap_context_t oc, std::string key,
 	                     internal_iterator_t iter, OMapNodeRef entry)
 {
   logger().debug("{}: {}","OMapInnerNode",  __func__);
   if (!is_pending()) {
     auto mut = oc.tm.get_mutable_extent(oc.t, this)->cast<OMapInnerNode>();
     auto mut_iter = mut->iter_idx(iter->get_index());
-    return mut->split_entry(oc, key, mut_iter, entry);
+    mut->parent = this->parent;
+    return mut->make_split_entry(oc, key, mut_iter, entry);
   }
   ceph_assert(!extent_is_overflow(key.size() + 1));
   return entry->make_split_children(oc, this)
-    .safe_then([this, oc, &key, iter, entry] (auto tuple){
+    .safe_then([this, oc, key, iter, entry] (auto tuple){
     auto [left, right, pivot] = tuple;
+    logger().debug(
+       "{}: *this {} entry {} into left {} right {}", __func__,
+       *this, *entry, *left, *right);
+
     auto left_key = iter.get_node_key();
     left_key.laddr = left->get_laddr();
     journal_inner_update(iter, left_key, maybe_get_delta_buffer());
-    omap_inner_key_t right_key;
-    right_key.laddr = right->get_laddr();
-    right_key.key_off = iter.get_node_key().key_off + pivot.size() + 1;
-    right_key.key_len = pivot.size() + 1;
-    journal_inner_insert(iter + 1, right_key, pivot, maybe_get_delta_buffer());
-    logger().debug(
-      "{}: *this {} entry {} into left {} right {}", __func__, 
-      *this, *entry, *left, *right);
-    //retire extent
-    return oc.tm.dec_ref(oc.t, entry->get_laddr())
-      .safe_then([&key, left, right, pivot] (auto ret) {
-      return split_entry_ertr::make_ready_future<OMapNodeRef>(
-             pivot > key  ? left : right);
+    return checking_parent(oc, pivot, iter+1, this) 
+      .safe_then([oc, left = left, right = right, pivot = pivot, entry] (auto pair) {
+      auto [extent, iter] = pair;
+      omap_inner_key_t right_key;
+      right_key.laddr = right->get_laddr();
+      right_key.key_len = pivot.size() + 1;
+      right_key.key_off = iter.get_index() == 0 ?
+                          right_key.key_len :
+                          (iter - 1).get_node_key().key_off + pivot.size() + 1;
+      extent->journal_inner_insert(iter, right_key, pivot,
+                       extent->maybe_get_delta_buffer());
+      //retire extent
+      return oc.tm.dec_ref(oc.t, entry->get_laddr())
+        .safe_then([left, right, pivot] (auto ret) {
+        return make_split_entry_ret(
+          make_split_entry_ertr::ready_future_marker{},
+          std::make_tuple(left, right, pivot));
+      });
     });
   });
   
 }
+
+OMapInnerNode::split_entry_ret
+OMapInnerNode::split_entry(omap_context_t oc, std::string &key,
+                      internal_iterator_t iter, OMapNodeRef entry)
+{
+  logger().debug("{}: {}","OMapInnerNode",  __func__);
+  return make_split_entry(oc, key, iter, entry).safe_then([&key] (auto tuple) {
+    auto [left, right, pivot] = tuple;
+    return split_entry_ertr::make_ready_future<OMapNodeRef>(
+       pivot > key ? left: right);
+  });
+}
+
 
 OMapInnerNode::merge_entry_ret
 OMapInnerNode::merge_entry(omap_context_t oc, const std::string &key,
@@ -254,26 +350,33 @@ OMapInnerNode::merge_entry(omap_context_t oc, const std::string &key,
     } else {
       logger().debug("{}::merge_entry balanced l {} r {}", __func__, *l, *r);
       return l->make_balanced(oc, r, !is_left, this)
-        .safe_then([this, oc, &key, iter, entry, donor_iter, is_left, l, r, liter, riter]
+        .safe_then([this, oc, &key, iter, entry, donor_iter, is_left, l = l, r = r, liter, riter]
         (auto tuple) {
         auto [replacement_l, replacement_r, pivot] = tuple;
-        auto replace_key = liter.get_node_key();
-        replace_key.laddr = replacement_l->get_laddr();
-        journal_inner_update(liter, replace_key, maybe_get_delta_buffer());
+        auto left_key = liter.get_node_key();
+        left_key.laddr = replacement_l->get_laddr();
+        journal_inner_update(liter, left_key, maybe_get_delta_buffer());
 
-        omap_inner_key_t right_key;
-        right_key.laddr = replacement_r->get_laddr();
-        right_key.key_len = pivot.size() + 1;
-        right_key.key_off = liter.get_node_key().key_off + right_key.key_len;
-        journal_inner_replace(riter, right_key, pivot, maybe_get_delta_buffer());
-        // retire extent
-        std::list<laddr_t> dec_laddrs;
-        dec_laddrs.push_back(l->get_laddr());
-        dec_laddrs.push_back(r->get_laddr());
-        return omap_retire_node(oc, dec_laddrs)
-          .safe_then([&key, pivot, replacement_l, replacement_r] (auto &&ret) {
+        return checking_parent(oc, pivot, riter, this)
+          .safe_then([oc, &key, pivot, l = l, r = r, replacement_l = replacement_l,
+           replacement_r = replacement_r, entry] (auto pair) {
+           auto [extent, riter] = pair;
+           omap_inner_key_t right_key;
+           right_key.laddr = replacement_r->get_laddr();
+           right_key.key_len = pivot.size() + 1;
+           right_key.key_off = riter.get_index() == 0?
+                               right_key.key_len :
+                               (riter - 1).get_node_key().key_off + right_key.key_len;
+           extent->journal_inner_replace(riter, right_key, pivot, extent->maybe_get_delta_buffer());
+          // retire extent
+          std::list<laddr_t> dec_laddrs;
+          dec_laddrs.push_back(l->get_laddr());
+          dec_laddrs.push_back(r->get_laddr());
+          return extent->omap_retire_node(oc, dec_laddrs)
+            .safe_then([&key, pivot, replacement_l, replacement_r] (auto &&ret) {
             return merge_entry_ertr::make_ready_future<OMapNodeRef>(
-               key >= pivot ? replacement_r : replacement_l);
+                   key >= pivot ? replacement_r : replacement_l);
+          });
         });
       });
     }
