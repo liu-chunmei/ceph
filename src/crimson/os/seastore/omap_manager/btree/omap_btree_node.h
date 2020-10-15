@@ -73,6 +73,10 @@ struct OMapNode : LogicalCachedExtent {
   virtual list_ret list(omap_context_t oc,
                 std::vector<std::pair<std::string, std::string>> &result) = 0;
 
+  using dump_node_ertr = OMapManager::omap_list_ertr;
+  using dump_node_ret = dump_node_ertr::future<>;
+  virtual dump_node_ret dump_node(omap_context_t oc) = 0;
+
   using clear_ertr = OMapManager::omap_clear_ertr;
   using clear_ret = clear_ertr::future<>;
   virtual clear_ret clear(omap_context_t oc) = 0;

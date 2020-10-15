@@ -109,6 +109,8 @@ struct OMapInnerNode
   list_keys_ret list_keys(omap_context_t oc, std::vector<std::string> &result) final;
 
   list_ret list(omap_context_t oc, std::vector<std::pair<std::string, std::string>> &result) final;
+  
+  dump_node_ret dump_node(omap_context_t oc) final;
 
   clear_ret clear(omap_context_t oc) final;
 
@@ -251,6 +253,8 @@ struct OMapLeafNode
   list_keys_ret list_keys(omap_context_t oc, std::vector<std::string> &result) final;
 
   list_ret list(omap_context_t oc, std::vector<std::pair<std::string, std::string>> &result) final;
+
+  dump_node_ret dump_node(omap_context_t oc) final;
 
   clear_ret clear(omap_context_t oc) final;
 

@@ -23,6 +23,7 @@ namespace {
 
 struct omap_manager_test_t : public seastar_test_suite_t {
   std::unique_ptr<SegmentManager> segment_manager;
+  SegmentCleaner segment_cleaner;
   Journal journal;
   Cache cache;
   LBAManagerRef lba_manager;
@@ -31,12 +32,17 @@ struct omap_manager_test_t : public seastar_test_suite_t {
 
   omap_manager_test_t()
     : segment_manager(create_ephemeral(segment_manager::DEFAULT_TEST_EPHEMERAL)),
+      segment_cleaner(SegmentCleaner::config_t::default_from_segment_manager(
+         *segment_manager)),
       journal(*segment_manager),
       cache(*segment_manager),
       lba_manager(
         lba_manager::create_lba_manager(*segment_manager, cache)),
-        tm(*segment_manager, journal, cache, *lba_manager),
-        omap_manager(omap_manager::create_omap_manager(tm)) {}
+        tm(*segment_manager, segment_cleaner, journal, cache, *lba_manager),
+        omap_manager(omap_manager::create_omap_manager(tm)) {
+         journal.set_segment_provider(&segment_cleaner);
+         segment_cleaner.set_extent_callback(&tm);
+        }
 
   seastar::future<> set_up_fut() final {
     return segment_manager->init().safe_then([this] {
@@ -159,7 +165,7 @@ char* rand_string(char* str, const int len)
   str[++i] = '\0';
   return str;
 }
-
+/*
 TEST_F(omap_manager_test_t, basic)    //worked
 {
   run_async([this] {
@@ -377,3 +383,36 @@ TEST_F(omap_manager_test_t, force_split_listkeys_list_clear) //worked
   });
 }
 
+*/
+TEST_F(omap_manager_test_t, force_split) //
+{
+  run_async([this] {
+    omap_root_t omap_root(0, L_ADDR_NULL);
+    {
+      auto t = tm.create_transaction();
+      omap_root = omap_manager->initialize_omap(*t).unsafe_get0();
+      tm.submit_transaction(std::move(t)).unsafe_get();
+    }
+    const int STR_LEN = 300;
+    char str[STR_LEN + 1];
+
+    for (unsigned i = 0; i < 8; i++) {
+      logger().debug("opened split transaction");
+      auto t = tm.create_transaction();
+      [[maybe_unused]] auto ret1 = list_keys(omap_root, *t);
+
+      for (unsigned j = 0; j < 80; ++j) {
+        string key(rand_string(str, rand() % STR_LEN));
+        string val(rand_string(str, rand() % STR_LEN));
+        [[maybe_unused]] auto addref = set_key(omap_root, *t, key, val);
+        if ((i % 2 == 0) && (j % 50 == 0)) {
+          check_mappings(omap_root, *t);
+        }
+      }
+      [[maybe_unused]] auto ret2 = list_keys(omap_root, *t);
+      logger().debug("submitting transaction");
+      tm.submit_transaction(std::move(t)).unsafe_get();
+    }
+    check_mappings(omap_root);
+  });
+}

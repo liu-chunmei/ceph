@@ -148,16 +148,18 @@ public:
       auto tail = node->buf + BlockSize;
       if ( *this == node->iter_end())
         return tail;
-      else 
-        return tail - static_cast<int>(get_node_key().key_off); 
+      else {
+        return tail - static_cast<uint32_t>(get_node_key().key_off);
+      }
     }
 
     const char *get_node_val_ptr() const {
       auto tail = node->buf + BlockSize;
       if ( *this == node->iter_end())
         return tail;
-      else 
-        return tail - static_cast<int>(get_node_key().key_off);
+      else {
+        return tail - static_cast<uint32_t>(get_node_key().key_off);
+      }
     }
 
     void set_node_val(const std::string &val) {

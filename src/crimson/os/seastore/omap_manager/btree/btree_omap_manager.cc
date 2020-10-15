@@ -100,7 +100,7 @@ BtreeOMapManager::omap_list_keys(omap_root_t &omap_root, Transaction &t)
     return get_omap_root(omap_root, t).safe_then([this, &omap_root, &t, &result](auto extent) {
       return extent->list_keys(get_omap_context(omap_root, t), result);
     }).safe_then([&result]() {
-      logger().debug("{}: {}", __func__, result);
+//      logger().debug("{}: {}", __func__, result);
       return omap_list_keys_ret(
         omap_list_keys_ertr::ready_future_marker{},
         std::move(result));

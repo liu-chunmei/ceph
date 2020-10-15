@@ -8,6 +8,7 @@
 #include "crimson/os/seastore/transaction_manager.h"
 #include "crimson/os/seastore/omap_manager/btree/omap_btree_node.h"
 #include "crimson/os/seastore/omap_manager/btree/omap_btree_node_impl.h"
+#include "seastar/core/thread.hh"
 
 namespace {
   seastar::logger& logger() {
@@ -37,7 +38,7 @@ std::ostream &OMapInnerNode::print_detail_l(std::ostream &out) const
 OMapInnerNode::get_value_ret
 OMapInnerNode::get_value(omap_context_t oc, const std::string &key)
 {
-  logger().debug("{}: {}", "OMapInnerNode", __func__);
+  logger().debug("{}: {} key = {}", "OMapInnerNode", __func__, key);
   auto child_pt = get_containing_child(key);
   auto laddr = child_pt->get_node_key().laddr;
   return omap_load_extent(oc, this, laddr, get_meta().depth - 1).safe_then(
@@ -50,6 +51,7 @@ OMapInnerNode::insert_ret
 OMapInnerNode::insert(omap_context_t oc, std::string &key, std::string &value)
 {
   logger().debug("{}: {}  {}->{}", "OMapInnerNode",  __func__, key, value);
+  std::cout<<"------- insert_key = " << key <<std::endl;
   auto child_pt = get_containing_child(key);
   assert(child_pt != iter_end());
   auto laddr = child_pt->get_node_key().laddr;
@@ -84,12 +86,26 @@ OMapInnerNode::rm_key(omap_context_t oc, const std::string &key)
 
 
 }
+OMapInnerNode::dump_node_ret
+OMapInnerNode::dump_node(omap_context_t oc)
+{
+  std::cout<<"OmapInnerNode: " <<std::endl;
+  return crimson::do_for_each(iter_begin(), iter_end(),[this, oc] (auto iter) { 
+   std::cout<<"-------------Internal Node key = "<<iter->get_node_val()<<std::endl;
+    auto node_key = iter->get_node_key();
+    return omap_load_extent(oc, this, node_key.laddr, get_meta().depth -1)
+      .safe_then([oc] (auto extent) {
+         return extent->dump_node(oc);
+      });
+  });
+}
 
 OMapInnerNode::list_keys_ret
 OMapInnerNode::list_keys(omap_context_t oc, std::vector<std::string> &result)
 {
   logger().debug("{}: {}","OMapInnerNode",  __func__);
   return crimson::do_for_each(iter_begin(), iter_end(), [this, oc, &result](auto iter) {
+   std::cout<<"-------------Internal Node key = "<<iter->get_node_val()<<std::endl;
     auto laddr = iter->get_node_key().laddr;
     return omap_load_extent(oc, this, laddr, get_meta().depth - 1).safe_then(
      [oc, &result] (auto &&extent) {
@@ -185,6 +201,7 @@ OMapInnerNode::checking_parent(omap_context_t oc, std::string key,
   if (extent_is_overflow(key.size() + 1)){
     if (get_node_meta().depth == oc.omap_root.depth) { //root node
       assert (parent == nullptr);
+      asm volatile("int $3");     
       logger().debug("{}: {}----{}","OMapInnerNode",  __func__, "root");
       return omap_alloc_extent<OMapInnerNode>(oc, nullptr, OMAP_BLOCK_SIZE)
         .safe_then([this, oc, key, iter, entry](auto&& nroot) {
@@ -218,6 +235,7 @@ OMapInnerNode::checking_parent(omap_context_t oc, std::string key,
          });
       });
     } else {
+      asm volatile("int $3");     
       logger().debug("{}: {}----{}","OMapInnerNode",  __func__, "parent");
       auto parent_key = iter_begin().get_node_val();
       auto parent_entry = TCachedExtentRef<OMapInnerNode>(static_cast<OMapInnerNode*>(parent.get()));
@@ -262,18 +280,19 @@ OMapInnerNode::make_split_entry(omap_context_t oc, std::string key,
     return mut->make_split_entry(oc, key, mut_iter, entry);
   }
   ceph_assert(!extent_is_overflow(key.size() + 1));
+//  return dump_node(oc).safe_then([this, oc, key, iter, entry] {
   return entry->make_split_children(oc, this)
     .safe_then([this, oc, key, iter, entry] (auto tuple){
     auto [left, right, pivot] = tuple;
     logger().debug(
        "{}: *this {} entry {} into left {} right {}", __func__,
        *this, *entry, *left, *right);
-
+    std::cout<<"-------pivot = " << pivot<<"-----key= " << key<< std::endl;
     auto left_key = iter.get_node_key();
     left_key.laddr = left->get_laddr();
     journal_inner_update(iter, left_key, maybe_get_delta_buffer());
     return checking_parent(oc, pivot, iter+1, this) 
-      .safe_then([oc, left = left, right = right, pivot = pivot, entry] (auto pair) {
+      .safe_then([this, oc, left = left, right = right, pivot = pivot, entry] (auto pair) {
       auto [extent, iter] = pair;
       omap_inner_key_t right_key;
       right_key.laddr = right->get_laddr();
@@ -283,12 +302,15 @@ OMapInnerNode::make_split_entry(omap_context_t oc, std::string key,
                           (iter - 1).get_node_key().key_off + pivot.size() + 1;
       extent->journal_inner_insert(iter, right_key, pivot,
                        extent->maybe_get_delta_buffer());
+      //left->dump_node(oc);
+      //right->dump_node(oc);
       //retire extent
       return oc.tm.dec_ref(oc.t, entry->get_laddr())
         .safe_then([left, right, pivot] (auto ret) {
         return make_split_entry_ret(
           make_split_entry_ertr::ready_future_marker{},
           std::make_tuple(left, right, pivot));
+//      });
       });
     });
   });
@@ -299,7 +321,7 @@ OMapInnerNode::split_entry_ret
 OMapInnerNode::split_entry(omap_context_t oc, std::string &key,
                       internal_iterator_t iter, OMapNodeRef entry)
 {
-  logger().debug("{}: {}","OMapInnerNode",  __func__);
+  logger().debug("{}: {} key = {}","OMapInnerNode",  __func__, key);
   return make_split_entry(oc, key, iter, entry).safe_then([&key] (auto tuple) {
     auto [left, right, pivot] = tuple;
     return split_entry_ertr::make_ready_future<OMapNodeRef>(
@@ -471,12 +493,23 @@ OMapLeafNode::rm_key(omap_context_t oc, const std::string &key)
   }
 
 }
+OMapLeafNode::dump_node_ret
+OMapLeafNode::dump_node(omap_context_t oc)
+{
+  std::cout<<"OmapLeafNode: " <<std::endl;
+  for (auto iter = iter_begin(); iter != iter_end(); iter++) {
+   std::cout<<"---key = "<<iter->get_node_val()<<std::endl;
+//   std::cout<<"---val = "<<iter->get_string_val()<<std::endl;
+  }
+  return dump_node_ertr::make_ready_future<>();
+}
 
 OMapLeafNode::list_keys_ret
 OMapLeafNode::list_keys(omap_context_t oc, std::vector<std::string> &result)
 {
   logger().debug("{}: {}","OMapLeafNode",  __func__);
   for (auto iter = iter_begin(); iter != iter_end(); iter++) {
+   std::cout<<"-------------Leaf Node key = "<<iter->get_node_val()<<std::endl;
     result.push_back(iter->get_node_val());
   }
   return list_keys_ertr::make_ready_future<>();
