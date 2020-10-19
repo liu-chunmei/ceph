@@ -28,9 +28,7 @@ struct extentmap_manager_test_t :
 
   ExtentMapManagerRef extmap_manager;
 
-  extentmap_manager_test_t() {
-    extmap_manager = extentmap_manager::create_extentmap_manager(*tm);
-  }
+  extentmap_manager_test_t() {}
 
   seastar::future<> set_up_fut() final {
     return tm_setup().then([this] {

@@ -5,8 +5,6 @@
 
 #include <random>
 
-#include "test/crimson/gtest_seastar.h"
-
 #include "crimson/os/seastore/segment_cleaner.h"
 #include "crimson/os/seastore/cache.h"
 #include "crimson/os/seastore/transaction_manager.h"
