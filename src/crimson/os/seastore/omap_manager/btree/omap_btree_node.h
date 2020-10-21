@@ -98,6 +98,7 @@ struct OMapNode : LogicalCachedExtent {
   virtual omap_node_meta_t get_node_meta() const = 0;
   virtual bool extent_is_overflow(size_t size) = 0;
   virtual bool extent_under_median() = 0;
+  virtual uint32_t get_node_size() = 0;
 
   virtual ~OMapNode() = default;
 

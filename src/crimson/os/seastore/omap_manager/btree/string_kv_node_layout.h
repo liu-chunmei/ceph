@@ -318,7 +318,9 @@ public:
       while (num--) {
         delta_inner_t delta;
         decode(delta.op, p);
-        p.copy(sizeof(delta.key), (char*)&(delta.key));
+        KINT key;
+        p.copy(sizeof(key), (char*)&(key));
+        delta.key = key;
         decode(delta.val, p);
         buffer.push_back(delta);
       }
@@ -380,7 +382,7 @@ public:
   StringKVInnerNodeLayout(char *buf) :
     buf(buf) {}
 
-  uint16_t get_size() const {
+  uint32_t get_size() const {
     ceph_le32 &size = *layout.template Pointer<0>(buf);
     return uint32_t(size);
   }
@@ -625,7 +627,7 @@ public:
     uint32_t right_size = K(right.get_node_key_ptr()[right.get_size()-1]).key_off;
     uint32_t total = left_size + right_size;
     uint32_t pivot_size = total / 2;
-    int pivot_idx = 0;
+    uint32_t pivot_idx = 0;
     if (pivot_size < left_size) {
       uint32_t size = 0;
       for (auto ite = left.iter_begin(); ite < left.iter_end(); ite++) {
@@ -1162,7 +1164,8 @@ public:
       encode(num, bl);
       for (auto &&i: buffer) {
         encode(i.op, bl);
-        bl.append((char*)&(i.key), sizeof(i.key));
+        encode(i.key, bl);
+        //bl.append((char*)&(i.key), sizeof(i.key));
         encode(i.val, bl);
       }
       buffer.clear();
@@ -1176,7 +1179,8 @@ public:
       while (num--) {
         delta_leaf_t delta;
         decode(delta.op, p);
-        p.copy(sizeof(delta.key), (char*)&(delta.key));
+        decode(delta.key, p);
+     //   p.copy(sizeof(delta.key), (char*)&(delta.key));
         decode(delta.val, p);
         buffer.push_back(delta);
       }

@@ -89,6 +89,7 @@ struct OMapInnerNode
   omap_node_meta_t get_node_meta() const final {return get_meta();}
   bool extent_is_overflow(size_t size) {return is_overflow(size);}
   bool extent_under_median() {return under_median();}
+  uint32_t get_node_size() {return get_size();}
 
   CachedExtentRef duplicate_for_write() final {
     assert(delta_buffer.empty());
@@ -233,6 +234,7 @@ struct OMapLeafNode
   omap_node_meta_t get_node_meta() const final { return get_meta(); }
   bool extent_is_overflow(size_t size) {return is_overflow(size);}
   bool extent_under_median() {return under_median();}
+  uint32_t get_node_size() {return get_size();}
 
   CachedExtentRef duplicate_for_write() final {
     assert(delta_buffer.empty());
@@ -276,8 +278,10 @@ struct OMapLeafNode
     return bl;
   }
 
-  void apply_delta(const ceph::bufferlist &bl) final {
-    assert(bl.length());
+  void apply_delta(const ceph::bufferlist &_bl) final {
+    assert(_bl.length());
+    ceph::bufferlist bl = _bl;
+    bl.rebuild();
     delta_leaf_buffer_t buffer;
     buffer.decode(bl);
     buffer.replay(*this);

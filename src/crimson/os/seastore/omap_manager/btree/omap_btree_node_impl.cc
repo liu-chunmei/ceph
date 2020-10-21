@@ -51,7 +51,7 @@ OMapInnerNode::insert_ret
 OMapInnerNode::insert(omap_context_t oc, std::string &key, std::string &value)
 {
   logger().debug("{}: {}  {}->{}", "OMapInnerNode",  __func__, key, value);
-  std::cout<<"------- insert_key = " << key <<std::endl;
+  //std::cout<<"------- insert_key = " << key <<std::endl;
   auto child_pt = get_containing_child(key);
   assert(child_pt != iter_end());
   auto laddr = child_pt->get_node_key().laddr;
@@ -75,7 +75,7 @@ OMapInnerNode::rm_key(omap_context_t oc, const std::string &key)
   auto laddr = child_pt->get_node_key().laddr;
   return omap_load_extent(oc, this, laddr, get_meta().depth - 1).safe_then(
     [this, oc, &key, child_pt] (auto extent) {
-    if (extent->extent_under_median()) {
+    if (extent->extent_under_median() && get_node_size() != 1) {
       return merge_entry(oc, key, child_pt, extent);
     } else {
       return merge_entry_ertr::make_ready_future<OMapNodeRef>(std::move(extent));
@@ -89,9 +89,7 @@ OMapInnerNode::rm_key(omap_context_t oc, const std::string &key)
 OMapInnerNode::dump_node_ret
 OMapInnerNode::dump_node(omap_context_t oc)
 {
-  std::cout<<"OmapInnerNode: " <<std::endl;
   return crimson::do_for_each(iter_begin(), iter_end(),[this, oc] (auto iter) { 
-   std::cout<<"-------------Internal Node key = "<<iter->get_node_val()<<std::endl;
     auto node_key = iter->get_node_key();
     return omap_load_extent(oc, this, node_key.laddr, get_meta().depth -1)
       .safe_then([oc] (auto extent) {
@@ -201,20 +199,20 @@ OMapInnerNode::checking_parent(omap_context_t oc, std::string key,
   if (extent_is_overflow(key.size() + 1)){
     if (get_node_meta().depth == oc.omap_root.depth) { //root node
       assert (parent == nullptr);
-      asm volatile("int $3");     
       logger().debug("{}: {}----{}","OMapInnerNode",  __func__, "root");
+      std::cout<<"------OMapInnerNode:checking_parent---root" <<std::endl; 
       return omap_alloc_extent<OMapInnerNode>(oc, nullptr, OMAP_BLOCK_SIZE)
         .safe_then([this, oc, key, iter, entry](auto&& nroot) {
-        omap_node_meta_t meta{get_node_meta().depth + 1};
+        omap_node_meta_t meta{entry->get_node_meta().depth + 1};
         nroot->set_meta(meta);
         entry->parent = nroot;
         omap_inner_key_t node_key;
-        node_key.laddr = get_laddr();
+        node_key.laddr = entry->get_laddr();
         node_key.key_off = 1;
         node_key.key_len = 1;
         nroot->journal_inner_insert(nroot->iter_begin(), node_key, "\0", nullptr);
         oc.omap_root.omap_root_laddr = nroot->get_laddr();
-        oc.omap_root.depth = get_node_meta().depth + 1;
+        oc.omap_root.depth = entry->get_node_meta().depth + 1;
         oc.omap_root.state = omap_root_state_t::MUTATED;
         return nroot->make_split_entry(oc, key, nroot->iter_begin(), entry)
           .safe_then([key, iter] (auto tuple) {
@@ -235,7 +233,6 @@ OMapInnerNode::checking_parent(omap_context_t oc, std::string key,
          });
       });
     } else {
-      asm volatile("int $3");     
       logger().debug("{}: {}----{}","OMapInnerNode",  __func__, "parent");
       auto parent_key = iter_begin().get_node_val();
       auto parent_entry = TCachedExtentRef<OMapInnerNode>(static_cast<OMapInnerNode*>(parent.get()));
@@ -260,7 +257,7 @@ OMapInnerNode::checking_parent(omap_context_t oc, std::string key,
       });
     }
   } else {
-    logger().debug("{}: {}----{}","OMapInnerNode",  __func__, "parent not overflow");
+    logger().debug("{}: {}----{}","OMapInnerNode",  __func__, "not overflow");
     return checking_parent_ret(
       checking_parent_ertr::ready_future_marker{},
       std::make_pair(entry, iter));
@@ -279,7 +276,7 @@ OMapInnerNode::make_split_entry(omap_context_t oc, std::string key,
     mut->parent = this->parent;
     return mut->make_split_entry(oc, key, mut_iter, entry);
   }
-  ceph_assert(!extent_is_overflow(key.size() + 1));
+  //ceph_assert(!extent_is_overflow(key.size() + 1));
 //  return dump_node(oc).safe_then([this, oc, key, iter, entry] {
   return entry->make_split_children(oc, this)
     .safe_then([this, oc, key, iter, entry] (auto tuple){
@@ -287,7 +284,7 @@ OMapInnerNode::make_split_entry(omap_context_t oc, std::string key,
     logger().debug(
        "{}: *this {} entry {} into left {} right {}", __func__,
        *this, *entry, *left, *right);
-    std::cout<<"-------pivot = " << pivot<<"-----key= " << key<< std::endl;
+    //std::cout<<"-------pivot = " << pivot<<"-----key= " << key<< std::endl;
     auto left_key = iter.get_node_key();
     left_key.laddr = left->get_laddr();
     journal_inner_update(iter, left_key, maybe_get_delta_buffer());
@@ -509,7 +506,7 @@ OMapLeafNode::list_keys(omap_context_t oc, std::vector<std::string> &result)
 {
   logger().debug("{}: {}","OMapLeafNode",  __func__);
   for (auto iter = iter_begin(); iter != iter_end(); iter++) {
-   std::cout<<"-------------Leaf Node key = "<<iter->get_node_val()<<std::endl;
+   //std::cout<<"-------------Leaf Node key = "<<iter->get_node_val()<<std::endl;
     result.push_back(iter->get_node_val());
   }
   return list_keys_ertr::make_ready_future<>();

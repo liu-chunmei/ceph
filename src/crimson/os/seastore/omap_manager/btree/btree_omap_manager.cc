@@ -153,7 +153,7 @@ BtreeOMapManager::insert_key(omap_root_t &omap_root, Transaction &t,
   else 
     overflow = root->extent_is_overflow(key.size() + 1 + value.size() + 1);
   if (overflow) {
-    logger().debug("{}::splitting root {}", __func__, *root);
+    logger().debug("{}::splitting root for Omaptree {}", __func__, *root);
     split =  root->omap_alloc_extent<OMapInnerNode>(get_omap_context(omap_root, t), nullptr, OMAP_BLOCK_SIZE)
       .safe_then([this, &omap_root, root, &t, &key](auto&& nroot) {
         omap_node_meta_t meta{root->get_node_meta().depth + 1};
