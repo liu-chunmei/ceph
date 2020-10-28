@@ -107,6 +107,18 @@ struct extentmap_manager_test_t :
     check_mappings(extmap_root, *t);
   }
 
+  void replay() {
+    logger().debug("{}: begin", __func__);
+    tm->close().unsafe_get();
+    destroy();
+    static_cast<segment_manager::EphemeralSegmentManager*>(&*segment_manager)->remount();
+    init();
+    tm->mount().unsafe_get();
+    extmap_manager = extentmap_manager::create_extentmap_manager(*tm);
+    logger().debug("{}: end", __func__);
+  }
+
+
 };
 
 TEST_F(extentmap_manager_test_t, basic)
@@ -191,32 +203,32 @@ TEST_F(extentmap_manager_test_t, force_split_merge)
       for (unsigned j = 0; j < 5; ++j) {
         [[maybe_unused]] auto addref = insert_extent(extmap_root, *t, lo, {lo, len});
         lo += len;
-	if ((i % 10 == 0) && (j == 3)) {
-	  check_mappings(extmap_root, *t);
-	}
+        if ((i % 10 == 0) && (j == 3)) {
+          check_mappings(extmap_root, *t);
+        }
       }
       logger().debug("submitting transaction");
       tm->submit_transaction(std::move(t)).unsafe_get();
       if (i % 50 == 0) {
-	check_mappings(extmap_root);
+        check_mappings(extmap_root);
       }
     }
     auto t = tm->create_transaction();
     int i = 0;
     for (const auto& [lo, ext]: test_ext_mappings) {
       if (i % 3 != 0) {
-	rm_extent(extmap_root, *t, lo, ext);
+        rm_extent(extmap_root, *t, lo, ext);
       }
 
       if (i % 10 == 0) {
         logger().debug("submitting transaction i= {}", i);
-	tm->submit_transaction(std::move(t)).unsafe_get();
-	t = tm->create_transaction();
+        tm->submit_transaction(std::move(t)).unsafe_get();
+        t = tm->create_transaction();
       }
       if (i % 100 == 0) {
         logger().debug("check_mappings  i= {}", i);
-	check_mappings(extmap_root, *t);
-	check_mappings(extmap_root);
+        check_mappings(extmap_root, *t);
+        check_mappings(extmap_root);
       }
       i++;
     }
@@ -260,7 +272,7 @@ TEST_F(extentmap_manager_test_t, force_split_balanced)
       }
 
       if (i % 10 == 0) {
-	logger().debug("submitting transaction i= {}", i);
+        logger().debug("submitting transaction i= {}", i);
         tm->submit_transaction(std::move(t)).unsafe_get();
         t = tm->create_transaction();
       }
@@ -271,10 +283,55 @@ TEST_F(extentmap_manager_test_t, force_split_balanced)
       }
       i++;
       if (i == 100)
-	break;
+        break;
     }
     logger().debug("finally submitting transaction ");
     tm->submit_transaction(std::move(t)).unsafe_get();
+    check_mappings(extmap_root);
+  });
+}
+
+TEST_F(extentmap_manager_test_t, force_split_merge_replay)
+{
+  run_async([this] {
+    extmap_root_t extmap_root(0, L_ADDR_NULL);
+    {
+      auto t = tm->create_transaction();
+      extmap_root = extmap_manager->initialize_extmap(*t).unsafe_get0();
+      tm->submit_transaction(std::move(t)).unsafe_get();
+      replay();
+    }
+    uint32_t len = 4096;
+    uint32_t lo = 0;
+    for (unsigned i = 0; i < 50; i++) {
+      auto t = tm->create_transaction();
+      logger().debug("opened split_merge transaction");
+      for (unsigned j = 0; j < 5; ++j) {
+        [[maybe_unused]] auto addref = insert_extent(extmap_root, *t, lo, {lo, len});
+        lo += len;
+      }
+      logger().debug("submitting transaction");
+      tm->submit_transaction(std::move(t)).unsafe_get();
+    }
+    replay();
+    auto t = tm->create_transaction();
+    int i = 0;
+    for (const auto& [lo, ext]: test_ext_mappings) {
+        rm_extent(extmap_root, *t, lo, ext);
+
+      if (i % 10 == 0) {
+        logger().error("submitting transaction i= {}", i);
+        tm->submit_transaction(std::move(t)).unsafe_get();
+        t = tm->create_transaction();
+      }
+      i++;
+      if (i% 100 == 0){
+        check_mappings(extmap_root);
+      }
+    }
+    logger().debug("finally submitting transaction ");
+    tm->submit_transaction(std::move(t)).unsafe_get();
+    replay();
     check_mappings(extmap_root);
   });
 }
