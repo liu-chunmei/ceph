@@ -72,7 +72,7 @@ struct collection_manager_test_t :
   }
 
 };
-
+/*
 TEST_F(collection_manager_test_t, basic)
 {
   run_async([this] {
@@ -113,7 +113,7 @@ TEST_F(collection_manager_test_t, basic)
     }
   });
 }
-#if 0
+*/
 TEST_F(collection_manager_test_t, overflow)
 {
   run_async([this] {
@@ -139,7 +139,7 @@ TEST_F(collection_manager_test_t, overflow)
     checking_mappings(coll_root);
   });
 }
-#endif
+/*
 TEST_F(collection_manager_test_t, update)
 {
   run_async([this] {
@@ -170,4 +170,4 @@ TEST_F(collection_manager_test_t, update)
     replay();
     checking_mappings(coll_root);
   });
-}
+}*/

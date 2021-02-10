@@ -74,8 +74,16 @@ CollectionNode::create(coll_context_t cc, coll_t coll, unsigned bits)
   }
   logger().debug("CollectionNode::create {} {} {}", coll, bits, *this);
   decoded.insert(coll, bits);
-  copy_to_node();
-  return seastar::now();
+  if (encoded_sizeof((base_coll_map_t&)decoded) > get_bptr().length()) {
+    return create_ret( 
+      create_ertr::ready_future_marker{},
+      node_status_t::OVERFLOW);
+  } else {
+    copy_to_node();
+    return create_ret(
+      create_ertr::ready_future_marker{},
+      node_status_t::HEALTH);
+  }
 }
 
 CollectionNode::update_ret

@@ -12,6 +12,10 @@ struct coll_context_t {
   TransactionManager &tm;
   Transaction &t;
 };
+enum class node_status_t : uint8_t {
+  HEALTH = 0,
+  OVERFLOW = 1
+};
 
 using base_coll_map_t = std::map<denc_coll_t, uint32_t>;
 struct coll_map_t : base_coll_map_t {
@@ -121,7 +125,7 @@ struct CollectionNode
   list_ret list();
 
   using create_ertr = CollectionManager::create_ertr;
-  using create_ret = CollectionManager::create_ret;
+  using create_ret = create_ertr::future<node_status_t>;
   create_ret create(coll_context_t cc, coll_t coll, unsigned bits);
 
   using remove_ertr = CollectionManager::remove_ertr;
@@ -148,10 +152,6 @@ struct CollectionNode
     get_bptr().zero();
     iter.copy(size, get_bptr().c_str());
 
-  }
-
-  void copy_from_other(CollectionNodeRef other) {
-    memcpy(get_bptr().c_str(), other->get_bptr().c_str(), other->get_length());
   }
 
   ceph::bufferlist get_delta() final {

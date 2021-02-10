@@ -57,7 +57,27 @@ FlatCollectionManager::create(coll_root_t &coll_root, Transaction &t,
   logger().debug("FlatCollectionManager: {}", __func__);
   return get_coll_root(coll_root, t)
     .safe_then([this, &coll_root, &t, cid, info] (auto &&extent) {
-      return extent->create(get_coll_context(t), cid, info.split_bits);
+    return extent->create(get_coll_context(t), cid, info.split_bits)
+      .safe_then([this, &coll_root, &t, extent = std::move(extent)] (auto ret) {
+      if (ret == node_status_t::OVERFLOW) {
+        logger().debug("FlatCollectionManager: {} overflow!", __func__);
+        return tm.alloc_extent<CollectionNode>(t, L_ADDR_MIN, coll_block_size + COLL_INIT_BLOCK)
+          .safe_then([this, &coll_root, &t, extent] (auto &&root_extent) {
+          coll_root.set_location(root_extent->get_laddr());
+          coll_root.set_status(coll_root_t::state_t::MUTATED);
+          coll_block_size += COLL_INIT_BLOCK;
+          static_cast<base_coll_map_t>(root_extent->decoded).insert(extent->decoded.begin(),
+                                                        extent->decoded.end());
+          root_extent->copy_to_node();
+          return tm.dec_ref(t, extent->get_laddr())
+            .safe_then([] (auto ret) {
+            return create_ertr::make_ready_future<>();
+          });
+        });
+      } else {
+        return create_ertr::make_ready_future<>();
+      }
+    });
   });
 
 }
