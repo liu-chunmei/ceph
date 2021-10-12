@@ -596,7 +596,7 @@ def create_simple_monmap(ctx, remote, conf, mons,
 
 def maybe_redirect_stderr(config, type_, args, log_path):
     if type_ == 'osd' and \
-       config.get('flavor', 'default') == 'crimson':
+       config.get('flavor', 'default') == 'crimson-test':
         # teuthworker uses ubuntu:ubuntu to access the test nodes
         create_log_cmd = \
             f'sudo install -b -o ubuntu -g ubuntu /dev/null {log_path}'
