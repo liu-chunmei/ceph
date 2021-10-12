@@ -11,16 +11,16 @@ ifneq (,$(findstring WITH_STATIC_LIBSTDCXX,$(CEPH_EXTRA_CMAKE_ARGS)))
   # see http://tracker.ceph.com/issues/25209
   export DEB_LDFLAGS_MAINT_STRIP = -Wl,-Bsymbolic-functions
 endif
-ifeq (,$(findstring WITH_SEASTAR,$(CEPH_EXTRA_CMAKE_ARGS)))
-  export CEPH_OSD_BASENAME = ceph-osd
-else
+#ifeq (,$(findstring WITH_SEASTAR,$(CEPH_EXTRA_CMAKE_ARGS)))
+#  export CEPH_OSD_BASENAME = ceph-osd
+#else
   export CEPH_OSD_BASENAME = crimson-osd
-endif
+#endif
 ifneq ($(filter pkg.ceph.arrow,$(DEB_BUILD_PROFILES)),)
   extraopts += -DWITH_SYSTEM_ARROW=ON
 endif
 
-extraopts += -DWITH_JAEGER=ON
+extraopts += -DWITH_JAEGER=ON -DWITH_SEASTAR=ON
 extraopts += -DWITH_SYSTEM_UTF8PROC=ON
 extraopts += -DWITH_OCF=ON -DWITH_LTTNG=ON
 extraopts += -DWITH_MGR_DASHBOARD_FRONTEND=OFF
