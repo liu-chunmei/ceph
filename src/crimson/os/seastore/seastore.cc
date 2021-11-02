@@ -15,6 +15,7 @@
 
 #include "common/safe_io.h"
 #include "include/stringify.h"
+#include "include/uuid.h"
 #include "os/Transaction.h"
 
 #include "crimson/common/buffer_io.h"
@@ -188,10 +189,13 @@ seastar::future<> SeaStore::umount()
 seastar::future<> SeaStore::write_fsid(uuid_d new_osd_fsid)
 {
   LOG_PREFIX(SeaStore::write_fsid);
-  return read_meta("fsid").then([this, FNAME, new_osd_fsid] (auto tuple) {
+  return read_meta("fsid").then([this, FNAME, new_osd_fsid] (auto tuple) mutable {
     auto [ret, fsid] = tuple;
     std::string str_fsid = stringify(new_osd_fsid);
     if (ret == -1) {
+       if (new_osd_fsid.is_zero()) {
+         new_osd_fsid.generate_random();
+       }
        return write_meta("fsid", stringify(new_osd_fsid));
     } else if (ret == 0 && fsid != str_fsid) {
        ERROR("on-disk fsid {} != provided {}",
