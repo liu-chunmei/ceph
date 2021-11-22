@@ -48,14 +48,14 @@ void ProtocolV2::run_continuation(CtRef continuation) {
   try {
     CONTINUATION_RUN(continuation)
   } catch (const ceph::buffer::error &e) {
-    lderr(cct) << __func__ << " failed decoding of frame header: " << e.what()
-               << dendl;
+    std::cout << __func__ << " failed decoding of frame header: " << e.what()
+               << std::endl;
     _fault();
   } catch (const ceph::crypto::onwire::MsgAuthError &e) {
-    lderr(cct) << __func__ << " " << e.what() << dendl;
+    std::cout << __func__ << " " << e.what() << std::endl;
     _fault();
   } catch (const DecryptionError &) {
-    lderr(cct) << __func__ << " failed to decrypt frame payload" << dendl;
+    std::cout << __func__ << " failed to decrypt frame payload" << std::endl;
   }
 }
 
@@ -108,13 +108,13 @@ ProtocolV2::~ProtocolV2() {
 }
 
 void ProtocolV2::connect() {
-  ldout(cct, 1) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
   state = START_CONNECT;
   pre_auth.enabled = true;
 }
 
 void ProtocolV2::accept() {
-  ldout(cct, 1) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
   state = START_ACCEPT;
 }
 
@@ -125,17 +125,17 @@ bool ProtocolV2::is_connected() { return can_write; }
  * DispatchQueue Must hold write_lock prior to calling.
  */
 void ProtocolV2::discard_out_queue() {
-  ldout(cct, 10) << __func__ << " started" << dendl;
+  std::cout << __func__ << " started" << std::endl;
 
   for (auto p = sent.begin(); p != sent.end(); ++p) {
-    ldout(cct, 20) << __func__ << " discard " << *p << dendl;
+    std::cout << __func__ << " discard " << *p << std::endl;
     (*p)->put();
   }
   sent.clear();
   for (auto& [ prio, entries ] : out_queue) {
     static_cast<void>(prio);
     for (auto& entry : entries) {
-      ldout(cct, 20) << __func__ << " discard " << *entry.m << dendl;
+      std::cout << __func__ << " discard " << *entry.m << std::endl;
       entry.m->put();
     }
   }
@@ -144,7 +144,7 @@ void ProtocolV2::discard_out_queue() {
 }
 
 void ProtocolV2::reset_session() {
-  ldout(cct, 1) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   std::lock_guard<std::mutex> l(connection->write_lock);
   if (connection->delay_state) {
@@ -169,7 +169,7 @@ void ProtocolV2::reset_session() {
 }
 
 void ProtocolV2::stop() {
-  ldout(cct, 1) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
   if (state == CLOSED) {
     return;
   }
@@ -200,16 +200,16 @@ void ProtocolV2::requeue_sent() {
   while (!sent.empty()) {
     Message *m = sent.back();
     sent.pop_back();
-    ldout(cct, 5) << __func__ << " requeueing message m=" << m
+    std::cout << __func__ << " requeueing message m=" << m
                   << " seq=" << m->get_seq() << " type=" << m->get_type() << " "
-                  << *m << dendl;
+                  << *m << std::endl;
     m->clear_payload();
     rq.emplace_front(out_queue_entry_t{false, m});
   }
 }
 
 uint64_t ProtocolV2::discard_requeued_up_to(uint64_t out_seq, uint64_t seq) {
-  ldout(cct, 10) << __func__ << " " << seq << dendl;
+  std::cout << __func__ << " " << seq << std::endl;
   std::lock_guard<std::mutex> l(connection->write_lock);
   if (out_queue.count(CEPH_MSG_PRIO_HIGHEST) == 0) {
     return seq;
@@ -219,9 +219,9 @@ uint64_t ProtocolV2::discard_requeued_up_to(uint64_t out_seq, uint64_t seq) {
   while (!rq.empty()) {
     Message* const m = rq.front().m;
     if (m->get_seq() == 0 || m->get_seq() > seq) break;
-    ldout(cct, 5) << __func__ << " discarding message m=" << m
+    std::cout << __func__ << " discarding message m=" << m
                   << " seq=" << m->get_seq() << " ack_seq=" << seq << " "
-                  << *m << dendl;
+                  << *m << std::endl;
     m->put();
     rq.pop_front();
     count++;
@@ -231,7 +231,7 @@ uint64_t ProtocolV2::discard_requeued_up_to(uint64_t out_seq, uint64_t seq) {
 }
 
 void ProtocolV2::reset_security() {
-  ldout(cct, 5) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   auth_meta.reset(new AuthConnectionMeta);
   session_stream_handlers.rx.reset(nullptr);
@@ -242,7 +242,7 @@ void ProtocolV2::reset_security() {
 
 // it's expected the `write_lock` is held while calling this method.
 void ProtocolV2::reset_recv_state() {
-  ldout(cct, 5) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   if (!connection->center->in_thread()) {
     // execute in the same thread that uses the rx/tx handlers. We need
@@ -250,8 +250,8 @@ void ProtocolV2::reset_recv_state() {
     // `write_event()` unlocks it just before calling `write_message()`.
     // `submit_to()` here is NOT blocking.
     connection->center->submit_to(connection->center->get_id(), [this] {
-      ldout(cct, 5) << "reset_recv_state (warped) reseting crypto and compression handlers"
-                    << dendl;
+      std::cout << "reset_recv_state (warped) reseting crypto and compression handlers"
+                    << std::endl;
       // Possibly unnecessary. See the comment in `deactivate_existing`.
       std::lock_guard<std::mutex> l(connection->lock);
       std::lock_guard<std::mutex> wl(connection->write_lock);
@@ -285,45 +285,45 @@ size_t ProtocolV2::get_current_msg_size() const {
 void ProtocolV2::reset_throttle() {
   if (state > THROTTLE_MESSAGE && state <= THROTTLE_DONE &&
       connection->policy.throttler_messages) {
-    ldout(cct, 10) << __func__ << " releasing " << 1
+    std::cout << __func__ << " releasing " << 1
                    << " message to policy throttler "
                    << connection->policy.throttler_messages->get_current()
                    << "/" << connection->policy.throttler_messages->get_max()
-                   << dendl;
+                   << std::endl;
     connection->policy.throttler_messages->put();
   }
   if (state > THROTTLE_BYTES && state <= THROTTLE_DONE) {
     if (connection->policy.throttler_bytes) {
       const size_t cur_msg_size = get_current_msg_size();
-      ldout(cct, 10) << __func__ << " releasing " << cur_msg_size
+      std::cout << __func__ << " releasing " << cur_msg_size
                      << " bytes to policy throttler "
                      << connection->policy.throttler_bytes->get_current() << "/"
-                     << connection->policy.throttler_bytes->get_max() << dendl;
+                     << connection->policy.throttler_bytes->get_max() << std::endl;
       connection->policy.throttler_bytes->put(cur_msg_size);
     }
   }
   if (state > THROTTLE_DISPATCH_QUEUE && state <= THROTTLE_DONE) {
     const size_t cur_msg_size = get_current_msg_size();
-    ldout(cct, 10)
+    std::cout
         << __func__ << " releasing " << cur_msg_size
         << " bytes to dispatch_queue throttler "
         << connection->dispatch_queue->dispatch_throttler.get_current() << "/"
-        << connection->dispatch_queue->dispatch_throttler.get_max() << dendl;
+        << connection->dispatch_queue->dispatch_throttler.get_max() << std::endl;
     connection->dispatch_queue->dispatch_throttle_release(cur_msg_size);
   }
 }
 
 CtPtr ProtocolV2::_fault() {
-  ldout(cct, 10) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   if (state == CLOSED || state == NONE) {
-    ldout(cct, 10) << __func__ << " connection is already closed" << dendl;
+    std::cout << __func__ << " connection is already closed" << std::endl;
     return nullptr;
   }
 
   if (connection->policy.lossy &&
       !(state >= START_CONNECT && state <= SESSION_RECONNECTING)) {
-    ldout(cct, 2) << __func__ << " on lossy channel, failing" << dendl;
+    std::cout << __func__ << " on lossy channel, failing" << std::endl;
     stop();
     connection->dispatch_queue->queue_reset(connection);
     return nullptr;
@@ -337,8 +337,8 @@ CtPtr ProtocolV2::_fault() {
 
   if (out_queue.empty() && state >= START_ACCEPT &&
       state <= SESSION_ACCEPTING && !replacing) {
-    ldout(cct, 2) << __func__ << " with nothing to send and in the half "
-                   << " accept state just closed" << dendl;
+    std::cout << __func__ << " with nothing to send and in the half "
+                   << " accept state just closed" << std::endl;
     connection->write_lock.unlock();
     stop();
     connection->dispatch_queue->queue_reset(connection);
@@ -353,14 +353,14 @@ CtPtr ProtocolV2::_fault() {
 
   if (connection->policy.standby && out_queue.empty() && !keepalive &&
       state != WAIT) {
-    ldout(cct, 1) << __func__ << " with nothing to send, going to standby"
-                  << dendl;
+    std::cout << __func__ << " with nothing to send, going to standby"
+                  << std::endl;
     state = STANDBY;
     connection->write_lock.unlock();
     return nullptr;
   }
   if (connection->policy.server) {
-    ldout(cct, 1) << __func__ << " server, going to standby, even though i have stuff queued" << dendl;
+    std::cout << __func__ << " server, going to standby, even though i have stuff queued" << std::endl;
     state = STANDBY;
     connection->write_lock.unlock();
     return nullptr;
@@ -373,10 +373,10 @@ CtPtr ProtocolV2::_fault() {
       state != SESSION_ACCEPTING /* due to connection race */) {
     // policy maybe empty when state is in accept
     if (connection->policy.server) {
-      ldout(cct, 1) << __func__ << " server, going to standby" << dendl;
+      std::cout << __func__ << " server, going to standby" << std::endl;
       state = STANDBY;
     } else {
-      ldout(cct, 1) << __func__ << " initiating reconnect" << dendl;
+      std::cout << __func__ << " initiating reconnect" << std::endl;
       connect_seq++;
       global_seq = messenger->get_global_seq();
       state = START_CONNECT;
@@ -404,7 +404,7 @@ CtPtr ProtocolV2::_fault() {
     state = START_CONNECT;
     pre_auth.enabled = true;
     connection->state = AsyncConnection::STATE_CONNECTING;
-    ldout(cct, 1) << __func__ << " waiting " << backoff << dendl;
+    std::cout << __func__ << " waiting " << backoff << std::endl;
     // woke up again;
     connection->register_time_events.insert(
         connection->center->create_time_event(backoff.to_nsec() / 1000,
@@ -415,11 +415,11 @@ CtPtr ProtocolV2::_fault() {
 
 void ProtocolV2::prepare_send_message(uint64_t features,
 				      Message *m) {
-  ldout(cct, 20) << __func__ << " m=" << *m << dendl;
+  std::cout << __func__ << " m=" << *m << std::endl;
 
   // associate message with Connection (for benefit of encode_payload)
-  ldout(cct, 20) << __func__ << (m->empty_payload() ? " encoding features " : " half-reencoding features ")
-		 << features << " " << m  << " " << *m << dendl;
+  std::cout << __func__ << (m->empty_payload() ? " encoding features " : " half-reencoding features ")
+		 << features << " " << m  << " " << *m << std::endl;
 
   // encode and copy out of *m
   m->encode(features, 0);
@@ -442,22 +442,22 @@ void ProtocolV2::send_message(Message *m) {
     // ensure the correctness of message encoding
     m->clear_payload();
     is_prepared = false;
-    ldout(cct, 10) << __func__ << " clear encoded buffer previous " << f
-                   << " != " << connection->get_features() << dendl;
+    std::cout << __func__ << " clear encoded buffer previous " << f
+                   << " != " << connection->get_features() << std::endl;
   }
   if (state == CLOSED) {
-    ldout(cct, 10) << __func__ << " connection closed."
-                   << " Drop message " << m << dendl;
+    std::cout << __func__ << " connection closed."
+                   << " Drop message " << m << std::endl;
     m->put();
   } else {
-    ldout(cct, 5) << __func__ << " enqueueing message m=" << m
-                  << " type=" << m->get_type() << " " << *m << dendl;
+    std::cout << __func__ << " enqueueing message m=" << m
+                  << " type=" << m->get_type() << " " << *m << std::endl;
     m->queue_start = ceph::mono_clock::now();
     m->trace.event("async enqueueing message");
     out_queue[m->get_priority()].emplace_back(
       out_queue_entry_t{is_prepared, m});
-    ldout(cct, 15) << __func__ << " inline write is denied, reschedule m=" << m
-                   << dendl;
+    std::cout << __func__ << " inline write is denied, reschedule m=" << m
+                   << std::endl;
     if (((!replacing && can_write) || state == STANDBY) && !write_in_progress) {
       write_in_progress = true;
       connection->center->dispatch_event_external(connection->write_handler);
@@ -466,7 +466,7 @@ void ProtocolV2::send_message(Message *m) {
 }
 
 void ProtocolV2::send_keepalive() {
-  ldout(cct, 10) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
   std::lock_guard<std::mutex> l(connection->write_lock);
   if (state != CLOSED) {
     keepalive = true;
@@ -475,7 +475,7 @@ void ProtocolV2::send_keepalive() {
 }
 
 void ProtocolV2::read_event() {
-  ldout(cct, 20) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   switch (state) {
     case START_CONNECT:
@@ -548,24 +548,24 @@ ssize_t ProtocolV2::write_message(Message *m, bool more) {
     return -EILSEQ;
   }
 
-  ldout(cct, 5) << __func__ << " sending message m=" << m
-                << " seq=" << m->get_seq() << " " << *m << dendl;
+  std::cout << __func__ << " sending message m=" << m
+                << " seq=" << m->get_seq() << " " << *m << std::endl;
 
   m->trace.event("async writing message");
-  ldout(cct, 20) << __func__ << " sending m=" << m << " seq=" << m->get_seq()
+  std::cout << __func__ << " sending m=" << m << " seq=" << m->get_seq()
                  << " src=" << entity_name_t(messenger->get_myname())
                  << " off=" << header2.data_off
-                 << dendl;
+                 << std::endl;
   ssize_t total_send_size = connection->outgoing_bl.length();
   ssize_t rc = connection->_try_send(more);
   if (rc < 0) {
-    ldout(cct, 1) << __func__ << " error sending " << m << ", "
-                  << cpp_strerror(rc) << dendl;
+    std::cout << __func__ << " error sending " << m << ", "
+                  << cpp_strerror(rc) << std::endl;
   } else {
     connection->logger->inc(
         l_msgr_send_bytes, total_send_size - connection->outgoing_bl.length());
-    ldout(cct, 10) << __func__ << " sending " << m
-                   << (rc ? " continuely." : " done.") << dendl;
+    std::cout << __func__ << " sending " << m
+                   << (rc ? " continuely." : " done.") << std::endl;
   }
 
 #if defined(WITH_EVENTTRACE)
@@ -585,12 +585,12 @@ bool ProtocolV2::append_frame(F& frame) {
   try {
     bl = frame.get_buffer(tx_frame_asm);
   } catch (ceph::crypto::onwire::TxHandlerError &e) {
-    ldout(cct, 1) << __func__ << " " << e.what() << dendl;
+    std::cout << __func__ << " " << e.what() << std::endl;
     return false;
   }
 
-  ldout(cct, 25) << __func__ << " assembled frame " << bl.length()
-                 << " bytes " << tx_frame_asm << dendl;
+  std::cout << __func__ << " assembled frame " << bl.length()
+                 << " bytes " << tx_frame_asm << std::endl;
   connection->outgoing_bl.claim_append(bl);
   return true;
 }
@@ -600,7 +600,7 @@ void ProtocolV2::handle_message_ack(uint64_t seq) {
     return;
   }
 
-  ldout(cct, 15) << __func__ << " seq=" << seq << dendl;
+  std::cout << __func__ << " seq=" << seq << std::endl;
 
   // trim sent list
   static const int max_pending = 128;
@@ -612,9 +612,9 @@ void ProtocolV2::handle_message_ack(uint64_t seq) {
     Message *m = sent.front();
     sent.pop_front();
     pending[i++] = m;
-    ldout(cct, 10) << __func__ << " got ack seq " << seq
+    std::cout << __func__ << " got ack seq " << seq
                    << " >= " << m->get_seq() << " on " << m << " " << *m
-                   << dendl;
+                   << std::endl;
   }
   connection->write_lock.unlock();
   connection->logger->tinc(l_msgr_handle_ack_lat, ceph::mono_clock::now() - now);
@@ -624,7 +624,7 @@ void ProtocolV2::handle_message_ack(uint64_t seq) {
 }
 
 void ProtocolV2::reset_compression() {
-  ldout(cct, 5) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   comp_meta = CompConnectionMeta{};
   session_compression_handlers.rx.reset(nullptr);
@@ -632,13 +632,13 @@ void ProtocolV2::reset_compression() {
 }
 
 void ProtocolV2::write_event() {
-  ldout(cct, 10) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
   ssize_t r = 0;
 
   connection->write_lock.lock();
   if (can_write) {
     if (keepalive) {
-      ldout(cct, 10) << __func__ << " appending keepalive" << dendl;
+      std::cout << __func__ << " appending keepalive" << std::endl;
       auto keepalive_frame = KeepAliveFrame::Encode();
       if (!append_frame(keepalive_frame)) {
         connection->write_lock.unlock();
@@ -683,7 +683,7 @@ void ProtocolV2::write_event() {
       if (r == 0) {
         ;
       } else if (r < 0) {
-        ldout(cct, 1) << __func__ << " send msg failed" << dendl;
+        std::cout << __func__ << " send msg failed" << std::endl;
         break;
       } else if (r > 0) {
 	// Outbound message in-progress, thread will be re-awoken
@@ -697,8 +697,8 @@ void ProtocolV2::write_event() {
     if (r == 0) {
       uint64_t left = ack_left;
       if (left) {
-        ldout(cct, 10) << __func__ << " try send msg ack, acked " << left
-                       << " messages" << dendl;
+        std::cout << __func__ << " try send msg ack, acked " << left
+                       << " messages" << std::endl;
         auto ack_frame = AckFrame::Encode(in_seq);
         if (append_frame(ack_frame)) {
           ack_left -= left;
@@ -716,7 +716,7 @@ void ProtocolV2::write_event() {
     connection->logger->tinc(l_msgr_running_send_time,
                              ceph::mono_clock::now() - start);
     if (r < 0) {
-      ldout(cct, 1) << __func__ << " send msg failed" << dendl;
+      std::cout << __func__ << " send msg failed" << std::endl;
       connection->lock.lock();
       fault();
       connection->lock.unlock();
@@ -728,7 +728,7 @@ void ProtocolV2::write_event() {
     connection->lock.lock();
     connection->write_lock.lock();
     if (state == STANDBY && !connection->policy.server && is_queued()) {
-      ldout(cct, 10) << __func__ << " policy.server is false" << dendl;
+      std::cout << __func__ << " policy.server is false" << std::endl;
       if (server_cookie) {  // only increment connect_seq if there is a session
         connect_seq++;
       }
@@ -737,7 +737,7 @@ void ProtocolV2::write_event() {
                state != START_CONNECT) {
       r = connection->_try_send();
       if (r < 0) {
-        ldout(cct, 1) << __func__ << " send outcoming bl failed" << dendl;
+        std::cout << __func__ << " send outcoming bl failed" << std::endl;
         connection->write_lock.unlock();
         fault();
         connection->lock.unlock();
@@ -790,12 +790,12 @@ CtPtr ProtocolV2::write(const std::string &desc,
   try {
     bl = frame.get_buffer(tx_frame_asm);
   } catch (ceph::crypto::onwire::TxHandlerError &e) {
-    ldout(cct, 1) << __func__ << " " << e.what() << dendl;
+    std::cout << __func__ << " " << e.what() << std::endl;
     return _fault();
   }
 
-  ldout(cct, 25) << __func__ << " assembled frame " << bl.length()
-                 << " bytes " << tx_frame_asm << dendl;
+  std::cout << __func__ << " assembled frame " << bl.length()
+                 << " bytes " << tx_frame_asm << std::endl;
   return write(desc, next, bl);
 }
 
@@ -811,8 +811,8 @@ CtPtr ProtocolV2::write(const std::string &desc,
   ssize_t r =
       connection->write(buffer, [&next, desc, this](int r) {
         if (r < 0) {
-          ldout(cct, 1) << __func__ << " " << desc << " write failed r=" << r
-                        << " (" << cpp_strerror(r) << ")" << dendl;
+          std::cout << __func__ << " " << desc << " write failed r=" << r
+                        << " (" << cpp_strerror(r) << ")" << std::endl;
           connection->inject_delay();
           _fault();
         }
@@ -820,8 +820,8 @@ CtPtr ProtocolV2::write(const std::string &desc,
       });
 
   if (r < 0) {
-    ldout(cct, 1) << __func__ << " " << desc << " write failed r=" << r
-                  << " (" << cpp_strerror(r) << ")" << dendl;
+    std::cout << __func__ << " " << desc << " write failed r=" << r
+                  << " (" << cpp_strerror(r) << ")" << std::endl;
     return _fault();
   } else if (r == 0) {
     next.setParams();
@@ -832,7 +832,7 @@ CtPtr ProtocolV2::write(const std::string &desc,
 }
 
 CtPtr ProtocolV2::_banner_exchange(CtRef callback) {
-  ldout(cct, 20) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
   bannerExchangeCallback = &callback;
 
   ceph::bufferlist banner_payload;
@@ -856,11 +856,11 @@ CtPtr ProtocolV2::_wait_for_peer_banner() {
 }
 
 CtPtr ProtocolV2::_handle_peer_banner(rx_buffer_t &&buffer, int r) {
-  ldout(cct, 20) << __func__ << " r=" << r << dendl;
+  std::cout << __func__ << " r=" << r << std::endl;
 
   if (r < 0) {
-    ldout(cct, 1) << __func__ << " read peer banner failed r=" << r << " ("
-                  << cpp_strerror(r) << ")" << dendl;
+    std::cout << __func__ << " read peer banner failed r=" << r << " ("
+                  << cpp_strerror(r) << ")" << std::endl;
     return _fault();
   }
 
@@ -868,11 +868,11 @@ CtPtr ProtocolV2::_handle_peer_banner(rx_buffer_t &&buffer, int r) {
 
   if (memcmp(buffer->c_str(), CEPH_BANNER_V2_PREFIX, banner_prefix_len)) {
     if (memcmp(buffer->c_str(), CEPH_BANNER, strlen(CEPH_BANNER)) == 0) {
-      lderr(cct) << __func__ << " peer " << *connection->peer_addrs
-                 << " is using msgr V1 protocol" << dendl;
+      std::cout << __func__ << " peer " << *connection->peer_addrs
+                 << " is using msgr V1 protocol" << std::endl;
       return _fault();
     }
-    ldout(cct, 1) << __func__ << " accept peer sent bad banner" << dendl;
+    std::cout << __func__ << " accept peer sent bad banner" << std::endl;
     return _fault();
   }
 
@@ -886,7 +886,7 @@ CtPtr ProtocolV2::_handle_peer_banner(rx_buffer_t &&buffer, int r) {
   try {
     decode(payload_len, ti);
   } catch (const ceph::buffer::error &e) {
-    lderr(cct) << __func__ << " decode banner payload len failed " << dendl;
+    std::cout << __func__ << " decode banner payload len failed " << std::endl;
     return _fault();
   }
 
@@ -896,11 +896,11 @@ CtPtr ProtocolV2::_handle_peer_banner(rx_buffer_t &&buffer, int r) {
 }
 
 CtPtr ProtocolV2::_handle_peer_banner_payload(rx_buffer_t &&buffer, int r) {
-  ldout(cct, 20) << __func__ << " r=" << r << dendl;
+  std::cout << __func__ << " r=" << r << std::endl;
 
   if (r < 0) {
-    ldout(cct, 1) << __func__ << " read peer banner payload failed r=" << r
-                  << " (" << cpp_strerror(r) << ")" << dendl;
+    std::cout << __func__ << " read peer banner payload failed r=" << r
+                  << " (" << cpp_strerror(r) << ")" << std::endl;
     return _fault();
   }
 
@@ -915,13 +915,13 @@ CtPtr ProtocolV2::_handle_peer_banner_payload(rx_buffer_t &&buffer, int r) {
     decode(peer_supported_features, ti);
     decode(peer_required_features, ti);
   } catch (const ceph::buffer::error &e) {
-    lderr(cct) << __func__ << " decode banner payload failed " << dendl;
+    std::cout << __func__ << " decode banner payload failed " << std::endl;
     return _fault();
   }
 
-  ldout(cct, 1) << __func__ << " supported=" << std::hex
+  std::cout << __func__ << " supported=" << std::hex
                 << peer_supported_features << " required=" << std::hex
-                << peer_required_features << std::dec << dendl;
+                << peer_required_features << std::dec << std::endl;
 
   // Check feature bit compatibility
 
@@ -929,18 +929,18 @@ CtPtr ProtocolV2::_handle_peer_banner_payload(rx_buffer_t &&buffer, int r) {
   uint64_t required_features = CEPH_MSGR2_REQUIRED_FEATURES;
 
   if ((required_features & peer_supported_features) != required_features) {
-    ldout(cct, 1) << __func__ << " peer does not support all required features"
+    std::cout << __func__ << " peer does not support all required features"
                   << " required=" << std::hex << required_features
                   << " supported=" << std::hex << peer_supported_features
-                  << std::dec << dendl;
+                  << std::dec << std::endl;
     stop();
     connection->dispatch_queue->queue_reset(connection);
     return nullptr;
   }
   if ((supported_features & peer_required_features) != peer_required_features) {
-    ldout(cct, 1) << __func__ << " we do not support all peer required features"
+    std::cout << __func__ << " we do not support all peer required features"
                   << " required=" << std::hex << peer_required_features
-                  << " supported=" << supported_features << std::dec << dendl;
+                  << " supported=" << supported_features << std::dec << std::endl;
     stop();
     connection->dispatch_queue->queue_reset(connection);
     return nullptr;
@@ -974,44 +974,44 @@ CtPtr ProtocolV2::_handle_peer_banner_payload(rx_buffer_t &&buffer, int r) {
 
 CtPtr ProtocolV2::handle_hello(ceph::bufferlist &payload)
 {
-  ldout(cct, 20) << __func__
-		 << " payload.length()=" << payload.length() << dendl;
+  std::cout << __func__
+		 << " payload.length()=" << payload.length() << std::endl;
 
   if (state != HELLO_CONNECTING && state != HELLO_ACCEPTING) {
-    lderr(cct) << __func__ << " not in hello exchange state!" << dendl;
+    std::cout << __func__ << " not in hello exchange state!" << std::endl;
     return _fault();
   }
 
   auto hello = HelloFrame::Decode(payload);
 
-  ldout(cct, 5) << __func__ << " received hello:"
+  std::cout << __func__ << " received hello:"
                 << " peer_type=" << (int)hello.entity_type()
-                << " peer_addr_for_me=" << hello.peer_addr() << dendl;
+                << " peer_addr_for_me=" << hello.peer_addr() << std::endl;
 
   sockaddr_storage ss;
   socklen_t len = sizeof(ss);
   getsockname(connection->cs.fd(), (sockaddr *)&ss, &len);
-  ldout(cct, 5) << __func__ << " getsockname says I am " << (sockaddr *)&ss
-		<< " when talking to " << connection->target_addr << dendl;
+  std::cout << __func__ << " getsockname says I am " << (sockaddr *)&ss
+		<< " when talking to " << connection->target_addr << std::endl;
 
   if (connection->get_peer_type() == -1) {
     connection->set_peer_type(hello.entity_type());
 
     ceph_assert(state == HELLO_ACCEPTING);
     connection->policy = messenger->get_policy(hello.entity_type());
-    ldout(cct, 10) << __func__ << " accept of host_type "
+    std::cout << __func__ << " accept of host_type "
                    << (int)hello.entity_type()
                    << ", policy.lossy=" << connection->policy.lossy
                    << " policy.server=" << connection->policy.server
                    << " policy.standby=" << connection->policy.standby
                    << " policy.resetcheck=" << connection->policy.resetcheck
-                   << dendl;
+                   << std::endl;
   } else {
     ceph_assert(state == HELLO_CONNECTING);
     if (connection->get_peer_type() != hello.entity_type()) {
-      ldout(cct, 1) << __func__ << " connection peer type does not match what"
+      std::cout << __func__ << " connection peer type does not match what"
                     << " peer advertises " << connection->get_peer_type()
-                    << " != " << (int)hello.entity_type() << dendl;
+                    << " != " << (int)hello.entity_type() << std::endl;
       stop();
       connection->dispatch_queue->queue_reset(connection);
       return nullptr;
@@ -1022,14 +1022,14 @@ CtPtr ProtocolV2::handle_hello(ceph::bufferlist &payload)
       messenger->get_myaddrs().front().is_blank_ip()) {
     entity_addr_t a;
     if (cct->_conf->ms_learn_addr_from_peer) {
-      ldout(cct, 1) << __func__ << " peer " << connection->target_addr
+      std::cout << __func__ << " peer " << connection->target_addr
 		    << " says I am " << hello.peer_addr() << " (socket says "
-		    << (sockaddr*)&ss << ")" << dendl;
+		    << (sockaddr*)&ss << ")" << std::endl;
       a = hello.peer_addr();
     } else {
-      ldout(cct, 1) << __func__ << " socket to  " << connection->target_addr
+      std::cout << __func__ << " socket to  " << connection->target_addr
 		    << " says I am " << (sockaddr*)&ss
-		    << " (peer says " << hello.peer_addr() << ")" << dendl;
+		    << " (peer says " << hello.peer_addr() << ")" << std::endl;
       a.set_sockaddr((sockaddr *)&ss);
     }
     a.set_type(entity_addr_t::TYPE_MSGR2); // anything but NONE; learned_addr ignores this
@@ -1039,8 +1039,8 @@ CtPtr ProtocolV2::handle_hello(ceph::bufferlist &payload)
     if (cct->_conf->ms_inject_internal_delays &&
         cct->_conf->ms_inject_socket_failures) {
       if (rand() % cct->_conf->ms_inject_socket_failures == 0) {
-        ldout(cct, 10) << __func__ << " sleep for "
-                       << cct->_conf->ms_inject_internal_delays << dendl;
+        std::cout << __func__ << " sleep for "
+                       << cct->_conf->ms_inject_internal_delays << std::endl;
         utime_t t;
         t.set_from_double(cct->_conf->ms_inject_internal_delays);
         t.sleep();
@@ -1048,9 +1048,9 @@ CtPtr ProtocolV2::handle_hello(ceph::bufferlist &payload)
     }
     connection->lock.lock();
     if (state != HELLO_CONNECTING) {
-      ldout(cct, 1) << __func__
+      std::cout << __func__
                     << " state changed while learned_addr, mark_down or "
-                    << " replacing must be happened just now" << dendl;
+                    << " replacing must be happened just now" << std::endl;
       return nullptr;
     }
   }
@@ -1069,7 +1069,7 @@ CtPtr ProtocolV2::read_frame() {
     return nullptr;
   }
 
-  ldout(cct, 20) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
   rx_preamble.clear();
   rx_epilogue.clear();
   rx_segments_data.clear();
@@ -1079,11 +1079,11 @@ CtPtr ProtocolV2::read_frame() {
 }
 
 CtPtr ProtocolV2::handle_read_frame_preamble_main(rx_buffer_t &&buffer, int r) {
-  ldout(cct, 20) << __func__ << " r=" << r << dendl;
+  std::cout << __func__ << " r=" << r << std::endl;
 
   if (r < 0) {
-    ldout(cct, 1) << __func__ << " read frame preamble failed r=" << r
-                  << " (" << cpp_strerror(r) << ")" << dendl;
+    std::cout << __func__ << " read frame preamble failed r=" << r
+                  << " (" << cpp_strerror(r) << ")" << std::endl;
     return _fault();
   }
 
@@ -1096,15 +1096,15 @@ CtPtr ProtocolV2::handle_read_frame_preamble_main(rx_buffer_t &&buffer, int r) {
   try {
     next_tag = rx_frame_asm.disassemble_preamble(rx_preamble);
   } catch (FrameError& e) {
-    ldout(cct, 1) << __func__ << " " << e.what() << dendl;
+    std::cout << __func__ << " " << e.what() << std::endl;
     return _fault();
   } catch (ceph::crypto::onwire::MsgAuthError&) {
-    ldout(cct, 1) << __func__ << "bad auth tag" << dendl;
+    std::cout << __func__ << "bad auth tag" << std::endl;
     return _fault();
   }
 
-  ldout(cct, 25) << __func__ << " disassembled preamble " << rx_frame_asm
-                 << dendl;
+  std::cout << __func__ << " disassembled preamble " << rx_frame_asm
+                 << std::endl;
 
   if (session_stream_handlers.rx) {
     ldout(cct, 30) << __func__ << " preamble after decrypt\n";
@@ -1115,7 +1115,7 @@ CtPtr ProtocolV2::handle_read_frame_preamble_main(rx_buffer_t &&buffer, int r) {
   // does it need throttle?
   if (next_tag == Tag::MESSAGE) {
     if (state != READY) {
-      lderr(cct) << __func__ << " not in ready state!" << dendl;
+      std::cout << __func__ << " not in ready state!" << std::endl;
       return _fault();
     }
     recv_stamp = ceph_clock_now();
@@ -1127,8 +1127,8 @@ CtPtr ProtocolV2::handle_read_frame_preamble_main(rx_buffer_t &&buffer, int r) {
 }
 
 CtPtr ProtocolV2::handle_read_frame_dispatch() {
-  ldout(cct, 10) << __func__
-                 << " tag=" << static_cast<uint32_t>(next_tag) << dendl;
+  std::cout << __func__
+                 << " tag=" << static_cast<uint32_t>(next_tag) << std::endl;
 
   switch (next_tag) {
     case Tag::HELLO:
@@ -1156,9 +1156,9 @@ CtPtr ProtocolV2::handle_read_frame_dispatch() {
     case Tag::MESSAGE:
       return handle_message();
     default: {
-      lderr(cct) << __func__
+      std::cout << __func__
                  << " received unknown tag=" << static_cast<uint32_t>(next_tag)
-                 << dendl;
+                 << std::endl;
       return _fault();
     }
   }
@@ -1168,7 +1168,7 @@ CtPtr ProtocolV2::handle_read_frame_dispatch() {
 
 CtPtr ProtocolV2::read_frame_segment() {
   size_t seg_idx = rx_segments_data.size();
-  ldout(cct, 20) << __func__ << " seg_idx=" << seg_idx << dendl;
+  std::cout << __func__ << " seg_idx=" << seg_idx << std::endl;
   rx_segments_data.emplace_back();
 
   uint32_t onwire_len = rx_frame_asm.get_segment_onwire_len(seg_idx);
@@ -1183,10 +1183,10 @@ CtPtr ProtocolV2::read_frame_segment() {
         onwire_len, align));
   } catch (const ceph::buffer::bad_alloc&) {
     // Catching because of potential issues with satisfying alignment.
-    ldout(cct, 1) << __func__ << " can't allocate aligned rx_buffer"
+    std::cout << __func__ << " can't allocate aligned rx_buffer"
                   << " len=" << onwire_len
                   << " align=" << align
-                  << dendl;
+                  << std::endl;
     return _fault();
   }
 
@@ -1194,11 +1194,11 @@ CtPtr ProtocolV2::read_frame_segment() {
 }
 
 CtPtr ProtocolV2::handle_read_frame_segment(rx_buffer_t &&rx_buffer, int r) {
-  ldout(cct, 20) << __func__ << " r=" << r << dendl;
+  std::cout << __func__ << " r=" << r << std::endl;
 
   if (r < 0) {
-    ldout(cct, 1) << __func__ << " read frame segment failed r=" << r << " ("
-                  << cpp_strerror(r) << ")" << dendl;
+    std::cout << __func__ << " read frame segment failed r=" << r << " ("
+                  << cpp_strerror(r) << ")" << std::endl;
     return _fault();
   }
 
@@ -1277,7 +1277,7 @@ CtPtr ProtocolV2::handle_frame_payload() {
 }
 
 CtPtr ProtocolV2::ready() {
-  ldout(cct, 25) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   reconnecting = false;
   replacing = false;
@@ -1300,10 +1300,10 @@ CtPtr ProtocolV2::ready() {
   connection->maybe_start_delay_thread();
 
   state = READY;
-  ldout(cct, 1) << __func__ << " entity=" << peer_name << " client_cookie="
+  std::cout << __func__ << " entity=" << peer_name << " client_cookie="
                 << std::hex << client_cookie << " server_cookie="
                 << server_cookie << std::dec << " in_seq=" << in_seq
-                << " out_seq=" << out_seq << dendl;
+                << " out_seq=" << out_seq << std::endl;
 
   INTERCEPT(15);
 
@@ -1312,11 +1312,11 @@ CtPtr ProtocolV2::ready() {
 
 CtPtr ProtocolV2::handle_read_frame_epilogue_main(rx_buffer_t &&buffer, int r)
 {
-  ldout(cct, 20) << __func__ << " r=" << r << dendl;
+  std::cout << __func__ << " r=" << r << std::endl;
 
   if (r < 0) {
-    ldout(cct, 1) << __func__ << " read frame epilogue failed r=" << r
-                  << " (" << cpp_strerror(r) << ")" << dendl;
+    std::cout << __func__ << " read frame epilogue failed r=" << r
+                  << " (" << cpp_strerror(r) << ")" << std::endl;
     return _fault();
   }
 
@@ -1329,10 +1329,10 @@ CtPtr ProtocolV2::_handle_read_frame_epilogue_main() {
   try {
     ok = rx_frame_asm.disassemble_segments(rx_preamble, rx_segments_data.data(), rx_epilogue);
   } catch (FrameError& e) {
-    ldout(cct, 1) << __func__ << " " << e.what() << dendl;
+    std::cout << __func__ << " " << e.what() << std::endl;
     return _fault();
   } catch (ceph::crypto::onwire::MsgAuthError&) {
-    ldout(cct, 1) << __func__ << "bad auth tag" << dendl;
+    std::cout << __func__ << "bad auth tag" << std::endl;
     return _fault();
   }
 
@@ -1348,7 +1348,7 @@ CtPtr ProtocolV2::_handle_read_frame_epilogue_main() {
 }
 
 CtPtr ProtocolV2::handle_message() {
-  ldout(cct, 20) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
   ceph_assert(state == THROTTLE_DONE);
 
   const size_t cur_msg_size = get_current_msg_size();
@@ -1357,7 +1357,7 @@ CtPtr ProtocolV2::handle_message() {
   // XXX: paranoid copy just to avoid oops
   ceph_msg_header2 current_header = msg_frame.header();
 
-  ldout(cct, 5) << __func__
+  std::cout << __func__
 		<< " got " << msg_frame.front_len()
 		<< " + " << msg_frame.middle_len()
 		<< " + " << msg_frame.data_len()
@@ -1365,7 +1365,7 @@ CtPtr ProtocolV2::handle_message() {
 		<< " envelope type=" << current_header.type
 		<< " src " << peer_name
 		<< " off " << current_header.data_off
-                << dendl;
+                << std::endl;
 
   INTERCEPT(16);
   ceph_msg_header header{current_header.seq,
@@ -1390,7 +1390,7 @@ CtPtr ProtocolV2::handle_message() {
       msg_frame.data(),
       connection);
   if (!message) {
-    ldout(cct, 1) << __func__ << " decode message failed " << dendl;
+    std::cout << __func__ << " decode message failed " << std::endl;
     return _fault();
   } else {
     state = READ_MESSAGE_COMPLETE;
@@ -1416,9 +1416,9 @@ CtPtr ProtocolV2::handle_message() {
   // elsewhere.  in that case it doesn't matter if we "got" it or not.
   uint64_t cur_seq = in_seq;
   if (message->get_seq() <= cur_seq) {
-    ldout(cct, 0) << __func__ << " got old message " << message->get_seq()
+    std::cout << __func__ << " got old message " << message->get_seq()
                   << " <= " << cur_seq << " " << message << " " << *message
-                  << ", discarding" << dendl;
+                  << ", discarding" << std::endl;
     message->put();
     if (connection->has_feature(CEPH_FEATURE_RECONNECT_SEQ) &&
         cct->_conf->ms_die_on_old_message) {
@@ -1427,8 +1427,8 @@ CtPtr ProtocolV2::handle_message() {
     return nullptr;
   }
   if (message->get_seq() > cur_seq + 1) {
-    ldout(cct, 0) << __func__ << " missed message?  skipped from seq "
-                  << cur_seq << " to " << message->get_seq() << dendl;
+    std::cout << __func__ << " missed message?  skipped from seq "
+                  << cur_seq << " to " << message->get_seq() << std::endl;
     if (cct->_conf->ms_die_on_skipped_message) {
       ceph_assert(0 == "skipped incoming seq");
     }
@@ -1452,10 +1452,10 @@ CtPtr ProtocolV2::handle_message() {
 
   // note last received message.
   in_seq = message->get_seq();
-  ldout(cct, 5) << __func__ << " received message m=" << message
+  std::cout << __func__ << " received message m=" << message
                 << " seq=" << message->get_seq()
                 << " from=" << message->get_source() << " type=" << header.type
-                << " " << *message << dendl;
+                << " " << *message << std::endl;
 
   bool need_dispatch_writer = false;
   if (!connection->policy.lossy) {
@@ -1468,7 +1468,7 @@ CtPtr ProtocolV2::handle_message() {
   ceph::mono_time fast_dispatch_time;
 
   if (connection->is_blackhole()) {
-    ldout(cct, 10) << __func__ << " blackhole " << *message << dendl;
+    std::cout << __func__ << " blackhole " << *message << std::endl;
     message->put();
     goto out;
   }
@@ -1486,9 +1486,9 @@ CtPtr ProtocolV2::handle_message() {
     if (rand() % 10000 < cct->_conf->ms_inject_delay_probability * 10000.0) {
       delay_period =
           cct->_conf->ms_inject_delay_max * (double)(rand() % 10000) / 10000.0;
-      ldout(cct, 1) << "queue_received will delay after "
+      std::cout << "queue_received will delay after "
                     << (ceph_clock_now() + delay_period) << " on " << message
-                    << " " << *message << dendl;
+                    << " " << *message << std::endl;
     }
     connection->delay_state->queue(delay_period, message);
   } else if (messenger->ms_can_fast_dispatch(message)) {
@@ -1521,19 +1521,19 @@ CtPtr ProtocolV2::handle_message() {
 
 
 CtPtr ProtocolV2::throttle_message() {
-  ldout(cct, 20) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   if (connection->policy.throttler_messages) {
-    ldout(cct, 10) << __func__ << " wants " << 1
+    std::cout << __func__ << " wants " << 1
                    << " message from policy throttler "
                    << connection->policy.throttler_messages->get_current()
                    << "/" << connection->policy.throttler_messages->get_max()
-                   << dendl;
+                   << std::endl;
     if (!connection->policy.throttler_messages->get_or_fail()) {
-      ldout(cct, 10) << __func__ << " wants 1 message from policy throttle "
+      std::cout << __func__ << " wants 1 message from policy throttle "
                      << connection->policy.throttler_messages->get_current()
                      << "/" << connection->policy.throttler_messages->get_max()
-                     << " failed, just wait." << dendl;
+                     << " failed, just wait." << std::endl;
       // following thread pool deal with th full message queue isn't a
       // short time, so we can wait a ms.
       if (connection->register_time_events.empty()) {
@@ -1550,21 +1550,21 @@ CtPtr ProtocolV2::throttle_message() {
 }
 
 CtPtr ProtocolV2::throttle_bytes() {
-  ldout(cct, 20) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   const size_t cur_msg_size = get_current_msg_size();
   if (cur_msg_size) {
     if (connection->policy.throttler_bytes) {
-      ldout(cct, 10) << __func__ << " wants " << cur_msg_size
+      std::cout << __func__ << " wants " << cur_msg_size
                      << " bytes from policy throttler "
                      << connection->policy.throttler_bytes->get_current() << "/"
-                     << connection->policy.throttler_bytes->get_max() << dendl;
+                     << connection->policy.throttler_bytes->get_max() << std::endl;
       if (!connection->policy.throttler_bytes->get_or_fail(cur_msg_size)) {
-        ldout(cct, 10) << __func__ << " wants " << cur_msg_size
+        std::cout << __func__ << " wants " << cur_msg_size
                        << " bytes from policy throttler "
                        << connection->policy.throttler_bytes->get_current()
                        << "/" << connection->policy.throttler_bytes->get_max()
-                       << " failed, just wait." << dendl;
+                       << " failed, just wait." << std::endl;
         // following thread pool deal with th full message queue isn't a
         // short time, so we can wait a ms.
         if (connection->register_time_events.empty()) {
@@ -1582,18 +1582,18 @@ CtPtr ProtocolV2::throttle_bytes() {
 }
 
 CtPtr ProtocolV2::throttle_dispatch_queue() {
-  ldout(cct, 20) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   const size_t cur_msg_size = get_current_msg_size();
   if (cur_msg_size) {
     if (!connection->dispatch_queue->dispatch_throttler.get_or_fail(
             cur_msg_size)) {
-      ldout(cct, 10)
+      std::cout
           << __func__ << " wants " << cur_msg_size
           << " bytes from dispatch throttle "
           << connection->dispatch_queue->dispatch_throttler.get_current() << "/"
           << connection->dispatch_queue->dispatch_throttler.get_max()
-          << " failed, just wait." << dendl;
+          << " failed, just wait." << std::endl;
       // following thread pool deal with th full message queue isn't a
       // short time, so we can wait a ms.
       if (connection->register_time_events.empty()) {
@@ -1613,17 +1613,17 @@ CtPtr ProtocolV2::throttle_dispatch_queue() {
 
 CtPtr ProtocolV2::handle_keepalive2(ceph::bufferlist &payload)
 {
-  ldout(cct, 20) << __func__
-		 << " payload.length()=" << payload.length() << dendl;
+  std::cout << __func__
+		 << " payload.length()=" << payload.length() << std::endl;
 
   if (state != READY) {
-    lderr(cct) << __func__ << " not in ready state!" << dendl;
+    std::cout << __func__ << " not in ready state!" << std::endl;
     return _fault();
   }
 
   auto keepalive_frame = KeepAliveFrame::Decode(payload);
 
-  ldout(cct, 30) << __func__ << " got KEEPALIVE2 tag ..." << dendl;
+  std::cout << __func__ << " got KEEPALIVE2 tag ..." << std::endl;
 
   connection->write_lock.lock();
   auto keepalive_ack_frame = KeepAliveFrameAck::Encode(keepalive_frame.timestamp());
@@ -1633,8 +1633,8 @@ CtPtr ProtocolV2::handle_keepalive2(ceph::bufferlist &payload)
   }
   connection->write_lock.unlock();
 
-  ldout(cct, 20) << __func__ << " got KEEPALIVE2 "
-                 << keepalive_frame.timestamp() << dendl;
+  std::cout << __func__ << " got KEEPALIVE2 "
+                 << keepalive_frame.timestamp() << std::endl;
   connection->set_last_keepalive(ceph_clock_now());
 
   if (is_connected()) {
@@ -1646,28 +1646,28 @@ CtPtr ProtocolV2::handle_keepalive2(ceph::bufferlist &payload)
 
 CtPtr ProtocolV2::handle_keepalive2_ack(ceph::bufferlist &payload)
 {
-  ldout(cct, 20) << __func__
-		 << " payload.length()=" << payload.length() << dendl;
+  std::cout << __func__
+		 << " payload.length()=" << payload.length() << std::endl;
 
   if (state != READY) {
-    lderr(cct) << __func__ << " not in ready state!" << dendl;
+    std::cout << __func__ << " not in ready state!" << std::endl;
     return _fault();
   }
 
   auto keepalive_ack_frame = KeepAliveFrameAck::Decode(payload);
   connection->set_last_keepalive_ack(keepalive_ack_frame.timestamp());
-  ldout(cct, 20) << __func__ << " got KEEPALIVE_ACK" << dendl;
+  std::cout << __func__ << " got KEEPALIVE_ACK" << std::endl;
 
   return CONTINUE(read_frame);
 }
 
 CtPtr ProtocolV2::handle_message_ack(ceph::bufferlist &payload)
 {
-  ldout(cct, 20) << __func__
-		 << " payload.length()=" << payload.length() << dendl;
+  std::cout << __func__
+		 << " payload.length()=" << payload.length() << std::endl;
 
   if (state != READY) {
-    lderr(cct) << __func__ << " not in ready state!" << dendl;
+    std::cout << __func__ << " not in ready state!" << std::endl;
     return _fault();
   }
 
@@ -1679,7 +1679,7 @@ CtPtr ProtocolV2::handle_message_ack(ceph::bufferlist &payload)
 /* Client Protocol Methods */
 
 CtPtr ProtocolV2::start_client_banner_exchange() {
-  ldout(cct, 20) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   INTERCEPT(1);
 
@@ -1691,7 +1691,7 @@ CtPtr ProtocolV2::start_client_banner_exchange() {
 }
 
 CtPtr ProtocolV2::post_client_banner_exchange() {
-  ldout(cct, 20) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   state = AUTH_CONNECTING;
 
@@ -1700,8 +1700,8 @@ CtPtr ProtocolV2::post_client_banner_exchange() {
 
 CtPtr ProtocolV2::send_auth_request(std::vector<uint32_t> &allowed_methods) {
   ceph_assert(messenger->auth_client);
-  ldout(cct, 20) << __func__ << " peer_type " << (int)connection->peer_type
-		 << " auth_client " << messenger->auth_client << dendl;
+  std::cout << __func__ << " peer_type " << (int)connection->peer_type
+		 << " auth_client " << messenger->auth_client << std::endl;
 
   ceph::bufferlist bl;
   std::vector<uint32_t> preferred_modes;
@@ -1712,12 +1712,12 @@ CtPtr ProtocolV2::send_auth_request(std::vector<uint32_t> &allowed_methods) {
     &am->auth_method, &preferred_modes, &bl);
   connection->lock.lock();
   if (state != AUTH_CONNECTING) {
-    ldout(cct, 1) << __func__ << " state changed!" << dendl;
+    std::cout << __func__ << " state changed!" << std::endl;
     return _fault();
   }
   if (r < 0) {
-    ldout(cct, 0) << __func__ << " get_initial_auth_request returned " << r
-		  << dendl;
+    std::cout << __func__ << " get_initial_auth_request returned " << r
+		  << std::endl;
     stop();
     connection->dispatch_queue->queue_reset(connection);
     return nullptr;
@@ -1731,20 +1731,20 @@ CtPtr ProtocolV2::send_auth_request(std::vector<uint32_t> &allowed_methods) {
 }
 
 CtPtr ProtocolV2::handle_auth_bad_method(ceph::bufferlist &payload) {
-  ldout(cct, 20) << __func__
-		 << " payload.length()=" << payload.length() << dendl;
+  std::cout << __func__
+		 << " payload.length()=" << payload.length() << std::endl;
 
   if (state != AUTH_CONNECTING) {
-    lderr(cct) << __func__ << " not in auth connect state!" << dendl;
+    std::cout << __func__ << " not in auth connect state!" << std::endl;
     return _fault();
   }
 
   auto bad_method = AuthBadMethodFrame::Decode(payload);
-  ldout(cct, 1) << __func__ << " method=" << bad_method.method()
+  std::cout << __func__ << " method=" << bad_method.method()
 		<< " result " << cpp_strerror(bad_method.result())
                 << ", allowed methods=" << bad_method.allowed_methods()
 		<< ", allowed modes=" << bad_method.allowed_modes()
-                << dendl;
+                << std::endl;
   ceph_assert(messenger->auth_client);
   auto am = auth_meta;
   connection->lock.unlock();
@@ -1763,18 +1763,18 @@ CtPtr ProtocolV2::handle_auth_bad_method(ceph::bufferlist &payload) {
 
 CtPtr ProtocolV2::handle_auth_reply_more(ceph::bufferlist &payload)
 {
-  ldout(cct, 20) << __func__
-		 << " payload.length()=" << payload.length() << dendl;
+  std::cout << __func__
+		 << " payload.length()=" << payload.length() << std::endl;
 
   if (state != AUTH_CONNECTING) {
-    lderr(cct) << __func__ << " not in auth connect state!" << dendl;
+    std::cout << __func__ << " not in auth connect state!" << std::endl;
     return _fault();
   }
 
   auto auth_more = AuthReplyMoreFrame::Decode(payload);
-  ldout(cct, 5) << __func__
+  std::cout << __func__
                 << " auth reply more len=" << auth_more.auth_payload().length()
-                << dendl;
+                << std::endl;
   ceph_assert(messenger->auth_client);
   ceph::bufferlist reply;
   auto am = auth_meta;
@@ -1783,12 +1783,12 @@ CtPtr ProtocolV2::handle_auth_reply_more(ceph::bufferlist &payload)
     connection, am.get(), auth_more.auth_payload(), &reply);
   connection->lock.lock();
   if (state != AUTH_CONNECTING) {
-    ldout(cct, 1) << __func__ << " state changed!" << dendl;
+    std::cout << __func__ << " state changed!" << std::endl;
     return _fault();
   }
   if (r < 0) {
-    lderr(cct) << __func__ << " auth_client handle_auth_reply_more returned "
-	       << r << dendl;
+    std::cout << __func__ << " auth_client handle_auth_reply_more returned "
+	       << r << std::endl;
     return _fault();
   }
   auto more_reply = AuthRequestMoreFrame::Encode(reply);
@@ -1797,11 +1797,11 @@ CtPtr ProtocolV2::handle_auth_reply_more(ceph::bufferlist &payload)
 
 CtPtr ProtocolV2::handle_auth_done(ceph::bufferlist &payload)
 {
-  ldout(cct, 20) << __func__
-		 << " payload.length()=" << payload.length() << dendl;
+  std::cout << __func__
+		 << " payload.length()=" << payload.length() << std::endl;
 
   if (state != AUTH_CONNECTING) {
-    lderr(cct) << __func__ << " not in auth connect state!" << dendl;
+    std::cout << __func__ << " not in auth connect state!" << std::endl;
     return _fault();
   }
 
@@ -1820,7 +1820,7 @@ CtPtr ProtocolV2::handle_auth_done(ceph::bufferlist &payload)
     &am->connection_secret);
   connection->lock.lock();
   if (state != AUTH_CONNECTING) {
-    ldout(cct, 1) << __func__ << " state changed!" << dendl;
+    std::cout << __func__ << " state changed!" << std::endl;
     return _fault();
   }
   if (r < 0) {
@@ -1877,7 +1877,7 @@ CtPtr ProtocolV2::start_session_connect() {
 }
 
 CtPtr ProtocolV2::send_client_ident() {
-  ldout(cct, 20) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   if (!connection->policy.lossy && !client_cookie) {
     client_cookie = ceph::util::generate_random_number<uint64_t>(1, -1ll);
@@ -1898,7 +1898,7 @@ CtPtr ProtocolV2::send_client_ident() {
       flags,
       client_cookie);
 
-  ldout(cct, 5) << __func__ << " sending identification: "
+  std::cout << __func__ << " sending identification: "
                 << "addrs=" << messenger->get_myaddrs()
                 << " target=" << connection->target_addr
                 << " gid=" << messenger->get_myname().num()
@@ -1908,7 +1908,7 @@ CtPtr ProtocolV2::send_client_ident() {
                 << " features_required="
 		            << (connection->policy.features_required | msgr2_required)
                 << " flags=" << flags
-                << " cookie=" << client_cookie << std::dec << dendl;
+                << " cookie=" << client_cookie << std::dec << std::endl;
 
   INTERCEPT(11);
 
@@ -1916,7 +1916,7 @@ CtPtr ProtocolV2::send_client_ident() {
 }
 
 CtPtr ProtocolV2::send_reconnect() {
-  ldout(cct, 20) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   auto reconnect = ReconnectFrame::Encode(messenger->get_myaddrs(),
                                           client_cookie,
@@ -1925,11 +1925,11 @@ CtPtr ProtocolV2::send_reconnect() {
                                           connect_seq,
                                           in_seq);
 
-  ldout(cct, 5) << __func__ << " reconnect to session: client_cookie="
+  std::cout << __func__ << " reconnect to session: client_cookie="
                 << std::hex << client_cookie << " server_cookie="
                 << server_cookie << std::dec
                 << " gs=" << global_seq << " cs=" << connect_seq
-                << " ms=" << in_seq << dendl;
+                << " ms=" << in_seq << std::endl;
 
   INTERCEPT(13);
 
@@ -1938,37 +1938,37 @@ CtPtr ProtocolV2::send_reconnect() {
 
 CtPtr ProtocolV2::handle_ident_missing_features(ceph::bufferlist &payload)
 {
-  ldout(cct, 20) << __func__
-		 << " payload.length()=" << payload.length() << dendl;
+  std::cout << __func__
+		 << " payload.length()=" << payload.length() << std::endl;
 
   if (state != SESSION_CONNECTING) {
-    lderr(cct) << __func__ << " not in session connect state!" << dendl;
+    std::cout << __func__ << " not in session connect state!" << std::endl;
     return _fault();
   }
 
   auto ident_missing =
       IdentMissingFeaturesFrame::Decode(payload);
-  lderr(cct) << __func__
+  std::cout << __func__
              << " client does not support all server features: " << std::hex
-             << ident_missing.features() << std::dec << dendl;
+             << ident_missing.features() << std::dec << std::endl;
 
   return _fault();
 }
 
 CtPtr ProtocolV2::handle_session_reset(ceph::bufferlist &payload)
 {
-  ldout(cct, 20) << __func__
-		 << " payload.length()=" << payload.length() << dendl;
+  std::cout << __func__
+		 << " payload.length()=" << payload.length() << std::endl;
 
   if (state != SESSION_RECONNECTING) {
-    lderr(cct) << __func__ << " not in session reconnect state!" << dendl;
+    std::cout << __func__ << " not in session reconnect state!" << std::endl;
     return _fault();
   }
 
   auto reset = ResetFrame::Decode(payload);
 
-  ldout(cct, 1) << __func__ << " received session reset full=" << reset.full()
-                << dendl;
+  std::cout << __func__ << " received session reset full=" << reset.full()
+                << std::endl;
   if (reset.full()) {
     reset_session();
   } else {
@@ -1983,52 +1983,52 @@ CtPtr ProtocolV2::handle_session_reset(ceph::bufferlist &payload)
 
 CtPtr ProtocolV2::handle_session_retry(ceph::bufferlist &payload)
 {
-  ldout(cct, 20) << __func__
-		 << " payload.length()=" << payload.length() << dendl;
+  std::cout << __func__
+		 << " payload.length()=" << payload.length() << std::endl;
 
   if (state != SESSION_RECONNECTING) {
-    lderr(cct) << __func__ << " not in session reconnect state!" << dendl;
+    std::cout << __func__ << " not in session reconnect state!" << std::endl;
     return _fault();
   }
 
   auto retry = RetryFrame::Decode(payload);
   connect_seq = retry.connect_seq() + 1;
 
-  ldout(cct, 1) << __func__
+  std::cout << __func__
                 << " received session retry connect_seq=" << retry.connect_seq()
-                << ", inc to cs=" << connect_seq << dendl;
+                << ", inc to cs=" << connect_seq << std::endl;
 
   return send_reconnect();
 }
 
 CtPtr ProtocolV2::handle_session_retry_global(ceph::bufferlist &payload)
 {
-  ldout(cct, 20) << __func__
-		 << " payload.length()=" << payload.length() << dendl;
+  std::cout << __func__
+		 << " payload.length()=" << payload.length() << std::endl;
 
   if (state != SESSION_RECONNECTING) {
-    lderr(cct) << __func__ << " not in session reconnect state!" << dendl;
+    std::cout << __func__ << " not in session reconnect state!" << std::endl;
     return _fault();
   }
 
   auto retry = RetryGlobalFrame::Decode(payload);
   global_seq = messenger->get_global_seq(retry.global_seq());
 
-  ldout(cct, 1) << __func__ << " received session retry global global_seq="
+  std::cout << __func__ << " received session retry global global_seq="
                 << retry.global_seq() << ", choose new gs=" << global_seq
-                << dendl;
+                << std::endl;
 
   return send_reconnect();
 }
 
 CtPtr ProtocolV2::handle_wait(ceph::bufferlist &payload) {
-  ldout(cct, 20) << __func__
+  std::cout << __func__
 		 << " received WAIT (connection race)"
 		 << " payload.length()=" << payload.length()
-		 << dendl;
+		 << std::endl;
 
   if (state != SESSION_CONNECTING && state != SESSION_RECONNECTING) {
-    lderr(cct) << __func__ << " not in session (re)connect state!" << dendl;
+    std::cout << __func__ << " not in session (re)connect state!" << std::endl;
     return _fault();
   }
 
@@ -2039,25 +2039,25 @@ CtPtr ProtocolV2::handle_wait(ceph::bufferlist &payload) {
 
 CtPtr ProtocolV2::handle_reconnect_ok(ceph::bufferlist &payload)
 {
-  ldout(cct, 20) << __func__
-		 << " payload.length()=" << payload.length() << dendl;
+  std::cout << __func__
+		 << " payload.length()=" << payload.length() << std::endl;
 
   if (state != SESSION_RECONNECTING) {
-    lderr(cct) << __func__ << " not in session reconnect state!" << dendl;
+    std::cout << __func__ << " not in session reconnect state!" << std::endl;
     return _fault();
   }
 
   auto reconnect_ok = ReconnectOkFrame::Decode(payload);
-  ldout(cct, 5) << __func__
+  std::cout << __func__
                 << " reconnect accepted: sms=" << reconnect_ok.msg_seq()
-                << dendl;
+                << std::endl;
 
   out_seq = discard_requeued_up_to(out_seq, reconnect_ok.msg_seq());
 
   backoff = utime_t();
-  ldout(cct, 10) << __func__ << " reconnect success " << connect_seq
+  std::cout << __func__ << " reconnect success " << connect_seq
                  << ", lossy = " << connection->policy.lossy << ", features "
-                 << connection->get_features() << dendl;
+                 << connection->get_features() << std::endl;
 
   if (connection->delay_state) {
     ceph_assert(connection->delay_state->ready());
@@ -2071,16 +2071,16 @@ CtPtr ProtocolV2::handle_reconnect_ok(ceph::bufferlist &payload)
 
 CtPtr ProtocolV2::handle_server_ident(ceph::bufferlist &payload)
 {
-  ldout(cct, 20) << __func__
-		 << " payload.length()=" << payload.length() << dendl;
+  std::cout << __func__
+		 << " payload.length()=" << payload.length() << std::endl;
 
   if (state != SESSION_CONNECTING) {
-    lderr(cct) << __func__ << " not in session connect state!" << dendl;
+    std::cout << __func__ << " not in session connect state!" << std::endl;
     return _fault();
   }
 
   auto server_ident = ServerIdentFrame::Decode(payload);
-  ldout(cct, 5) << __func__ << " received server identification:"
+  std::cout << __func__ << " received server identification:"
                 << " addrs=" << server_ident.addrs()
                 << " gid=" << server_ident.gid()
                 << " global_seq=" << server_ident.global_seq()
@@ -2088,19 +2088,19 @@ CtPtr ProtocolV2::handle_server_ident(ceph::bufferlist &payload)
                 << server_ident.supported_features()
                 << " features_required=" << server_ident.required_features()
                 << " flags=" << server_ident.flags()
-                << " cookie=" << server_ident.cookie() << std::dec << dendl;
+                << " cookie=" << server_ident.cookie() << std::dec << std::endl;
 
   // is this who we intended to talk to?
   // be a bit forgiving here, since we may be connecting based on addresses parsed out
   // of mon_host or something.
   if (!server_ident.addrs().contains(connection->target_addr)) {
-    ldout(cct,1) << __func__ << " peer identifies as " << server_ident.addrs()
-		 << ", does not include " << connection->target_addr << dendl;
+    std::cout << __func__ << " peer identifies as " << server_ident.addrs()
+		 << ", does not include " << connection->target_addr << std::endl;
     return _fault();
   }
 
   server_cookie = server_ident.cookie();
-
+  std::cout<<__func__<<"set_peer_addrs = "<<server_ident.addrs()<<std::endl;
   connection->set_peer_addrs(server_ident.addrs());
   peer_name = entity_name_t(connection->get_peer_type(), server_ident.gid());
   connection->set_features(server_ident.supported_features() &
@@ -2110,9 +2110,9 @@ CtPtr ProtocolV2::handle_server_ident(ceph::bufferlist &payload)
   connection->policy.lossy = server_ident.flags() & CEPH_MSG_CONNECT_LOSSY;
 
   backoff = utime_t();
-  ldout(cct, 10) << __func__ << " connect success " << connect_seq
+  std::cout << __func__ << " connect success " << connect_seq
                  << ", lossy = " << connection->policy.lossy << ", features "
-                 << connection->get_features() << dendl;
+                 << connection->get_features() << std::endl;
 
   if (connection->delay_state) {
     ceph_assert(connection->delay_state->ready());
@@ -2140,13 +2140,13 @@ CtPtr ProtocolV2::send_compression_request() {
 
 CtPtr ProtocolV2::handle_compression_done(ceph::bufferlist &payload) {
   if (state != COMPRESSION_CONNECTING) {
-    lderr(cct) << __func__ << " state changed!" << dendl;
+    std::cout << __func__ << " state changed!" << std::endl;
     return _fault();
   }
 
   auto response = CompressionDoneFrame::Decode(payload);
-  ldout(cct, 10) << __func__ << " CompressionDoneFrame(is_compress=" << response.is_compress()
-		 << ", method=" << response.method() << ")" << dendl;
+  std::cout << __func__ << " CompressionDoneFrame(is_compress=" << response.is_compress()
+		 << ", method=" << response.method() << ")" << std::endl;
 
   comp_meta.con_method = static_cast<Compressor::CompressionAlgorithm>(response.method());
   if (comp_meta.is_compress() != response.is_compress()) {
@@ -2161,7 +2161,7 @@ CtPtr ProtocolV2::handle_compression_done(ceph::bufferlist &payload) {
 /* Server Protocol Methods */
 
 CtPtr ProtocolV2::start_server_banner_exchange() {
-  ldout(cct, 20) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   INTERCEPT(2);
 
@@ -2171,7 +2171,7 @@ CtPtr ProtocolV2::start_server_banner_exchange() {
 }
 
 CtPtr ProtocolV2::post_server_banner_exchange() {
-  ldout(cct, 20) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   state = AUTH_ACCEPTING;
 
@@ -2179,19 +2179,19 @@ CtPtr ProtocolV2::post_server_banner_exchange() {
 }
 
 CtPtr ProtocolV2::handle_auth_request(ceph::bufferlist &payload) {
-  ldout(cct, 20) << __func__ << " payload.length()=" << payload.length()
-                 << dendl;
+  std::cout << __func__ << " payload.length()=" << payload.length()
+                 << std::endl;
 
   if (state != AUTH_ACCEPTING) {
-    lderr(cct) << __func__ << " not in auth accept state!" << dendl;
+    std::cout << __func__ << " not in auth accept state!" << std::endl;
     return _fault();
   }
 
   auto request = AuthRequestFrame::Decode(payload);
-  ldout(cct, 10) << __func__ << " AuthRequest(method=" << request.method()
+  std::cout << __func__ << " AuthRequest(method=" << request.method()
 		 << ", preferred_modes=" << request.preferred_modes()
                  << ", payload_len=" << request.auth_payload().length() << ")"
-                 << dendl;
+                 << std::endl;
   auth_meta->auth_method = request.method();
   auth_meta->con_mode = messenger->auth_server->pick_con_mode(
     connection->get_peer_type(), auth_meta->auth_method,
@@ -2209,11 +2209,11 @@ CtPtr ProtocolV2::_auth_bad_method(int r)
   std::vector<uint32_t> allowed_modes;
   messenger->auth_server->get_supported_auth_methods(
     connection->get_peer_type(), &allowed_methods, &allowed_modes);
-  ldout(cct, 1) << __func__ << " auth_method " << auth_meta->auth_method
+  std::cout << __func__ << " auth_method " << auth_meta->auth_method
 		<< " r " << cpp_strerror(r)
 		<< ", allowed_methods " << allowed_methods
 		<< ", allowed_modes " << allowed_modes
-		<< dendl;
+		<< std::endl;
   auto bad_method = AuthBadMethodFrame::Encode(auth_meta->auth_method, r,
                                                allowed_methods, allowed_modes);
   return WRITE(bad_method, "bad auth method", read_frame);
@@ -2233,9 +2233,9 @@ CtPtr ProtocolV2::_handle_auth_request(ceph::bufferlist& auth_payload, bool more
     &reply);
   connection->lock.lock();
   if (state != AUTH_ACCEPTING && state != AUTH_ACCEPTING_MORE) {
-    ldout(cct, 1) << __func__
+    std::cout << __func__
                   << " state changed while accept, it must be mark_down"
-                  << dendl;
+                  << std::endl;
     ceph_assert(state == CLOSED);
     return _fault();
   }
@@ -2279,11 +2279,11 @@ CtPtr ProtocolV2::finish_auth()
 
 CtPtr ProtocolV2::handle_auth_request_more(ceph::bufferlist &payload)
 {
-  ldout(cct, 20) << __func__
-		 << " payload.length()=" << payload.length() << dendl;
+  std::cout << __func__
+		 << " payload.length()=" << payload.length() << std::endl;
 
   if (state != AUTH_ACCEPTING_MORE) {
-    lderr(cct) << __func__ << " not in auth accept more state!" << dendl;
+    std::cout << __func__ << " not in auth accept more state!" << std::endl;
     return _fault();
   }
 
@@ -2293,13 +2293,13 @@ CtPtr ProtocolV2::handle_auth_request_more(ceph::bufferlist &payload)
 
 CtPtr ProtocolV2::handle_auth_signature(ceph::bufferlist &payload)
 {
-  ldout(cct, 20) << __func__
-		 << " payload.length()=" << payload.length() << dendl;
+  std::cout << __func__
+		 << " payload.length()=" << payload.length() << std::endl;
 
   if (state != AUTH_ACCEPTING_SIGN && state != AUTH_CONNECTING_SIGN) {
-    lderr(cct) << __func__
+    std::cout << __func__
                << " pre-auth verification signature seen in wrong state!"
-               << dendl;
+               << std::endl;
     return _fault();
   }
 
@@ -2308,15 +2308,15 @@ CtPtr ProtocolV2::handle_auth_signature(ceph::bufferlist &payload)
   const auto actual_tx_sig = auth_meta->session_key.empty() ?
     sha256_digest_t() : auth_meta->session_key.hmac_sha256(cct, pre_auth.txbuf);
   if (sig_frame.signature() != actual_tx_sig) {
-    ldout(cct, 2) << __func__ << " pre-auth signature mismatch"
+    std::cout << __func__ << " pre-auth signature mismatch"
                   << " actual_tx_sig=" << actual_tx_sig
                   << " sig_frame.signature()=" << sig_frame.signature()
-                  << dendl;
+                  << std::endl;
     return _fault();
   } else {
-    ldout(cct, 20) << __func__ << " pre-auth signature success"
+    std::cout << __func__ << " pre-auth signature success"
                    << " sig_frame.signature()=" << sig_frame.signature()
-                   << dendl;
+                   << std::endl;
     pre_auth.txbuf.clear();
   }
 
@@ -2333,17 +2333,17 @@ CtPtr ProtocolV2::handle_auth_signature(ceph::bufferlist &payload)
 
 CtPtr ProtocolV2::handle_client_ident(ceph::bufferlist &payload)
 {
-  ldout(cct, 20) << __func__
-		 << " payload.length()=" << payload.length() << dendl;
+  std::cout << __func__
+		 << " payload.length()=" << payload.length() << std::endl;
 
   if (state != SESSION_ACCEPTING) {
-    lderr(cct) << __func__ << " not in session accept state!" << dendl;
+    std::cout << __func__ << " not in session accept state!" << std::endl;
     return _fault();
   }
 
   auto client_ident = ClientIdentFrame::Decode(payload);
 
-  ldout(cct, 5) << __func__ << " received client identification:"
+  std::cout << __func__ << " received client identification:"
                 << " addrs=" << client_ident.addrs()
 		            << " target=" << client_ident.target_addr()
                 << " gid=" << client_ident.gid()
@@ -2352,21 +2352,21 @@ CtPtr ProtocolV2::handle_client_ident(ceph::bufferlist &payload)
                 << client_ident.supported_features()
                 << " features_required=" << client_ident.required_features()
                 << " flags=" << client_ident.flags()
-                << " cookie=" << client_ident.cookie() << std::dec << dendl;
+                << " cookie=" << client_ident.cookie() << std::dec << std::endl;
 
   if (client_ident.addrs().empty() ||
       client_ident.addrs().front() == entity_addr_t()) {
-    ldout(cct,5) << __func__ << " oops, client_ident.addrs() is empty" << dendl;
+    std::cout << __func__ << " oops, client_ident.addrs() is empty" << std::endl;
     return _fault();  // a v2 peer should never do this
   }
   if (!messenger->get_myaddrs().contains(client_ident.target_addr())) {
-    ldout(cct,5) << __func__ << " peer is trying to reach "
+    std::cout << __func__ << " peer is trying to reach "
 		 << client_ident.target_addr()
 		 << " which is not us (" << messenger->get_myaddrs() << ")"
-		 << dendl;
+		 << std::endl;
     return _fault();
   }
-
+  std::cout<<__func__<<"set_peer_addrs= "<<client_ident.addrs()<<std::endl;
   connection->set_peer_addrs(client_ident.addrs());
   connection->target_addr = connection->_infer_target_addr(client_ident.addrs());
 
@@ -2379,8 +2379,8 @@ CtPtr ProtocolV2::handle_client_ident(ceph::bufferlist &payload)
     (connection->policy.features_required | msgr2_required) &
     ~(uint64_t)client_ident.supported_features();
   if (feat_missing) {
-    ldout(cct, 1) << __func__ << " peer missing required features " << std::hex
-                  << feat_missing << std::dec << dendl;
+    std::cout << __func__ << " peer missing required features " << std::hex
+                  << feat_missing << std::dec << std::endl;
     auto ident_missing_features =
         IdentMissingFeaturesFrame::Encode(feat_missing);
 
@@ -2405,10 +2405,10 @@ CtPtr ProtocolV2::handle_client_ident(ceph::bufferlist &payload)
 
     if (existing &&
 	existing->protocol->proto_type != 2) {
-      ldout(cct,1) << __func__ << " existing " << existing << " proto "
+      std::cout << __func__ << " existing " << existing << " proto "
 		   << existing->protocol.get() << " version is "
 		   << existing->protocol->proto_type << ", marking down"
-		   << dendl;
+		   << std::endl;
       existing->mark_down();
       existing = nullptr;
     }
@@ -2417,9 +2417,9 @@ CtPtr ProtocolV2::handle_client_ident(ceph::bufferlist &payload)
 
     connection->lock.lock();
     if (state != SESSION_ACCEPTING) {
-      ldout(cct, 1) << __func__
+      std::cout << __func__
 		    << " state changed while accept, it must be mark_down"
-		    << dendl;
+		    << std::endl;
       ceph_assert(state == CLOSED);
       return _fault();
     }
@@ -2435,27 +2435,28 @@ CtPtr ProtocolV2::handle_client_ident(ceph::bufferlist &payload)
 
 CtPtr ProtocolV2::handle_reconnect(ceph::bufferlist &payload)
 {
-  ldout(cct, 20) << __func__
-		 << " payload.length()=" << payload.length() << dendl;
+  std::cout << __func__
+		 << " payload.length()=" << payload.length() << std::endl;
 
   if (state != SESSION_ACCEPTING) {
-    lderr(cct) << __func__ << " not in session accept state!" << dendl;
+    std::cout << __func__ << " not in session accept state!" << std::endl;
     return _fault();
   }
 
   auto reconnect = ReconnectFrame::Decode(payload);
 
-  ldout(cct, 5) << __func__
+  std::cout << __func__
                 << " received reconnect:" 
                 << " client_cookie=" << std::hex << reconnect.client_cookie()
                 << " server_cookie=" << reconnect.server_cookie() << std::dec
                 << " gs=" << reconnect.global_seq()
                 << " cs=" << reconnect.connect_seq()
                 << " ms=" << reconnect.msg_seq()
-		            << dendl;
+		            << std::endl;
 
   // Should we check if one of the ident.addrs match connection->target_addr
   // as we do in ProtocolV1?
+  std::cout<<__func__<<"set_peer_addrs ="<<reconnect.addrs()<<std::endl;
   connection->set_peer_addrs(reconnect.addrs());
   connection->target_addr = connection->_infer_target_addr(reconnect.addrs());
   peer_global_seq = reconnect.global_seq();
@@ -2465,9 +2466,9 @@ CtPtr ProtocolV2::handle_reconnect(ceph::bufferlist &payload)
 
   if (existing &&
       existing->protocol->proto_type != 2) {
-    ldout(cct,1) << __func__ << " existing " << existing << " proto "
+    std::cout << __func__ << " existing " << existing << " proto "
 		 << existing->protocol.get() << " version is "
-		 << existing->protocol->proto_type << ", marking down" << dendl;
+		 << existing->protocol->proto_type << ", marking down" << std::endl;
     existing->mark_down();
     existing = nullptr;
   }
@@ -2476,9 +2477,9 @@ CtPtr ProtocolV2::handle_reconnect(ceph::bufferlist &payload)
 
   connection->lock.lock();
   if (state != SESSION_ACCEPTING) {
-    ldout(cct, 1) << __func__
+    std::cout << __func__
                   << " state changed while accept, it must be mark_down"
-                  << dendl;
+                  << std::endl;
     ceph_assert(state == CLOSED);
     return _fault();
   }
@@ -2486,8 +2487,8 @@ CtPtr ProtocolV2::handle_reconnect(ceph::bufferlist &payload)
   if (!existing) {
     // there is no existing connection therefore cannot reconnect to previous
     // session
-    ldout(cct, 0) << __func__
-                  << " no existing connection exists, reseting client" << dendl;
+    std::cout << __func__
+                  << " no existing connection exists, reseting client" << std::endl;
     auto reset = ResetFrame::Encode(true);
     return WRITE(reset, "session reset", read_frame);
   }
@@ -2496,32 +2497,32 @@ CtPtr ProtocolV2::handle_reconnect(ceph::bufferlist &payload)
 
   ProtocolV2 *exproto = dynamic_cast<ProtocolV2 *>(existing->protocol.get());
   if (!exproto) {
-    ldout(cct, 1) << __func__ << " existing=" << existing << dendl;
+    std::cout << __func__ << " existing=" << existing << std::endl;
     ceph_assert(false);
   }
 
   if (exproto->state == CLOSED) {
-    ldout(cct, 5) << __func__ << " existing " << existing
-                  << " already closed. Reseting client" << dendl;
+    std::cout << __func__ << " existing " << existing
+                  << " already closed. Reseting client" << std::endl;
     auto reset = ResetFrame::Encode(true);
     return WRITE(reset, "session reset", read_frame);
   }
 
   if (exproto->replacing) {
-    ldout(cct, 1) << __func__
+    std::cout << __func__
                   << " existing racing replace happened while replacing."
-                  << " existing=" << existing << dendl;
+                  << " existing=" << existing << std::endl;
     auto retry = RetryGlobalFrame::Encode(exproto->peer_global_seq);
     return WRITE(retry, "session retry", read_frame);
   }
 
   if (exproto->client_cookie != reconnect.client_cookie()) {
-    ldout(cct, 1) << __func__ << " existing=" << existing
+    std::cout << __func__ << " existing=" << existing
                   << " client cookie mismatch, I must have reseted:"
                   << " cc=" << std::hex << exproto->client_cookie
                   << " rcc=" << reconnect.client_cookie()
                   << ", reseting client." << std::dec
-                  << dendl;
+                  << std::endl;
     auto reset = ResetFrame::Encode(connection->policy.resetcheck);
     return WRITE(reset, "session reset", read_frame);
   } else if (exproto->server_cookie == 0) {
@@ -2532,18 +2533,18 @@ CtPtr ProtocolV2::handle_reconnect(ceph::bufferlist &payload)
     //   - connection fault
     //   - b reconnects to a with cookie X, connect_seq=1
     //   - a has cookie==0
-    ldout(cct, 1) << __func__ << " I was a client and didn't received the"
+    std::cout << __func__ << " I was a client and didn't received the"
                   << " server_ident. Asking peer to resume session"
-                  << " establishment" << dendl;
+                  << " establishment" << std::endl;
     auto reset = ResetFrame::Encode(false);
     return WRITE(reset, "session reset", read_frame);
   }
 
   if (exproto->peer_global_seq > reconnect.global_seq()) {
-    ldout(cct, 5) << __func__
+    std::cout << __func__
                   << " stale global_seq: sgs=" << exproto->peer_global_seq
                   << " cgs=" << reconnect.global_seq()
-                  << ", ask client to retry global" << dendl;
+                  << ", ask client to retry global" << std::endl;
     auto retry = RetryGlobalFrame::Encode(exproto->peer_global_seq);
 
     INTERCEPT(18);
@@ -2552,10 +2553,10 @@ CtPtr ProtocolV2::handle_reconnect(ceph::bufferlist &payload)
   }
 
   if (exproto->connect_seq > reconnect.connect_seq()) {
-    ldout(cct, 5) << __func__
+    std::cout << __func__
                   << " stale connect_seq scs=" << exproto->connect_seq
                   << " ccs=" << reconnect.connect_seq()
-                  << " , ask client to retry" << dendl;
+                  << " , ask client to retry" << std::endl;
     auto retry = RetryFrame::Encode(exproto->connect_seq);
     return WRITE(retry, "session retry", read_frame);
   }
@@ -2566,23 +2567,23 @@ CtPtr ProtocolV2::handle_reconnect(ceph::bufferlist &payload)
             messenger->get_myaddrs().msgr2_addr() &&
         !existing->policy.server) {
       // the existing connection wins
-      ldout(cct, 1)
+      std::cout
           << __func__
           << " reconnect race detected, this connection loses to existing="
-          << existing << dendl;
+          << existing << std::endl;
 
       auto wait = WaitFrame::Encode();
       return WRITE(wait, "wait", read_frame);
     } else {
       // this connection wins
-      ldout(cct, 1) << __func__
+      std::cout << __func__
                     << " reconnect race detected, replacing existing="
                     << existing << " socket by this connection's socket"
-                    << dendl;
+                    << std::endl;
     }
   }
 
-  ldout(cct, 1) << __func__ << " reconnect to existing=" << existing << dendl;
+  std::cout << __func__ << " reconnect to existing=" << existing << std::endl;
 
   reconnecting = true;
 
@@ -2594,35 +2595,35 @@ CtPtr ProtocolV2::handle_reconnect(ceph::bufferlist &payload)
 }
 
 CtPtr ProtocolV2::handle_existing_connection(const AsyncConnectionRef& existing) {
-  ldout(cct, 20) << __func__ << " existing=" << existing << dendl;
+  std::cout << __func__ << " existing=" << existing << std::endl;
 
   std::lock_guard<std::mutex> l(existing->lock);
 
   ProtocolV2 *exproto = dynamic_cast<ProtocolV2 *>(existing->protocol.get());
   if (!exproto) {
-    ldout(cct, 1) << __func__ << " existing=" << existing << dendl;
+    std::cout << __func__ << " existing=" << existing << std::endl;
     ceph_assert(false);
   }
 
   if (exproto->state == CLOSED) {
-    ldout(cct, 1) << __func__ << " existing " << existing << " already closed."
-                  << dendl;
+    std::cout << __func__ << " existing " << existing << " already closed."
+                  << std::endl;
     return send_server_ident();
   }
 
   if (exproto->replacing) {
-    ldout(cct, 1) << __func__
+    std::cout << __func__
                   << " existing racing replace happened while replacing."
-                  << " existing=" << existing << dendl;
+                  << " existing=" << existing << std::endl;
     auto wait = WaitFrame::Encode();
     return WRITE(wait, "wait", read_frame);
   }
 
   if (exproto->peer_global_seq > peer_global_seq) {
-    ldout(cct, 1) << __func__ << " this is a stale connection, peer_global_seq="
+    std::cout << __func__ << " this is a stale connection, peer_global_seq="
                   << peer_global_seq
                   << " existing->peer_global_seq=" << exproto->peer_global_seq
-                  << ", stopping this connection." << dendl;
+                  << ", stopping this connection." << std::endl;
     stop();
     connection->dispatch_queue->queue_reset(connection);
     return nullptr;
@@ -2630,10 +2631,10 @@ CtPtr ProtocolV2::handle_existing_connection(const AsyncConnectionRef& existing)
 
   if (existing->policy.lossy) {
     // existing connection can be thrown out in favor of this one
-    ldout(cct, 1)
+    std::cout
         << __func__ << " existing=" << existing
         << " is a lossy channel. Stopping existing in favor of this connection"
-        << dendl;
+        << std::endl;
     existing->protocol->stop();
     existing->dispatch_queue->queue_reset(existing.get());
     return send_server_ident();
@@ -2644,8 +2645,8 @@ CtPtr ProtocolV2::handle_existing_connection(const AsyncConnectionRef& existing)
     // Found previous session
     // peer has reseted and we're going to reuse the existing connection
     // by replacing the communication socket
-    ldout(cct, 1) << __func__ << " found previous session existing=" << existing
-                  << ", peer must have reseted." << dendl;
+    std::cout << __func__ << " found previous session existing=" << existing
+                  << ", peer must have reseted." << std::endl;
     if (connection->policy.resetcheck) {
       exproto->reset_session();
     }
@@ -2655,14 +2656,14 @@ CtPtr ProtocolV2::handle_existing_connection(const AsyncConnectionRef& existing)
   if (exproto->client_cookie == client_cookie) {
     // session establishment interrupted between client_ident and server_ident,
     // continuing...
-    ldout(cct, 1) << __func__ << " found previous session existing=" << existing
-                  << ", continuing session establishment." << dendl;
+    std::cout << __func__ << " found previous session existing=" << existing
+                  << ", continuing session establishment." << std::endl;
     return reuse_connection(existing, exproto);
   }
 
   if (exproto->state == READY || exproto->state == STANDBY) {
-    ldout(cct, 1) << __func__ << " existing=" << existing
-                  << " is READY/STANDBY, lets reuse it" << dendl;
+    std::cout << __func__ << " existing=" << existing
+                  << " is READY/STANDBY, lets reuse it" << std::endl;
     return reuse_connection(existing, exproto);
   }
 
@@ -2672,16 +2673,16 @@ CtPtr ProtocolV2::handle_existing_connection(const AsyncConnectionRef& existing)
           messenger->get_myaddrs().msgr2_addr() ||
       existing->policy.server) {
     // this connection wins
-    ldout(cct, 1) << __func__
+    std::cout << __func__
                   << " connection race detected, replacing existing="
-                  << existing << " socket by this connection's socket" << dendl;
+                  << existing << " socket by this connection's socket" << std::endl;
     return reuse_connection(existing, exproto);
   } else {
     // the existing connection wins
-    ldout(cct, 1)
+    std::cout
         << __func__
         << " connection race detected, this connection loses to existing="
-        << existing << dendl;
+        << existing << std::endl;
     ceph_assert(connection->peer_addrs->msgr2_addr() >
                 messenger->get_myaddrs().msgr2_addr());
 
@@ -2696,8 +2697,8 @@ CtPtr ProtocolV2::handle_existing_connection(const AsyncConnectionRef& existing)
 
 CtPtr ProtocolV2::reuse_connection(const AsyncConnectionRef& existing,
                                    ProtocolV2 *exproto) {
-  ldout(cct, 20) << __func__ << " existing=" << existing
-                 << " reconnect=" << reconnecting << dendl;
+  std::cout << __func__ << " existing=" << existing
+                 << " reconnect=" << reconnecting << std::endl;
 
   connection->inject_delay();
 
@@ -2737,8 +2738,8 @@ CtPtr ProtocolV2::reuse_connection(const AsyncConnectionRef& existing,
   exproto->auth_meta = auth_meta;
   exproto->comp_meta = comp_meta;
 
-  ldout(messenger->cct, 5) << __func__ << " stop myself to swap existing"
-                           << dendl;
+  std::cout << __func__ << " stop myself to swap existing"
+                           << std::endl;
 
   // avoid _stop shutdown replacing socket
   // queue a reset on the new connection, which we're dumping for the old
@@ -2842,7 +2843,7 @@ CtPtr ProtocolV2::reuse_connection(const AsyncConnectionRef& existing,
 }
 
 CtPtr ProtocolV2::send_server_ident() {
-  ldout(cct, 20) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   // this is required for the case when this connection is being replaced
   out_seq = discard_requeued_up_to(out_seq, 0);
@@ -2867,7 +2868,7 @@ CtPtr ProtocolV2::send_server_ident() {
           flags,
           server_cookie);
 
-  ldout(cct, 5) << __func__ << " sending identification:"
+  std::cout << __func__ << " sending identification:"
                 << " addrs=" << messenger->get_myaddrs()
                 << " gid=" << messenger->get_myname().num()
                 << " global_seq=" << gs << " features_supported=" << std::hex
@@ -2875,7 +2876,7 @@ CtPtr ProtocolV2::send_server_ident() {
                 << " features_required="
 		            << (connection->policy.features_required | msgr2_required)
                 << " flags=" << flags
-                << " cookie=" << server_cookie << std::dec << dendl;
+                << " cookie=" << server_cookie << std::dec << std::endl;
 
   connection->lock.unlock();
   // Because "replacing" will prevent other connections preempt this addr,
@@ -2887,16 +2888,16 @@ CtPtr ProtocolV2::send_server_ident() {
   connection->lock.lock();
 
   if (r < 0) {
-    ldout(cct, 1) << __func__ << " existing race replacing process for addr = "
+    std::cout << __func__ << " existing race replacing process for addr = "
                   << connection->peer_addrs->msgr2_addr()
-                  << " just fail later one(this)" << dendl;
+                  << " just fail later one(this)" << std::endl;
     connection->inject_delay();
     return _fault();
   }
   if (state != SESSION_ACCEPTING) {
-    ldout(cct, 1) << __func__
+    std::cout << __func__
                   << " state changed while accept_conn, it must be mark_down"
-                  << dendl;
+                  << std::endl;
     ceph_assert(state == CLOSED || state == NONE);
     messenger->unregister_conn(connection);
     connection->inject_delay();
@@ -2915,7 +2916,7 @@ CtPtr ProtocolV2::send_server_ident() {
 }
 
 CtPtr ProtocolV2::server_ready() {
-  ldout(cct, 20) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   if (connection->delay_state) {
     ceph_assert(connection->delay_state->ready());
@@ -2925,14 +2926,14 @@ CtPtr ProtocolV2::server_ready() {
 }
 
 CtPtr ProtocolV2::send_reconnect_ok() {
-  ldout(cct, 20) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   out_seq = discard_requeued_up_to(out_seq, message_seq);
 
   uint64_t ms = in_seq;
   auto reconnect_ok = ReconnectOkFrame::Encode(ms);
 
-  ldout(cct, 5) << __func__ << " sending reconnect_ok: msg_seq=" << ms << dendl;
+  std::cout << __func__ << " sending reconnect_ok: msg_seq=" << ms << std::endl;
 
   connection->lock.unlock();
   // Because "replacing" will prevent other connections preempt this addr,
@@ -2944,16 +2945,16 @@ CtPtr ProtocolV2::send_reconnect_ok() {
   connection->lock.lock();
 
   if (r < 0) {
-    ldout(cct, 1) << __func__ << " existing race replacing process for addr = "
+    std::cout << __func__ << " existing race replacing process for addr = "
                   << connection->peer_addrs->msgr2_addr()
-                  << " just fail later one(this)" << dendl;
+                  << " just fail later one(this)" << std::endl;
     connection->inject_delay();
     return _fault();
   }
   if (state != SESSION_ACCEPTING) {
-    ldout(cct, 1) << __func__
+    std::cout << __func__
                   << " state changed while accept_conn, it must be mark_down"
-                  << dendl;
+                  << std::endl;
     ceph_assert(state == CLOSED || state == NONE);
     messenger->unregister_conn(connection);
     connection->inject_delay();
@@ -2972,13 +2973,13 @@ CtPtr ProtocolV2::send_reconnect_ok() {
 
 CtPtr ProtocolV2::handle_compression_request(ceph::bufferlist &payload) {
   if (state != COMPRESSION_ACCEPTING) {
-    lderr(cct) << __func__ << " state changed!" << dendl;
+    std::cout << __func__ << " state changed!" << std::endl;
     return _fault();
   }
 
   auto request = CompressionRequestFrame::Decode(payload);
-  ldout(cct, 10) << __func__ << " CompressionRequestFrame(is_compress=" << request.is_compress()
-		 << ", preferred_methods=" << request.preferred_methods() << ")" << dendl;
+  std::cout << __func__ << " CompressionRequestFrame(is_compress=" << request.is_compress()
+		 << ", preferred_methods=" << request.preferred_methods() << ")" << std::endl;
 
   const int peer_type = connection->get_peer_type();
   if (Compressor::CompressionMode mode = messenger->comp_registry.get_mode(

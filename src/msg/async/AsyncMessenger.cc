@@ -65,7 +65,7 @@ int Processor::bind(const entity_addrvec_t &bind_addrs,
 {
   const auto& conf = msgr->cct->_conf;
   // bind to socket(s)
-  ldout(msgr->cct, 10) << __func__ << " " << bind_addrs << dendl;
+  std::cout << __func__ << " " << bind_addrs << std::endl;
 
   SocketOptions opts;
   opts.nodelay = msgr->cct->_conf->ms_tcp_nodelay;
@@ -82,8 +82,8 @@ int Processor::bind(const entity_addrvec_t &bind_addrs,
 
     for (int i = 0; i < conf->ms_bind_retry_count; i++) {
       if (i > 0) {
-	lderr(msgr->cct) << __func__ << " was unable to bind. Trying again in "
-			 << conf->ms_bind_retry_delay << " seconds " << dendl;
+	std::cout << __func__ << " was unable to bind. Trying again in "
+			 << conf->ms_bind_retry_delay << " seconds " << std::endl;
 	sleep(conf->ms_bind_retry_delay);
       }
 
@@ -94,8 +94,8 @@ int Processor::bind(const entity_addrvec_t &bind_addrs,
 	    r = worker->listen(listen_addr, k, opts, &listen_sockets[k]);
 	  }, false);
 	if (r < 0) {
-	  lderr(msgr->cct) << __func__ << " unable to bind to " << listen_addr
-			   << ": " << cpp_strerror(r) << dendl;
+	  std::cout << __func__ << " unable to bind to " << listen_addr
+			   << ": " << cpp_strerror(r) << std::endl;
 	  continue;
 	}
       } else {
@@ -116,16 +116,16 @@ int Processor::bind(const entity_addrvec_t &bind_addrs,
 	    break;
 	}
 	if (r < 0) {
-	  lderr(msgr->cct) << __func__ << " unable to bind to " << listen_addr
+	  std::cout << __func__ << " unable to bind to " << listen_addr
 			   << " on any port in range "
 			   << msgr->cct->_conf->ms_bind_port_min
 			   << "-" << msgr->cct->_conf->ms_bind_port_max << ": "
-			   << cpp_strerror(r) << dendl;
+			   << cpp_strerror(r) << std::endl;
 	  listen_addr.set_port(0); // Clear port before retry, otherwise we shall fail again.
 	  continue;
 	}
-	ldout(msgr->cct, 10) << __func__ << " bound on random port "
-			     << listen_addr << dendl;
+	std::cout << __func__ << " bound on random port "
+			     << listen_addr << std::endl;
       }
       if (r == 0) {
 	break;
@@ -134,9 +134,9 @@ int Processor::bind(const entity_addrvec_t &bind_addrs,
 
     // It seems that binding completely failed, return with that exit status
     if (r < 0) {
-      lderr(msgr->cct) << __func__ << " was unable to bind after "
+      std::cout << __func__ << " was unable to bind after "
 		       << conf->ms_bind_retry_count
-		       << " attempts: " << cpp_strerror(r) << dendl;
+		       << " attempts: " << cpp_strerror(r) << std::endl;
       for (unsigned j = 0; j < k; ++j) {
 	// clean up previous bind
 	listen_sockets[j].abort_accept();
@@ -145,22 +145,22 @@ int Processor::bind(const entity_addrvec_t &bind_addrs,
     }
   }
 
-  ldout(msgr->cct, 10) << __func__ << " bound to " << *bound_addrs << dendl;
+  std::cout << __func__ << " bound to " << *bound_addrs << std::endl;
   return 0;
 }
 
 void Processor::start()
 {
-  ldout(msgr->cct, 1) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   // start thread
   worker->center.submit_to(worker->center.get_id(), [this]() {
       for (auto& listen_socket : listen_sockets) {
 	if (listen_socket) {
           if (listen_socket.fd() == -1) {
-            ldout(msgr->cct, 1) << __func__ 
+            std::cout << __func__ 
                 << " Error: processor restart after listen_socket.fd closed. " 
-                << this << dendl;
+                << this << std::endl;
             return;
           }
 	  worker->center.create_file_event(listen_socket.fd(), EVENT_READABLE,
@@ -177,8 +177,8 @@ void Processor::accept()
   opts.priority = msgr->get_socket_priority();
 
   for (auto& listen_socket : listen_sockets) {
-    ldout(msgr->cct, 10) << __func__ << " listen_fd=" << listen_socket.fd()
-			 << dendl;
+    std::cout << __func__ << " listen_fd=" << listen_socket.fd()
+			 << std::endl;
     unsigned accept_error_num = 0;
 
     while (true) {
@@ -191,8 +191,8 @@ void Processor::accept()
 	++w->references;
       int r = listen_socket.accept(&cli_socket, opts, &addr, w);
       if (r == 0) {
-	ldout(msgr->cct, 10) << __func__ << " accepted incoming on sd "
-			     << cli_socket.fd() << dendl;
+	std::cout << __func__ << " accepted incoming on sd "
+			     << cli_socket.fd() << std::endl;
 
 	msgr->add_accept(
 	  w, std::move(cli_socket),
@@ -207,22 +207,22 @@ void Processor::accept()
 	} else if (r == -EAGAIN) {
 	  break;
 	} else if (r == -EMFILE || r == -ENFILE) {
-	  lderr(msgr->cct) << __func__ << " open file descriptions limit reached sd = " << listen_socket.fd()
-			   << " errno " << r << " " << cpp_strerror(r) << dendl;
+	  std::cout << __func__ << " open file descriptions limit reached sd = " << listen_socket.fd()
+			   << " errno " << r << " " << cpp_strerror(r) << std::endl;
 	  if (++accept_error_num > msgr->cct->_conf->ms_max_accept_failures) {
-	    lderr(msgr->cct) << "Proccessor accept has encountered enough error numbers, just do ceph_abort()." << dendl;
+	    std::cout << "Proccessor accept has encountered enough error numbers, just do ceph_abort()." << std::endl;
 	    ceph_abort();
 	  }
 	  continue;
 	} else if (r == -ECONNABORTED) {
-	  ldout(msgr->cct, 0) << __func__ << " it was closed because of rst arrived sd = " << listen_socket.fd()
-			      << " errno " << r << " " << cpp_strerror(r) << dendl;
+	  std::cout << __func__ << " it was closed because of rst arrived sd = " << listen_socket.fd()
+			      << " errno " << r << " " << cpp_strerror(r) << std::endl;
 	  continue;
 	} else {
-	  lderr(msgr->cct) << __func__ << " no incoming connection?"
-			   << " errno " << r << " " << cpp_strerror(r) << dendl;
+	  std::cout << __func__ << " no incoming connection?"
+			   << " errno " << r << " " << cpp_strerror(r) << std::endl;
 	  if (++accept_error_num > msgr->cct->_conf->ms_max_accept_failures) {
-	    lderr(msgr->cct) << "Proccessor accept has encountered enough error numbers, just do ceph_abort()." << dendl;
+	    std::cout << "Proccessor accept has encountered enough error numbers, just do ceph_abort()." << std::endl;
 	    ceph_abort();
 	  }
 	  continue;
@@ -234,7 +234,7 @@ void Processor::accept()
 
 void Processor::stop()
 {
-  ldout(msgr->cct,10) << __func__ << dendl;
+  std::cout << __func__ << std::endl;
 
   worker->center.submit_to(worker->center.get_id(), [this]() {
       for (auto& listen_socket : listen_sockets) {
@@ -320,13 +320,14 @@ AsyncMessenger::~AsyncMessenger()
 
 void AsyncMessenger::ready()
 {
-  ldout(cct,10) << __func__ << " " << get_myaddrs() << dendl;
+  std::cout << __func__ << " " << get_myaddrs() << std::endl;
 
   stack->ready();
   if (pending_bind) {
+    std::cout<<__func__<<"pending_bind_addrs = "<<pending_bind_addrs<<std::endl;
     int err = bindv(pending_bind_addrs);
     if (err) {
-      lderr(cct) << __func__ << " postponed bind failed" << dendl;
+      std::cout << __func__ << " postponed bind failed" << std::endl;
       ceph_abort();
     }
   }
@@ -339,7 +340,7 @@ void AsyncMessenger::ready()
 
 int AsyncMessenger::shutdown()
 {
-  ldout(cct,10) << __func__ << " " << get_myaddrs() << dendl;
+  std::cout << __func__ << " " << get_myaddrs() << std::endl;
 
   // done!  clean up.
   for (auto &&p : processors)
@@ -359,7 +360,7 @@ int AsyncMessenger::shutdown()
 
 int AsyncMessenger::bind(const entity_addr_t &bind_addr)
 {
-  ldout(cct,10) << __func__ << " " << bind_addr << dendl;
+  std::cout << __func__ << " " << bind_addr << std::endl;
   // old bind() can take entity_addr_t(). new bindv() can take a
   // 0.0.0.0-like address but needs type and family to be set.
   auto a = bind_addr;
@@ -379,15 +380,15 @@ int AsyncMessenger::bindv(const entity_addrvec_t &bind_addrs)
   lock.lock();
 
   if (!pending_bind && started) {
-    ldout(cct,10) << __func__ << " already started" << dendl;
+    std::cout << __func__ << " already started" << std::endl;
     lock.unlock();
     return -1;
   }
 
-  ldout(cct,10) << __func__ << " " << bind_addrs << dendl;
+  std::cout << __func__ << " " << bind_addrs << std::endl;
 
   if (!stack->is_ready()) {
-    ldout(cct, 10) << __func__ << " Network Stack is not ready for bind yet - postponed" << dendl;
+    std::cout << __func__ << " Network Stack is not ready for bind yet - postponed" << std::endl;
     pending_bind_addrs = bind_addrs;
     pending_bind = true;
     lock.unlock();
@@ -423,7 +424,7 @@ int AsyncMessenger::bindv(const entity_addrvec_t &bind_addrs)
 
 int AsyncMessenger::rebind(const std::set<int>& avoid_ports)
 {
-  ldout(cct,1) << __func__ << " rebind avoid " << avoid_ports << dendl;
+  std::cout << __func__ << " rebind avoid " << avoid_ports << std::endl;
   ceph_assert(did_bind);
 
   for (auto &&p : processors)
@@ -432,8 +433,8 @@ int AsyncMessenger::rebind(const std::set<int>& avoid_ports)
 
   // adjust the nonce; we want our entity_addr_t to be truly unique.
   nonce += 1000000;
-  ldout(cct, 10) << __func__ << " new nonce " << nonce
-		 << " and addr " << get_myaddrs() << dendl;
+  std::cout << __func__ << " new nonce " << nonce
+		 << " and addr " << get_myaddrs() << std::endl;
 
   entity_addrvec_t bound_addrs;
   entity_addrvec_t bind_addrs = get_myaddrs();
@@ -442,8 +443,8 @@ int AsyncMessenger::rebind(const std::set<int>& avoid_ports)
     new_avoid.insert(a.get_port());
     a.set_port(0);
   }
-  ldout(cct, 10) << __func__ << " will try " << bind_addrs
-		 << " and avoid ports " << new_avoid << dendl;
+  std::cout << __func__ << " will try " << bind_addrs
+		 << " and avoid ports " << new_avoid << std::endl;
   unsigned i = 0;
   for (auto &&p : processors) {
     int r = p->bind(bind_addrs, avoid_ports, &bound_addrs);
@@ -469,10 +470,10 @@ int AsyncMessenger::client_bind(const entity_addr_t &bind_addr)
     return 0;
   }
   if (started) {
-    ldout(cct, 10) << __func__ << " already started" << dendl;
+    std::cout << __func__ << " already started" << std::endl;
     return -1;
   }
-  ldout(cct, 10) << __func__ << " " << bind_addr << dendl;
+  std::cout << __func__ << " " << bind_addr << std::endl;
 
   set_myaddrs(entity_addrvec_t(bind_addr));
   return 0;
@@ -481,6 +482,8 @@ int AsyncMessenger::client_bind(const entity_addr_t &bind_addr)
 void AsyncMessenger::_finish_bind(const entity_addrvec_t& bind_addrs,
 				  const entity_addrvec_t& listen_addrs)
 {
+  std::cout<<__func__<<"bind_addrs = "<<bind_addrs<<"   listen_addrs="<<listen_addrs<<std::endl;
+  std::cout<<__func__<<"set_myaddrs ="<<bind_addrs<<std::endl;
   set_myaddrs(bind_addrs);
   for (auto& a : bind_addrs.v) {
     if (!a.is_blank_ip()) {
@@ -489,17 +492,19 @@ void AsyncMessenger::_finish_bind(const entity_addrvec_t& bind_addrs,
   }
 
   if (get_myaddrs().front().get_port() == 0) {
+  std::cout<<__func__<<"set_myaddrs ="<<listen_addrs<<std::endl;
     set_myaddrs(listen_addrs);
   }
   entity_addrvec_t newaddrs = *my_addrs;
   for (auto& a : newaddrs.v) {
     a.set_nonce(nonce);
   }
+  std::cout<<__func__<<"set_myaddrs = *my_addrs = "<<newaddrs<<std::endl;
   set_myaddrs(newaddrs);
 
   init_local_connection();
 
-  ldout(cct,1) << __func__ << " bind my_addrs is " << get_myaddrs() << dendl;
+  std::cout << __func__ << " bind my_addrs is " << get_myaddrs() << std::endl;
   did_bind = true;
 }
 
@@ -510,12 +515,13 @@ int AsyncMessenger::client_reset()
   std::scoped_lock l{lock};
   // adjust the nonce; we want our entity_addr_t to be truly unique.
   nonce += 1000000;
-  ldout(cct, 10) << __func__ << " new nonce " << nonce << dendl;
+  std::cout << __func__ << " new nonce " << nonce << std::endl;
 
   entity_addrvec_t newaddrs = *my_addrs;
   for (auto& a : newaddrs.v) {
     a.set_nonce(nonce);
   }
+  std::cout<<__func__<<"set_myaddrs = *my_addrs = "<<newaddrs<<std::endl;
   set_myaddrs(newaddrs);
   _init_local_connection();
   return 0;
@@ -524,7 +530,7 @@ int AsyncMessenger::client_reset()
 int AsyncMessenger::start()
 {
   std::scoped_lock l{lock};
-  ldout(cct,1) << __func__ << " start" << dendl;
+  std::cout << __func__ << " start" << std::endl;
 
   // register at least one entity, first!
   ceph_assert(my_name.type() >= 0);
@@ -534,10 +540,12 @@ int AsyncMessenger::start()
   stopped = false;
 
   if (!did_bind) {
+    std::cout<<__func__<<"my_addrs = "<<*my_addrs<<std::endl;
     entity_addrvec_t newaddrs = *my_addrs;
     for (auto& a : newaddrs.v) {
       a.nonce = nonce;
     }
+  std::cout<<__func__<<"set_myaddrs = *my_addrs = "<<newaddrs<<std::endl;
     set_myaddrs(newaddrs);
     _init_local_connection();
   }
@@ -557,18 +565,18 @@ void AsyncMessenger::wait()
   }
   dispatch_queue.shutdown();
   if (dispatch_queue.is_started()) {
-    ldout(cct, 10) << __func__ << ": waiting for dispatch queue" << dendl;
+    std::cout << __func__ << ": waiting for dispatch queue" << std::endl;
     dispatch_queue.wait();
     dispatch_queue.discard_local();
-    ldout(cct, 10) << __func__ << ": dispatch queue is stopped" << dendl;
+    std::cout << __func__ << ": dispatch queue is stopped" << std::endl;
   }
 
   // close all connections
   shutdown_connections(false);
   stack->drain();
 
-  ldout(cct, 10) << __func__ << ": done." << dendl;
-  ldout(cct, 1) << __func__ << " complete." << dendl;
+  std::cout << __func__ << ": done." << std::endl;
+  std::cout << __func__ << " complete." << std::endl;
   started = false;
 }
 
@@ -588,8 +596,8 @@ AsyncConnectionRef AsyncMessenger::create_connect(
 {
   ceph_assert(ceph_mutex_is_locked(lock));
 
-  ldout(cct, 10) << __func__ << " " << addrs
-      << ", creating connection and registering" << dendl;
+  std::cout << __func__ << " " << addrs
+      << ", creating connection and registering" << std::endl;
 
   // here is where we decide which of the addrs to connect to.  always prefer
   // the first one, if we support it.
@@ -614,8 +622,8 @@ AsyncConnectionRef AsyncMessenger::create_connect(
     anon_conns.insert(conn);
   } else {
     ceph_assert(!conns.count(addrs));
-    ldout(cct, 10) << __func__ << " " << conn << " " << addrs << " "
-		   << *conn->peer_addrs << dendl;
+    std::cout << __func__ << " " << conn << " " << addrs << " "
+		   << *conn->peer_addrs << std::endl;
     conns[addrs] = conn;
   }
   w->get_perf_counter()->inc(l_msgr_active_connections);
@@ -644,7 +652,7 @@ bool AsyncMessenger::should_use_msgr2()
 entity_addrvec_t AsyncMessenger::_filter_addrs(const entity_addrvec_t& addrs)
 {
   if (!should_use_msgr2()) {
-    ldout(cct, 10) << __func__ << " " << addrs << " limiting to v1 ()" << dendl;
+    std::cout << __func__ << " " << addrs << " limiting to v1 ()" << std::endl;
     entity_addrvec_t r;
     for (auto& i : addrs.v) {
       if (i.is_msgr2()) {
@@ -670,20 +678,20 @@ int AsyncMessenger::send_to(Message *m, int type, const entity_addrvec_t& addrs)
     OID_EVENT_TRACE(((MOSDOpReply *)m)->get_oid().name.c_str(), "SEND_MSG_OSD_OP_REPLY");
 #endif
 
-  ldout(cct, 1) << __func__ << "--> " << ceph_entity_type_name(type) << " "
+  std::cout << __func__ << "--> " << ceph_entity_type_name(type) << " "
       << addrs << " -- " << *m << " -- ?+"
-      << m->get_data().length() << " " << m << dendl;
+      << m->get_data().length() << " " << m << std::endl;
 
   if (addrs.empty()) {
-    ldout(cct,0) << __func__ <<  " message " << *m
-        << " with empty dest " << addrs << dendl;
+    std::cout << __func__ <<  " message " << *m
+        << " with empty dest " << addrs << std::endl;
     m->put();
     return -EINVAL;
   }
 
   if (cct->_conf->ms_dump_on_send) {
     m->encode(-1, MSG_CRC_ALL);
-    ldout(cct, 0) << __func__ << " submit_message " << *m << "\n";
+    ldout(cct, 0)  << __func__ << " submit_message " << *m << "\n";
     m->get_payload().hexdump(*_dout);
     if (m->get_data().length() > 0) {
       *_dout << " data:\n";
@@ -701,6 +709,7 @@ ConnectionRef AsyncMessenger::connect_to(int type,
 					 const entity_addrvec_t& addrs,
 					 bool anon, bool not_local_dest)
 {
+  std::cout<<__func__<<"type ="<<type<<"     addrs = "<<addrs<<"   anon = "<<anon<<"   not_local_dest ="<<not_local_dest<<std::endl;
   if (!not_local_dest) {
     if (*my_addrs == addrs ||
 	(addrs.v.size() == 1 &&
@@ -713,15 +722,16 @@ ConnectionRef AsyncMessenger::connect_to(int type,
   auto av = _filter_addrs(addrs);
   std::lock_guard l{lock};
   if (anon) {
+    std::cout<<__func__<<"anon  return from create_connect"<<std::endl;
     return create_connect(av, type, anon);
   }
 
   AsyncConnectionRef conn = _lookup_conn(av);
   if (conn) {
-    ldout(cct, 10) << __func__ << " " << av << " existing " << conn << dendl;
+    std::cout << __func__ << " " << av << " existing " << conn << std::endl;
   } else {
     conn = create_connect(av, type, false);
-    ldout(cct, 10) << __func__ << " " << av << " new " << conn << dendl;
+    std::cout << __func__ << " " << av << " new " << conn << std::endl;
   }
 
   return conn;
@@ -733,7 +743,7 @@ ConnectionRef AsyncMessenger::connect_to(int type,
  */
 bool AsyncMessenger::set_addr_unknowns(const entity_addrvec_t &addrs)
 {
-  ldout(cct,1) << __func__ << " " << addrs << dendl;
+  std::cout << __func__ << " " << addrs << std::endl;
   bool ret = false;
   std::lock_guard l{lock};
 
@@ -745,8 +755,8 @@ bool AsyncMessenger::set_addr_unknowns(const entity_addrvec_t &addrs)
       uint32_t nonce = a.get_nonce();
       for (auto& b : addrs.v) {
 	if (a.get_family() == b.get_family()) {
-	  ldout(cct,1) << __func__ << " assuming my addr " << a
-		       << " matches provided addr " << b << dendl;
+	  std::cout << __func__ << " assuming my addr " << a
+		       << " matches provided addr " << b << std::endl;
 	  a = b;
 	  a.set_nonce(nonce);
 	  a.set_type(type);
@@ -757,11 +767,12 @@ bool AsyncMessenger::set_addr_unknowns(const entity_addrvec_t &addrs)
       }
     }
   }
+  std::cout<<__func__<<"set_myaddrs = *my_addrs = "<<newaddrs<<std::endl;
   set_myaddrs(newaddrs);
   if (ret) {
     _init_local_connection();
   }
-  ldout(cct,1) << __func__ << " now " << *my_addrs << dendl;
+  std::cout << __func__ << " now " << *my_addrs << std::endl;
   return ret;
 }
 
@@ -772,28 +783,29 @@ void AsyncMessenger::set_addrs(const entity_addrvec_t &addrs)
   for (auto& a : t.v) {
     a.set_nonce(nonce);
   }
+  std::cout<<__func__<<"set_myaddrs = "<<t<<std::endl;
   set_myaddrs(t);
   _init_local_connection();
 }
 
 void AsyncMessenger::shutdown_connections(bool queue_reset)
 {
-  ldout(cct,1) << __func__ << " " << dendl;
+  std::cout << __func__ << " " << std::endl;
   std::lock_guard l{lock};
   for (const auto& c : accepting_conns) {
-    ldout(cct, 5) << __func__ << " accepting_conn " << c << dendl;
+    std::cout << __func__ << " accepting_conn " << c << std::endl;
     c->stop(queue_reset);
   }
   accepting_conns.clear();
 
   for (const auto& [e, c] : conns) {
-    ldout(cct, 5) << __func__ << " mark down " << e << " " << c << dendl;
+    std::cout << __func__ << " mark down " << e << " " << c << std::endl;
     c->stop(queue_reset);
   }
   conns.clear();
 
   for (const auto& c : anon_conns) {
-    ldout(cct, 5) << __func__ << " mark down " << c << dendl;
+    std::cout << __func__ << " mark down " << c << std::endl;
     c->stop(queue_reset);
   }
   anon_conns.clear();
@@ -801,7 +813,7 @@ void AsyncMessenger::shutdown_connections(bool queue_reset)
   {
     std::lock_guard l{deleted_lock};
     for (const auto& c : deleted_conns) {
-      ldout(cct, 5) << __func__ << " delete " << c << dendl;
+      std::cout << __func__ << " delete " << c << std::endl;
       c->get_perf_counter()->dec(l_msgr_active_connections);
     }
     deleted_conns.clear();
@@ -813,10 +825,10 @@ void AsyncMessenger::mark_down_addrs(const entity_addrvec_t& addrs)
   std::lock_guard l{lock};
   const AsyncConnectionRef& conn = _lookup_conn(addrs);
   if (conn) {
-    ldout(cct, 1) << __func__ << " " << addrs << " -- " << conn << dendl;
+    std::cout << __func__ << " " << addrs << " -- " << conn << std::endl;
     conn->stop(true);
   } else {
-    ldout(cct, 1) << __func__ << " " << addrs << " -- connection dne" << dendl;
+    std::cout << __func__ << " " << addrs << " -- connection dne" << std::endl;
   }
 }
 
@@ -863,7 +875,7 @@ int AsyncMessenger::accept_conn(const AsyncConnectionRef& conn)
       return -1;
     }
   }
-  ldout(cct, 10) << __func__ << " " << conn << " " << *conn->peer_addrs << dendl;
+  std::cout << __func__ << " " << conn << " " << *conn->peer_addrs << std::endl;
   conns[*conn->peer_addrs] = conn;
   conn->get_perf_counter()->inc(l_msgr_active_connections);
   accepting_conns.erase(conn);
@@ -890,8 +902,9 @@ bool AsyncMessenger::learned_addr(const entity_addr_t &peer_addr_for_me)
       if (!did_bind) {
 	a.set_port(0);
       }
+  std::cout<<__func__<<"set_myaddrs = "<<a<<std::endl;
       set_myaddrs(entity_addrvec_t(a));
-      ldout(cct,10) << __func__ << " had no addrs" << dendl;
+      std::cout << __func__ << " had no addrs" << std::endl;
     } else {
       // fix all addrs of the same family, regardless of type (msgr2 vs legacy)
       entity_addrvec_t newaddrs = *my_addrs;
@@ -907,14 +920,15 @@ bool AsyncMessenger::learned_addr(const entity_addr_t &peer_addr_for_me)
 	    t.set_port(a.get_port());
 	  }
 	  t.set_nonce(a.get_nonce());
-	  ldout(cct,10) << __func__ << " " << a << " -> " << t << dendl;
+	  std::cout << __func__ << " " << a << " -> " << t << std::endl;
 	  a = t;
 	}
       }
+  std::cout<<__func__<<"set_myaddrs = *my_addrs = "<<newaddrs<<std::endl;
       set_myaddrs(newaddrs);
     }
-    ldout(cct, 1) << __func__ << " learned my addr " << *my_addrs
-		  << " (peer_addr_for_me " << peer_addr_for_me << ")" << dendl;
+    std::cout << __func__ << " learned my addr " << *my_addrs
+		  << " (peer_addr_for_me " << peer_addr_for_me << ")" << std::endl;
     _init_local_connection();
     need_addr = false;
     return true;
@@ -924,14 +938,14 @@ bool AsyncMessenger::learned_addr(const entity_addr_t &peer_addr_for_me)
 
 void AsyncMessenger::reap_dead()
 {
-  ldout(cct, 1) << __func__ << " start" << dendl;
+  std::cout << __func__ << " start" << std::endl;
 
   std::lock_guard l1{lock};
 
   {
     std::lock_guard l2{deleted_lock};
     for (auto& c : deleted_conns) {
-      ldout(cct, 5) << __func__ << " delete " << c << dendl;
+      std::cout << __func__ << " delete " << c << std::endl;
       auto conns_it = conns.find(*c->peer_addrs);
       if (conns_it != conns.end() && conns_it->second == c)
         conns.erase(conns_it);

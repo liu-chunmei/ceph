@@ -185,15 +185,21 @@ public:
   virtual entity_addr_t get_peer_socket_addr() const = 0;
 
   entity_addr_t get_peer_addr() const {
+    std::cout<<"----------get_peer_addr = "<<peer_addrs->front()<<std::endl;
     return peer_addrs->front();
   }
   const entity_addrvec_t& get_peer_addrs() const {
+    std::cout<<"---------get_peer_addrs = "<<*peer_addrs<<std::endl;
+
     return *peer_addrs;
   }
   void set_peer_addr(const entity_addr_t& a) {
+    std::cout<<"----------set_peer_addr = "<<a<<std::endl;
     peer_addrs = entity_addrvec_t(a);
   }
-  void set_peer_addrs(const entity_addrvec_t& av) { peer_addrs = av; }
+  void set_peer_addrs(const entity_addrvec_t& av) { 
+    std::cout<<"----------set_peer_addrs = "<<av<<std::endl;
+    peer_addrs = av; }
 
   uint64_t get_features() const { return features; }
   bool has_feature(uint64_t f) const { return features & f; }

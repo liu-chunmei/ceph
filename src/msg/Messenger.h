@@ -204,6 +204,7 @@ public:
    * currently believes to be its own.
    */
   const entity_addrvec_t& get_myaddrs() {
+     std::cout<<"------------get_mayaddr = "<<*my_addrs<<std::endl;
     return *my_addrs;
   }
 
@@ -214,6 +215,7 @@ public:
    * ANY addr (if i am a pure client).
    */
   entity_addr_t get_myaddr_legacy() {
+    std::cout<<"------------get_mayaddr_legacy = "<<my_addrs->as_legacy_addr()<<std::endl;
     return my_addrs->as_legacy_addr();
   }
 
@@ -239,6 +241,7 @@ protected:
    * std::set messenger's address
    */
   virtual void set_myaddrs(const entity_addrvec_t& a) {
+    std::cout<<__func__<<"set_myaddrs = "<<a<<std::endl;
     my_addrs = a;
     set_endpoint_addr(a.front(), my_name);
   }

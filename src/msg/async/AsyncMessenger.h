@@ -319,6 +319,7 @@ private:
   }
 
   void _init_local_connection() {
+    std::cout<<__func__<<"my_addrs = "<<*my_addrs<<std::endl;
     ceph_assert(ceph_mutex_is_locked(lock));
     local_connection->peer_addrs = *my_addrs;
     local_connection->peer_type = my_name.type();

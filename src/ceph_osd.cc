@@ -637,6 +637,7 @@ flushjournal_out:
   for (auto& a : hb_front_addrs.v) {
     a.set_port(0);
   }
+  std::cout<<"--------bindv hb_front_addrs ="<<hb_front_addrs<<std::endl;
   if (ms_hb_front_server->bindv(hb_front_addrs) < 0)
     forker.exit(1);
   if (ms_hb_front_client->client_bind(hb_front_addrs.front()) < 0)
@@ -646,6 +647,7 @@ flushjournal_out:
   for (auto& a : hb_back_addrs.v) {
     a.set_port(0);
   }
+  std::cout<<"--------bindv hb_back_addrs ="<<hb_back_addrs<<std::endl;
   if (ms_hb_back_server->bindv(hb_back_addrs) < 0)
     forker.exit(1);
   if (ms_hb_back_client->client_bind(hb_back_addrs.front()) < 0)

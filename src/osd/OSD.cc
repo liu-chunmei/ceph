@@ -1066,6 +1066,7 @@ void OSDService::send_message_osd_cluster(int peer, Message *m, epoch_t from_epo
   if (peer == whoami) {
     peer_con = osd->cluster_messenger->get_loopback_connection();
   } else {
+    std::cout<<__func__<<"1 next_map->get_cluster_addrs = "<<next_map->get_cluster_addrs(peer)<<std::endl;
     peer_con = osd->cluster_messenger->connect_to_osd(
 	next_map->get_cluster_addrs(peer), false, true);
   }
@@ -1090,6 +1091,7 @@ void OSDService::send_message_osd_cluster(std::vector<std::pair<int, Message*>>&
     if (iter.first == whoami) {
       peer_con = osd->cluster_messenger->get_loopback_connection();
     } else {
+    std::cout<<__func__<<"2 next_map->get_cluster_addrs = "<<next_map->get_cluster_addrs(iter.first)<<std::endl;
       peer_con = osd->cluster_messenger->connect_to_osd(
 	  next_map->get_cluster_addrs(iter.first), false, true);
     }
@@ -1113,6 +1115,7 @@ ConnectionRef OSDService::get_con_osd_cluster(int peer, epoch_t from_epoch)
   if (peer == whoami) {
     con = osd->cluster_messenger->get_loopback_connection();
   } else {
+    std::cout<<__func__<<"3 next_map->get_cluster_addrs = "<<next_map->get_cluster_addrs(peer)<<std::endl;
     con = osd->cluster_messenger->connect_to_osd(
 	next_map->get_cluster_addrs(peer), false, true);
   }
@@ -1132,6 +1135,8 @@ pair<ConnectionRef,ConnectionRef> OSDService::get_con_osd_hb(int peer, epoch_t f
     release_map(next_map);
     return ret;
   }
+  std::cout<<__func__<<"hb_back_addrs = "<<next_map->get_hb_back_addrs(peer)<<std::endl;
+  std::cout<<__func__<<"hb_front_addrs = "<<next_map->get_hb_front_addrs(peer)<<std::endl;
   ret.first = osd->hb_back_client_messenger->connect_to_osd(
     next_map->get_hb_back_addrs(peer));
   ret.second = osd->hb_front_client_messenger->connect_to_osd(
@@ -6630,14 +6635,14 @@ void OSD::_send_boot()
   entity_addrvec_t hb_back_addrs = hb_back_server_messenger->get_myaddrs();
   entity_addrvec_t hb_front_addrs = hb_front_server_messenger->get_myaddrs();
 
-  dout(20) << " initial client_addrs " << client_addrs
+  std::cout << " initial client_addrs " << client_addrs
 	   << ", cluster_addrs " << cluster_addrs
 	   << ", hb_back_addrs " << hb_back_addrs
 	   << ", hb_front_addrs " << hb_front_addrs
-	   << dendl;
+	   << std::endl;
   if (cluster_messenger->set_addr_unknowns(client_addrs)) {
-    dout(10) << " assuming cluster_addrs match client_addrs "
-	     << client_addrs << dendl;
+    std::cout << " assuming cluster_addrs match client_addrs "
+	     << client_addrs << std::endl;
     cluster_addrs = cluster_messenger->get_myaddrs();
   }
   if (auto session = local_connection->get_priv(); !session) {
@@ -6646,8 +6651,8 @@ void OSD::_send_boot()
 
   local_connection = hb_back_server_messenger->get_loopback_connection().get();
   if (hb_back_server_messenger->set_addr_unknowns(cluster_addrs)) {
-    dout(10) << " assuming hb_back_addrs match cluster_addrs "
-	     << cluster_addrs << dendl;
+    std::cout << " assuming hb_back_addrs match cluster_addrs "
+	     << cluster_addrs << std::endl;
     hb_back_addrs = hb_back_server_messenger->get_myaddrs();
   }
   if (auto session = local_connection->get_priv(); !session) {
@@ -6656,8 +6661,8 @@ void OSD::_send_boot()
 
   local_connection = hb_front_server_messenger->get_loopback_connection().get();
   if (hb_front_server_messenger->set_addr_unknowns(client_addrs)) {
-    dout(10) << " assuming hb_front_addrs match client_addrs "
-	     << client_addrs << dendl;
+    std::cout << " assuming hb_front_addrs match client_addrs "
+	     << client_addrs << std::endl;
     hb_front_addrs = hb_front_server_messenger->get_myaddrs();
   }
   if (auto session = local_connection->get_priv(); !session) {
@@ -6673,11 +6678,11 @@ void OSD::_send_boot()
     superblock, get_osdmap_epoch(), service.get_boot_epoch(),
     hb_back_addrs, hb_front_addrs, cluster_addrs,
     CEPH_FEATURES_ALL);
-  dout(10) << " final client_addrs " << client_addrs
+  std::cout << " final client_addrs " << client_addrs
 	   << ", cluster_addrs " << cluster_addrs
 	   << ", hb_back_addrs " << hb_back_addrs
 	   << ", hb_front_addrs " << hb_front_addrs
-	   << dendl;
+	   << std::endl;
   _collect_metadata(&mboot->metadata);
   monc->send_mon_message(mboot);
   set_state(STATE_BOOTING);
