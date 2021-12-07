@@ -1135,8 +1135,8 @@ pair<ConnectionRef,ConnectionRef> OSDService::get_con_osd_hb(int peer, epoch_t f
     release_map(next_map);
     return ret;
   }
-  std::cout<<__func__<<"hb_back_addrs = "<<next_map->get_hb_back_addrs(peer)<<std::endl;
-  std::cout<<__func__<<"hb_front_addrs = "<<next_map->get_hb_front_addrs(peer)<<std::endl;
+  std::cout<<__func__<<" hb_back_addrs = "<<next_map->get_hb_back_addrs(peer)<<std::endl;
+  std::cout<<__func__<<" hb_front_addrs = "<<next_map->get_hb_front_addrs(peer)<<std::endl;
   ret.first = osd->hb_back_client_messenger->connect_to_osd(
     next_map->get_hb_back_addrs(peer));
   ret.second = osd->hb_front_client_messenger->connect_to_osd(
@@ -6627,7 +6627,7 @@ bool OSD::_is_healthy()
 
 void OSD::_send_boot()
 {
-  dout(10) << "_send_boot" << dendl;
+  std::cout << "_send_boot" << std::endl;
   Connection *local_connection =
     cluster_messenger->get_loopback_connection().get();
   entity_addrvec_t client_addrs = client_messenger->get_myaddrs();
@@ -6653,9 +6653,11 @@ void OSD::_send_boot()
   if (hb_back_server_messenger->set_addr_unknowns(cluster_addrs)) {
     std::cout << " assuming hb_back_addrs match cluster_addrs "
 	     << cluster_addrs << std::endl;
+    std::cout<<__func__<<" hb_back_addrs = "<<hb_back_server_messenger->get_myaddrs()<<std::endl;
     hb_back_addrs = hb_back_server_messenger->get_myaddrs();
   }
   if (auto session = local_connection->get_priv(); !session) {
+    std::cout<<__func__<<" set hb back local_connection"<<std::endl;
     hb_back_server_messenger->ms_deliver_handle_fast_connect(local_connection);
   }
 
@@ -6663,9 +6665,11 @@ void OSD::_send_boot()
   if (hb_front_server_messenger->set_addr_unknowns(client_addrs)) {
     std::cout << " assuming hb_front_addrs match client_addrs "
 	     << client_addrs << std::endl;
+    std::cout<<__func__<<" hb_front_addrs = "<<hb_front_server_messenger->get_myaddrs()<<std::endl;
     hb_front_addrs = hb_front_server_messenger->get_myaddrs();
   }
   if (auto session = local_connection->get_priv(); !session) {
+    std::cout<<__func__<<" set hb front local_connection"<<std::endl;
     hb_front_server_messenger->ms_deliver_handle_fast_connect(local_connection);
   }
 

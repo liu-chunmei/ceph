@@ -1035,6 +1035,7 @@ CtPtr ProtocolV2::handle_hello(ceph::bufferlist &payload)
     a.set_type(entity_addr_t::TYPE_MSGR2); // anything but NONE; learned_addr ignores this
     a.set_port(0);
     connection->lock.unlock();
+    std::cout<<__func__<<" call learned_addrs a = "<<a<<std::endl;
     messenger->learned_addr(a);
     if (cct->_conf->ms_inject_internal_delays &&
         cct->_conf->ms_inject_socket_failures) {

@@ -418,6 +418,7 @@ int AsyncMessenger::bindv(const entity_addrvec_t &bind_addrs)
     }
     ++i;
   }
+  std::cout<<__func__<<" call _finish_bind bind_addrs = "<<bind_addrs<<std::endl;
   _finish_bind(bind_addrs, bound_addrs);
   return 0;
 }
@@ -482,11 +483,12 @@ int AsyncMessenger::client_bind(const entity_addr_t &bind_addr)
 void AsyncMessenger::_finish_bind(const entity_addrvec_t& bind_addrs,
 				  const entity_addrvec_t& listen_addrs)
 {
-  std::cout<<__func__<<"bind_addrs = "<<bind_addrs<<"   listen_addrs="<<listen_addrs<<std::endl;
-  std::cout<<__func__<<"set_myaddrs ="<<bind_addrs<<std::endl;
+  std::cout<<__func__<<" bind_addrs = "<<bind_addrs<<"   listen_addrs="<<listen_addrs<<std::endl;
+  std::cout<<__func__<<" set_myaddrs ="<<bind_addrs<<std::endl;
   set_myaddrs(bind_addrs);
   for (auto& a : bind_addrs.v) {
     if (!a.is_blank_ip()) {
+      std::cout<<__func__<<" call learned_addr a = "<<a<<std::endl;
       learned_addr(a);
     }
   }
@@ -902,7 +904,7 @@ bool AsyncMessenger::learned_addr(const entity_addr_t &peer_addr_for_me)
       if (!did_bind) {
 	a.set_port(0);
       }
-  std::cout<<__func__<<"set_myaddrs = "<<a<<std::endl;
+  std::cout<<__func__<<" set_myaddrs = "<<a<<std::endl;
       set_myaddrs(entity_addrvec_t(a));
       std::cout << __func__ << " had no addrs" << std::endl;
     } else {
@@ -924,7 +926,7 @@ bool AsyncMessenger::learned_addr(const entity_addr_t &peer_addr_for_me)
 	  a = t;
 	}
       }
-  std::cout<<__func__<<"set_myaddrs = *my_addrs = "<<newaddrs<<std::endl;
+  std::cout<<__func__<<" set_myaddrs = *my_addrs = "<<newaddrs<<std::endl;
       set_myaddrs(newaddrs);
     }
     std::cout << __func__ << " learned my addr " << *my_addrs

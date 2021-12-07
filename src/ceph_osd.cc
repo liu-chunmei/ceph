@@ -618,7 +618,7 @@ flushjournal_out:
     derr << "Failed to pick cluster address." << dendl;
     forker.exit(1);
   }
-
+  std::cout<<__func__<<" public_addrs = "<<public_addrs<<" cluster_addrs = "<<cluster_addrs<<std::endl;
   if (ms_public->bindv(public_addrs) < 0)
     forker.exit(1);
 
@@ -699,12 +699,17 @@ flushjournal_out:
 	 << TEXT_NORMAL << dendl;
     forker.exit(1);
   }
-
+  std::cout<<__func__<<" ms_public start"<<std::endl;
   ms_public->start();
+  std::cout<<__func__<<" ms_hb front client start"<<std::endl;
   ms_hb_front_client->start();
+  std::cout<<__func__<<" ms_hb back client start"<<std::endl;
   ms_hb_back_client->start();
+  std::cout<<__func__<<" ms_hb front server start"<<std::endl;
   ms_hb_front_server->start();
+  std::cout<<__func__<<" ms_hb back server start"<<std::endl;
   ms_hb_back_server->start();
+  std::cout<<__func__<<" ms_cluster start"<<std::endl;
   ms_cluster->start();
   ms_objecter->start();
 
