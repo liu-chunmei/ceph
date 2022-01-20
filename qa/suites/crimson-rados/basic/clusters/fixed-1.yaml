@@ -1,0 +1,15 @@
+overrides:
+  ceph-deploy:
+    conf:
+      global:
+        osd pool default size: 2
+        osd crush chooseleaf type: 0
+        osd pool default pg num:  2
+        osd pool default pgp num:  2
+  ceph:
+    conf:
+      osd:
+        osd shutdown pgref assert: true
+roles:
+- [mon.a, mgr.x, osd.0, osd.1, client.0]
+
