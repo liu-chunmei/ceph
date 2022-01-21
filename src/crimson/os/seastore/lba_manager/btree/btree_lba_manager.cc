@@ -126,6 +126,7 @@ BtreeLBAManager::alloc_extent(
   extent_len_t len,
   paddr_t addr)
 {
+  ceph_assert((hint%(uint64_t)segment_manager.get_block_size()) == 0);
   struct state_t {
     laddr_t last_end;
 
