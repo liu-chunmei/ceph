@@ -685,7 +685,7 @@ void Cache::commit_retire_extent(
   // TODO: why does this duplicate remove_extent?
   if (ref->is_dirty()) {
     remove_from_dirty(ref);
-  } else {
+  } else if (!ref->is_placeholder()) {
     lru.remove_from_lru(*ref);
   }
   ref->dirty_from_or_retired_at = JOURNAL_SEQ_MAX;
