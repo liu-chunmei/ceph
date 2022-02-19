@@ -930,7 +930,8 @@ SeaStore::_fiemap_ret SeaStore::_fiemap(
       len);
   });
 }
-seastar::future<std::map<uint64_t, uint64_t>> SeaStore::fiemap(
+
+SeaStore::read_errorator::future<std::map<uint64_t, uint64_t>> SeaStore::fiemap(
   CollectionRef ch,
   const ghobject_t& oid,
   uint64_t off,
@@ -954,9 +955,6 @@ seastar::future<std::map<uint64_t, uint64_t>> SeaStore::fiemap(
       size - off:
       std::min(size - off, len);
     return _fiemap(t, onode, off, adjust_len);
-  }).handle_error(
-    crimson::ct_error::assert_all{
-      "Invalid error in SeaStore::fiemap"
   });
 }
 
