@@ -2,7 +2,7 @@
 // vim: ts=8 sw=2 smarttab
 
 #pragma once
-
+#include <fmt/format.h>
 #include "crimson/common/log.h"
 #include "crimson/os/seastore/onode_manager/staged-fltree/value.h"
 
@@ -36,6 +36,21 @@ inline std::ostream& operator<<(std::ostream& os, const test_item_t& item) {
   return os << "TestItem(#" << item.id << ", " << item.size << "B)";
 }
 
+enum class delta_op_t : uint8_t {
+  UPDATE_ID,
+  UPDATE_TAIL_MAGIC,
+};
+
+inline std::ostream& operator<<(std::ostream& os, const delta_op_t op) {
+  switch (op) {
+  case delta_op_t::UPDATE_ID:
+    return os << "update_id";
+  case delta_op_t::UPDATE_TAIL_MAGIC:
+    return os << "update_tail_magic";
+  default:
+    return os << "unknown";
+  }
+}
 template <value_magic_t MAGIC,
           string_size_t MAX_NS_SIZE,
           string_size_t MAX_OID_SIZE,
@@ -86,10 +101,6 @@ class TestValue final : public Value {
 
  public:
   class Recorder final : public ValueDeltaRecorder {
-    enum class delta_op_t : uint8_t {
-      UPDATE_ID,
-      UPDATE_TAIL_MAGIC,
-    };
 
    public:
     Recorder(ceph::bufferlist& encoded)

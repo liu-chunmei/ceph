@@ -3,6 +3,7 @@
 
 #include <sys/mman.h>
 #include <string.h>
+#include <fmt/format.h>
 
 #include "crimson/common/config_proxy.h"
 #include "crimson/common/errorator-loop.h"
@@ -16,6 +17,27 @@ namespace {
     return crimson::get_logger(ceph_subsys_seastore_device);
   }
 }
+using segment_state_t = crimson::os::seastore::Segment::segment_state_t;
+
+template <> struct fmt::formatter<segment_state_t>: fmt::formatter<std::string_view> {
+  // parse is inherited from formatter<string_view>.
+  template <typename FormatContext>
+  auto format(segment_state_t s, FormatContext& ctx) {
+    std::string_view name = "unknown";
+    switch (s) {
+    case segment_state_t::EMPTY:
+      name = "empty";
+      break;
+    case segment_state_t::OPEN:
+      name = "open";
+      break;
+    case segment_state_t::CLOSED:
+      name = "closed";
+      break;
+    }
+    return formatter<string_view>::format(name, ctx);
+  }
+};
 
 
 namespace crimson::os::seastore::segment_manager::block {
