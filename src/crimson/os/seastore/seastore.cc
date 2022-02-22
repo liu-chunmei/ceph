@@ -913,9 +913,10 @@ seastar::future<std::map<uint64_t, uint64_t>> SeaStore::fiemap(
       std::min(size - off, len);
     return _fiemap(t, onode, off, adjust_len);
   }).handle_error(
-    crimson::ct_error::assert_all{
-      "Invalid error in SeaStore::fiemap"
-  });
+    crimson::ct_error::enoent::handle([&oid, FNAME] {
+      INFO("fiemap: object {} doesn't exist, return empty fiemap", oid);
+      return seastar::make_ready_future<std::map<uint64_t, uint64_t>>();
+  }), crimson::ct_error::assert_all{});
 }
 
 void SeaStore::on_error(ceph::os::Transaction &t) {
