@@ -20,9 +20,9 @@ for f in \
     api_asio api_list \
     api_lock api_lock_pp \
     api_misc api_misc_pp \
-    api_tier_pp \
+    #api_tier_pp \
     api_pool \
-    api_snapshots api_snapshots_pp \
+    #api_snapshots api_snapshots_pp \
     api_stat api_stat_pp \
     api_watch_notify api_watch_notify_pp \
     api_cmd api_cmd_pp \
