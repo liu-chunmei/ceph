@@ -15,7 +15,7 @@ trap cleanup EXIT ERR HUP INT QUIT
 declare -A pids
 
 for f in \
-    api_aio api_aio_pp 
+    api_c_read_operations 
 do
     if [ $parallel -eq 1 ]; then
 	r=`printf '%25s' $f`

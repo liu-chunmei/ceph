@@ -216,10 +216,13 @@ PGBackend::read(const ObjectState& os, OSDOp& osd_op,
       return crimson::ct_error::object_corrupted::make();
     }
     logger().debug("read: data length: {}", bl.length());
+    logger().debug("read: buffer content: {}", bl);
     osd_op.rval = bl.length();
     delta_stats.num_rd++;
     delta_stats.num_rd_kb += shift_round_up(bl.length(), 10);
+    logger().debug("read: move to outdata: {}", bl);
     osd_op.outdata = std::move(bl);
+    logger().debug("read: move to outdata: end");
     return read_errorator::now();
   }, crimson::ct_error::input_output_error::handle([] {
     return read_errorator::future<>{crimson::ct_error::object_corrupted::make()};
