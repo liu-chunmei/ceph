@@ -26,8 +26,10 @@
 #define SUBTRACE(subname_, ...) SUBLOG(subname_, seastar::log_level::trace, __VA_ARGS__)
 #define SUBTRACET(subname_, ...) SUBLOGT(subname_, seastar::log_level::trace, __VA_ARGS__)
 
-#define DEBUG(...) LOG(seastar::log_level::debug, __VA_ARGS__)
-#define DEBUGT(...) LOGT(seastar::log_level::debug, __VA_ARGS__)
+//#define DEBUG(...) LOG(seastar::log_level::debug, __VA_ARGS__)
+//#define DEBUGT(...) LOGT(seastar::log_level::debug, __VA_ARGS__)
+#define DEBUG(MSG,...) crimson::get_logger(SOURCE_SUBSYS).debug("{}: " MSG, FNAME , ##__VA_ARGS__)
+#define DEBUGT(MSG, t, ...) crimson::get_logger(SOURCE_SUBSYS).debug("{}({}): " MSG, FNAME, (void*)&t , ##__VA_ARGS__)
 #define SUBDEBUG(subname_, ...) SUBLOG(subname_, seastar::log_level::debug, __VA_ARGS__)
 #define SUBDEBUGT(subname_, ...) SUBLOGT(subname_, seastar::log_level::debug, __VA_ARGS__)
 

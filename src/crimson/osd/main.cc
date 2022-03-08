@@ -242,16 +242,16 @@ int main(int argc, char* argv[])
         try {
           FatalSignal fatal_signal;
           seastar_apps_lib::stop_signal should_stop;
-          if (config.count("debug")) {
+          //if (config.count("debug")) {
             seastar::global_logger_registry().set_all_loggers_level(
               seastar::log_level::debug
             );
-          }
-	  if (config.count("trace")) {
-	    seastar::global_logger_registry().set_all_loggers_level(
-              seastar::log_level::trace
-            );
-	  }
+         // }
+	 // if (config.count("trace")) {
+	 //   seastar::global_logger_registry().set_all_loggers_level(
+         //     seastar::log_level::trace
+         //   );
+	 // }
           sharded_conf().start(init_params.name, cluster_name).get();
           auto stop_conf = seastar::defer([] {
             sharded_conf().stop().get();
