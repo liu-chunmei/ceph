@@ -7,6 +7,7 @@
 
 using namespace librados;
 
+#ifndef HAVE_SEASTAR
 TEST(ClsTestRemoteReads, TestGather) {
   Rados cluster;
   std::string pool_name = get_temp_pool_name();
@@ -50,3 +51,4 @@ TEST(ClsTestRemoteReads, TestGather) {
 
   ASSERT_EQ(0, destroy_one_pool_pp(pool_name, cluster));
 }
+#endif

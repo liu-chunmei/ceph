@@ -16,6 +16,7 @@ typedef RadosTestEC LibRadosSnapshotsSelfManagedEC;
 
 const int bufsize = 128;
 
+#ifndef HAVE_SEASTAR
 TEST_F(LibRadosSnapshots, SnapList) {
   char buf[bufsize];
   memset(buf, 0xcc, sizeof(buf));
@@ -299,3 +300,4 @@ TEST_F(LibRadosSnapshotsSelfManagedEC, Rollback) {
   delete[] buf2;
   delete[] buf3;
 }
+#endif

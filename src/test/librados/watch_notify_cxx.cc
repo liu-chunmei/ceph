@@ -145,6 +145,7 @@ TEST_P(LibRadosWatchNotifyPP, WatchNotify) {
   sem_destroy(&sem);
 }
 
+#ifndef HAVE_SEASTAR
 TEST_F(LibRadosWatchNotifyECPP, WatchNotify) {
   ASSERT_EQ(0, sem_init(&sem, 0, 0));
   char buf[128];
@@ -173,7 +174,7 @@ TEST_F(LibRadosWatchNotifyECPP, WatchNotify) {
   ioctx.unwatch("foo", handle);
   sem_destroy(&sem);
 }
-
+#endif
 // --
 
 TEST_P(LibRadosWatchNotifyPP, WatchNotifyTimeout) {
@@ -193,6 +194,7 @@ TEST_P(LibRadosWatchNotifyPP, WatchNotifyTimeout) {
   ASSERT_EQ(0, ioctx.unwatch("foo", handle));
 }
 
+#ifndef HAVE_SEASTAR
 TEST_F(LibRadosWatchNotifyECPP, WatchNotifyTimeout) {
   ASSERT_EQ(0, sem_init(&sem, 0, 0));
   ioctx.set_notify_timeout(1);
@@ -209,6 +211,7 @@ TEST_F(LibRadosWatchNotifyECPP, WatchNotifyTimeout) {
   sem_destroy(&sem);
   ASSERT_EQ(0, ioctx.unwatch("foo", handle));
 }
+#endif
 
 #pragma GCC diagnostic pop
 #pragma GCC diagnostic warning "-Wpragmas"

@@ -380,6 +380,7 @@ TEST_F(LibRadosMiscPP, BigAttrPP) {
   }
 }
 
+#ifndef HAVE_SEASTAR
 TEST_F(LibRadosMiscPP, CopyPP) {
   bufferlist bl, x;
   bl.append("hi there");
@@ -628,6 +629,7 @@ TEST_F(LibRadosMiscPP, CopyScrubPP) {
     cout << "done waiting" << std::endl;
   }
 }
+#endif
 
 TEST_F(LibRadosMiscPP, WriteSamePP) {
   bufferlist bl;
@@ -857,6 +859,7 @@ TEST_F(LibRadosMiscPP, Applications) {
   ASSERT_EQ(expected_meta, meta);
 }
 
+#ifndef HAVE_SEASTAR
 TEST_F(LibRadosMiscECPP, CompareExtentRange) {
   bufferlist bl1;
   bl1.append("ceph");
@@ -877,6 +880,7 @@ TEST_F(LibRadosMiscECPP, CompareExtentRange) {
   read2.cmpext(2097152, bl3, nullptr);
   ASSERT_EQ(0, ioctx.operate("foo", &read2, nullptr));
 }
+#endif
 
 TEST_F(LibRadosMiscPP, MinCompatOSD) {
   int8_t require_osd_release;

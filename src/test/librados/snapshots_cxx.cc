@@ -18,6 +18,7 @@ typedef RadosTestECPP LibRadosSnapshotsSelfManagedECPP;
 
 const int bufsize = 128;
 
+#ifndef HAVE_SEASTAR
 TEST_F(LibRadosSnapshotsPP, SnapListPP) {
   char buf[bufsize];
   memset(buf, 0xcc, sizeof(buf));
@@ -730,3 +731,4 @@ TEST_F(LibRadosSnapshotsSelfManagedECPP, Bug11677) {
   ioctx.snap_set_read(LIBRADOS_SNAP_HEAD);
   delete[] buf;
 }
+#endif

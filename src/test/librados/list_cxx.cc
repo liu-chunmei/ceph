@@ -393,6 +393,7 @@ TEST_F(LibRadosListPP, ListObjectsCursorPP) {
   }
 }
 
+#ifndef HAVE_SEASTAR
 TEST_F(LibRadosListECPP, ListObjectsPP) {
   char buf[128];
   memset(buf, 0xcc, sizeof(buf));
@@ -585,6 +586,7 @@ TEST_F(LibRadosListECPP, ListObjectsStartPP) {
     ++p;
   }
 }
+#endif
 
 TEST_F(LibRadosListPP, ListObjectsFilterPP) {
   char buf[128];

@@ -66,6 +66,7 @@ TEST_F(LibRadosStat, PoolStat) {
   ASSERT_EQ(0, rados_ioctx_pool_stat(ioctx, &stats));
 }
 
+#ifndef HAVE_SEASTAR
 TEST_F(LibRadosStatEC, Stat) {
   char buf[128];
   memset(buf, 0xcc, sizeof(buf));
@@ -120,3 +121,4 @@ TEST_F(LibRadosStatEC, PoolStat) {
   memset(&stats, 0, sizeof(stats));
   ASSERT_EQ(0, rados_ioctx_pool_stat(ioctx, &stats));
 }
+#endif

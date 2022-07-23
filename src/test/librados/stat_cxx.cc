@@ -71,6 +71,7 @@ TEST_F(LibRadosStatPP, PoolStatPP) {
   ASSERT_EQ(0, cluster.get_pool_stats(v, stats));
 }
 
+#ifndef HAVE_SEASTAR
 TEST_F(LibRadosStatECPP, StatPP) {
   char buf[128];
   memset(buf, 0xcc, sizeof(buf));
@@ -101,6 +102,7 @@ TEST_F(LibRadosStatECPP, PoolStatPP) {
   std::map<std::string,stats_map> stats;
   ASSERT_EQ(0, cluster.get_pool_stats(v, stats));
 }
+#endif
 
 TEST_F(LibRadosStatPP, StatPPNS) {
   char buf[128];
@@ -132,6 +134,7 @@ TEST_F(LibRadosStatPP, StatPPNS) {
   ASSERT_EQ(-ENOENT, ioctx.stat("foo2", &size, &mtime));
 }
 
+#ifndef HAVE_SEASTAR
 TEST_F(LibRadosStatECPP, StatPPNS) {
   char buf[128];
   memset(buf, 0xcc, sizeof(buf));
@@ -161,3 +164,4 @@ TEST_F(LibRadosStatECPP, StatPPNS) {
   ASSERT_EQ(-ENOENT, ioctx.stat("nonexistent", &size, &mtime));
   ASSERT_EQ(-ENOENT, ioctx.stat("foo2", &size, &mtime));
 }
+#endif

@@ -159,6 +159,7 @@ TEST_F(LibRadosWatchNotify, WatchNotify) {
   sem_destroy(&sem);
 }
 
+#ifndef HAVE_SEASTAR
 TEST_F(LibRadosWatchNotifyEC, WatchNotify) {
   ASSERT_EQ(0, sem_init(&sem, 0, 0));
   char buf[128];
@@ -181,7 +182,7 @@ TEST_F(LibRadosWatchNotifyEC, WatchNotify) {
   rados_unwatch(ioctx, "foo", handle);
   sem_destroy(&sem);
 }
-
+#endif
 #pragma GCC diagnostic pop
 #pragma GCC diagnostic warning "-Wpragmas"
 

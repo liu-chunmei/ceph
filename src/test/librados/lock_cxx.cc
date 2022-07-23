@@ -104,6 +104,7 @@ TEST_F(LibRadosLockPP, BreakLockPP) {
   ASSERT_EQ(0, ioctx.break_lock("foo", "TestLockPP8", it->client, "Cookie"));
 }
 
+#ifndef HAVE_SEASTAR
 // EC testing
 TEST_F(LibRadosLockECPP, LockExclusivePP) {
   ASSERT_EQ(0, ioctx.lock_exclusive("foo", "TestLockECPP1", "Cookie", "", NULL,  0));
@@ -191,3 +192,4 @@ TEST_F(LibRadosLockECPP, BreakLockPP) {
   ASSERT_EQ("Cookie", it->cookie);
   ASSERT_EQ(0, ioctx.break_lock("foo", "TestLockECPP8", it->client, "Cookie"));
 }
+#endif

@@ -1266,6 +1266,7 @@ TEST(LibRadosAio, AioUnlockPP) {
   ASSERT_EQ(0, test_data.m_ioctx.lock_exclusive("foo", "TestLock", "Cookie", "", NULL, 0));
 }
 
+#ifndef HAVE_SEASTAR
 class AioTestDataECPP
 {
 public:
@@ -1460,6 +1461,7 @@ TEST(LibRadosAioEC, RoundTripPP3)
   ioctx.remove("test_obj");
   destroy_one_pool_pp(pool_name, cluster);
 }
+#endif
 
 TEST(LibRadosAio, RoundTripAppendPP) {
   AioTestDataPP test_data;
@@ -1524,6 +1526,7 @@ TEST(LibRadosAioPP, RemoveTestPP) {
   ASSERT_EQ(-ENOENT, test_data.m_ioctx.read("foo", bl2, sizeof(buf), 0));
 }
 
+#ifndef HAVE_SEASTAR
 TEST(LibRadosAioEC, RoundTripSparseReadPP) {
   AioTestDataECPP test_data;
   ASSERT_EQ("", test_data.init());
@@ -2072,6 +2075,7 @@ TEST(LibRadosAioEC, MultiWritePP) {
   ASSERT_EQ(0, memcmp(bl3.c_str(), buf, sizeof(buf)));
 
 }
+#endif
 
 TEST(LibRadosAio, RacingRemovePP) {
   AioTestDataPP test_data;

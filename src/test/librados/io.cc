@@ -268,6 +268,7 @@ TEST_F(LibRadosIo, XattrIter) {
   rados_getxattrs_end(iter);
 }
 
+#ifndef HAVE_SEASTAR
 TEST_F(LibRadosIoEC, SimpleWrite) {
   char buf[128];
   memset(buf, 0xcc, sizeof(buf));
@@ -448,3 +449,4 @@ TEST_F(LibRadosIoEC, XattrIter) {
   }
   rados_getxattrs_end(iter);
 }
+#endif

@@ -273,6 +273,7 @@ TEST_F(LibRadosList, ListObjectsCursor) {
   }
 }
 
+#ifndef HAVE_SEASTAR
 TEST_F(LibRadosListEC, ListObjects) {
   char buf[128];
   memset(buf, 0xcc, sizeof(buf));
@@ -384,6 +385,7 @@ TEST_F(LibRadosListEC, ListObjectsStart) {
   }
   rados_nobjects_list_close(ctx);
 }
+#endif
 
 TEST_F(LibRadosListNP, ListObjectsError) {
   std::string pool_name;
@@ -433,9 +435,10 @@ TEST_F(LibRadosList, EnumerateObjects) {
 
   // Ensure a non-power-of-two PG count to avoid only
   // touching the easy path.
+#ifndef HAVE_SEASTAR
   ASSERT_TRUE(set_pg_num(&s_cluster, pool_name, 11).empty());
   ASSERT_TRUE(set_pgp_num(&s_cluster, pool_name, 11).empty());
-
+#endif
   std::set<std::string> saw_obj;
   rados_object_list_cursor c = rados_object_list_begin(ioctx);
   rados_object_list_cursor end = rados_object_list_end(ioctx);
@@ -481,13 +484,14 @@ TEST_F(LibRadosList, EnumerateObjectsSplit) {
 
   // Ensure a non-power-of-two PG count to avoid only
   // touching the easy path.
+#ifndef HAVE_SEASTAR
   if (auto error = set_pg_num(&s_cluster, pool_name, 11); !error.empty()) {
     GTEST_FAIL() << error;
   }
   if (auto error = set_pgp_num(&s_cluster, pool_name, 11); !error.empty()) {
     GTEST_FAIL() << error;
   }
-
+#endif
   rados_object_list_cursor begin = rados_object_list_begin(ioctx);
   rados_object_list_cursor end = rados_object_list_end(ioctx);
 

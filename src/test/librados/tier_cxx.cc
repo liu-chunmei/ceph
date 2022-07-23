@@ -273,6 +273,7 @@ Completions completions;
 
 std::string LibRadosTwoPoolsPP::cache_pool_name;
 
+#ifndef HAVE_SEASTAR
 TEST_F(LibRadosTierPP, Dirty) {
   {
     ObjectWriteOperation op;
@@ -9213,4 +9214,4 @@ TEST_F(LibRadosTwoPoolsPP, TierFlushDuringUnsetDedupTier) {
     completion->release();
   }
 }
-
+#endif

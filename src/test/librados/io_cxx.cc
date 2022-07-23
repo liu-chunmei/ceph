@@ -460,6 +460,7 @@ TEST_F(LibRadosIoPP, XattrListPP) {
   }
 }
 
+#ifndef HAVE_SEASTAR
 TEST_F(LibRadosIoECPP, SimpleWritePP) {
   char buf[128];
   memset(buf, 0xcc, sizeof(buf));
@@ -851,6 +852,7 @@ TEST_F(LibRadosIoECPP, XattrListPP) {
     }
   }
 }
+#endif
 
 TEST_F(LibRadosIoPP, CmpExtPP) {
   bufferlist bl;
@@ -909,6 +911,7 @@ TEST_F(LibRadosIoPP, CmpExtMismatchPP) {
   ASSERT_EQ(0, memcmp(bl.c_str(), "ceph", 4));
 }
 
+#ifndef HAVE_SEASTAR
 TEST_F(LibRadosIoECPP, CmpExtPP) {
   bufferlist bl;
   bl.append("ceph");
@@ -965,3 +968,4 @@ TEST_F(LibRadosIoECPP, CmpExtMismatchPP) {
   ASSERT_EQ(0, ioctx.operate("foo", &read, &bl));
   ASSERT_EQ(0, memcmp(bl.c_str(), "ceph", 4));
 }
+#endif

@@ -984,6 +984,7 @@ TEST(LibRadosAio, AioUnlock) {
   ASSERT_EQ(0, rados_lock_exclusive(test_data.m_ioctx, "foo", "TestLock", "Cookie", "", NULL,  0));
 }
 
+#ifndef HAVE_SEASTAR
 // EC test cases
 class AioTestDataEC
 {
@@ -1640,3 +1641,4 @@ TEST(LibRadosAioEC, MultiWrite) {
   rados_aio_release(my_completion2);
   rados_aio_release(my_completion3);
 }
+#endif

@@ -120,6 +120,7 @@ TEST_F(LibRadosLock, BreakLock) {
   ASSERT_EQ(0, rados_break_lock(ioctx, "foo", "TestLock8", clients, "Cookie"));
 }
 
+#ifndef HAVE_SEASTAR
 // EC testing
 TEST_F(LibRadosLockEC, LockExclusive) {
   ASSERT_EQ(0, rados_lock_exclusive(ioctx, "foo", "TestLockEC1", "Cookie", "", NULL,  0));
@@ -224,4 +225,4 @@ TEST_F(LibRadosLockEC, BreakLock) {
   ASSERT_EQ(strlen("Cookie") + 1, cookies_len);
   ASSERT_EQ(0, rados_break_lock(ioctx, "foo", "TestLockEC8", clients, "Cookie"));
 }
-
+#endif
