@@ -15,7 +15,7 @@ trap cleanup EXIT ERR HUP INT QUIT
 declare -A pids
 
 for f in \
-    api_aio api_aio_pp \
+    api_aio \
     api_io api_io_pp \
     api_asio api_list \
     api_lock api_lock_pp \
@@ -29,10 +29,7 @@ for f in \
     api_service api_service_pp \
     api_c_write_operations \
     api_c_read_operations \
-    api_cls_remote_reads \
-    list_parallel \
-    open_pools_parallel \
-    delete_pools_parallel
+    api_cls_remote_reads
 do
     if [ $parallel -eq 1 ]; then
 	r=`printf '%25s' $f`
