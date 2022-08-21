@@ -1063,6 +1063,8 @@ record_t Cache::prepare_record(
 
     auto delta_bl = i->get_delta();
     auto delta_length = delta_bl.length();
+    std::cout<<"------------delta_bl.length = "<<delta_length<<std::endl;
+    if (!delta_length) continue;
     i->set_modify_time(commit_time);
     DEBUGT("mutated extent with {}B delta -- {}",
 	   t, delta_length, *i);
@@ -1177,6 +1179,8 @@ record_t Cache::prepare_record(
     bufferlist bl;
     i->prepare_write();
     bl.append(i->get_bptr());
+    std::cout<<"------------bl.length = "<<bl.length()<<std::endl;
+    if (!bl.length()) continue;
     if (i->get_type() == extent_types_t::ROOT) {
       ceph_assert(0 == "ROOT never gets written as a fresh block");
     }
