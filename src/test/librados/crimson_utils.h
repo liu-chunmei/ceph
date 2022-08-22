@@ -6,6 +6,11 @@
 #include <cstdlib>
 
 static inline bool is_crimson_cluster() {
+  static int i = 0;
+  if (i == 0) {
+    setenv("CRIMSON_COMPAT", "on", 1); //for test
+    i++;
+  }
   return getenv("CRIMSON_COMPAT") != nullptr;
 }
 
