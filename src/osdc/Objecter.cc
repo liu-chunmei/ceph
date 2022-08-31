@@ -5307,9 +5307,13 @@ void Objecter::_enumerate_reply(
 		     i->nspace};
   }
 
+  std::cout<<"-------next = "<<next<<std::endl;
+  std::cout<<"---------ctx->end = "<<ctx->end<<std::endl;
+  std::cout<<"---------ctx->max = "<<ctx->max<<std::endl;
   if (next == ctx->end || ctx->max == 0) {
     std::move(*ctx)(ec, std::move(ctx->ls), std::move(next));
   } else {
+    std::cout<<"----------call _issue_enumerate!!"<<std::endl;
     _issue_enumerate(next, std::move(ctx));
   }
 }
