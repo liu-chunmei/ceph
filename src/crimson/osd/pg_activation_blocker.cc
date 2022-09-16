@@ -4,6 +4,12 @@
 #include "crimson/osd/pg.h"
 #include "crimson/osd/pg_activation_blocker.h"
 
+namespace {
+  seastar::logger& logger() {
+    return crimson::get_logger(ceph_subsys_osd);
+  }
+}
+
 namespace crimson::osd {
 
 void PGActivationBlocker::dump_detail(Formatter *f) const
@@ -13,6 +19,8 @@ void PGActivationBlocker::dump_detail(Formatter *f) const
 
 void PGActivationBlocker::unblock()
 {
+  std::cout<<"-------PGActivationBlocker::unblock------pg = "<<pg->get_pgid()<<std::endl;
+  logger().debug("-------PGActivationBlocker::unblock------pg = {}", pg->get_pgid());
   p.set_value();
   p = {};
 }
@@ -23,6 +31,8 @@ PGActivationBlocker::wait(PGActivationBlocker::BlockingEvent::TriggerI&& trigger
   if (pg->get_peering_state().is_active()) {
     return seastar::now();
   } else {
+  std::cout<<"-------PGActivationBlocker::wait------pg = "<<pg->get_pgid()<<std::endl;
+  logger().debug("-------PGActivationBlocker::wait------pg = {}", pg->get_pgid());
     return trigger.maybe_record_blocking(p.get_shared_future(), *this);
   }
 }
