@@ -363,6 +363,8 @@ seastar::future<> OSD::start()
         whoami, std::ref(*cluster_msgr), std::ref(*public_msgr),
         std::ref(*monc), std::ref(*mgrc));
     }).then([this] {
+      return osd_states.start();
+    }).then([this] {
       ceph::mono_time startup_time = ceph::mono_clock::now();
       return shard_services.start(
         std::ref(osd_singleton_state),
@@ -371,7 +373,8 @@ seastar::future<> OSD::start()
         startup_time,
         osd_singleton_state.local().perf,
         osd_singleton_state.local().recoverystate_perf,
-        std::ref(store));
+        std::ref(store),
+        std::ref(osd_states));
     }).then([this] {
       return shard_dispatchers.start(
         std::ref(*this),
@@ -405,11 +408,13 @@ seastar::future<> OSD::start()
     osdmap = make_local_shared_foreign(OSDMapService::local_cached_map_t(map));
     return get_pg_shard_manager().update_map(std::move(map));
   }).then([this] {
-    get_pg_shard_manager().got_map(osdmap->get_epoch());
+    return shard_services.invoke_on_all([this](auto &local_service) {
+      local_service.local_state.osdmap_gate.got_map(osdmap->get_epoch());
+    });
+  }).then([this] {
     bind_epoch = osdmap->get_epoch();
     return get_pg_shard_manager().load_pgs(store);
   }).then([this] {
-
     uint64_t osd_required =
       CEPH_FEATURE_UID |
       CEPH_FEATURE_PGID64 |
@@ -677,6 +682,8 @@ seastar::future<> OSD::stop()
       return shard_dispatchers.stop();
     }).then([this] {
       return shard_services.stop();
+    }).then([this] {
+      return osd_states.stop();
     }).then([this] {
       return osd_singleton_state.stop();
     }).then([this] {
