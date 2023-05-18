@@ -775,12 +775,18 @@ OSD::ms_dispatch(crimson::net::ConnectionRef conn, MessageRef m)
           srand((unsigned)time(NULL));
           insert_iter->second = rand()% seastar::smp::count;
         }
-        return conn.get_foreign().then([this, m = std::move(m),
-          core = insert_iter->second](auto f_conn) {
-          return shard_dispatchers.invoke_on(core,
-            [f_conn = std::move(f_conn), m = std::move(m)]
-            (auto &local_dispatcher) mutable ->seastar::future<>{
-            return local_dispatcher.ms_dispatch(std::move(f_conn), m);
+        auto fut = seastar::now();
+        if (insert_iter->second != PRIMARY_CORE) {
+          fut = op_mutexes[insert_iter->second].lock();
+        }
+        return fut.then([=, this] {
+          return conn.get_foreign().then([this, m = std::move(m),
+            core = insert_iter->second](auto f_conn) {
+            return shard_dispatchers.invoke_on(core,
+              [f_conn = std::move(f_conn), m = std::move(m)]
+              (auto &local_dispatcher) mutable ->seastar::future<>{
+              return local_dispatcher.ms_dispatch(std::move(f_conn), m);
+            });
           });
         });
       }
@@ -799,6 +805,14 @@ OSD::ShardDispatcher::ms_dispatch(
   crimson::net::ConnectionFRef f_conn,
    MessageRef m)
 {
+  if (seastar::this_shard_id() != PRIMARY_CORE) {
+    auto core = seastar::this_shard_id();
+    std::ignore = container().invoke_on(PRIMARY_CORE,
+      [core](auto& dispatcher) {
+      auto &mutex = dispatcher.osd.op_mutexes[core];
+      mutex.unlock();
+    });
+  }
   if (seastar::this_shard_id() != PRIMARY_CORE) {
     switch (m->get_type()) {
     case CEPH_MSG_OSD_MAP:
