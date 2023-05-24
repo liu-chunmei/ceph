@@ -24,6 +24,11 @@ add_ceph_unittest(unittest-seastar-socket
   --memory 256M --smp 2)
 target_link_libraries(unittest-seastar-socket crimson)
 
+add_executable(unittest-seastar-invoke test_invoke.cc)
+add_ceph_unittest(unittest-seastar-invoke
+  --memory 256M --smp 3)
+target_link_libraries(unittest-seastar-invoke crimson)
+
 add_executable(unittest-seastar-messenger test_messenger.cc)
 add_ceph_unittest(unittest-seastar-messenger
   --memory 256M --smp 1)
