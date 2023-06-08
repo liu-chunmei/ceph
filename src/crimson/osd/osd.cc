@@ -735,7 +735,6 @@ void OSD::ShardDispatcher::print(std::ostream& out) const
 std::optional<seastar::future<>>
 OSD::ms_dispatch(crimson::net::ConnectionRef conn, MessageRef m)
 {
-  assert(seastar::this_shard_id() == PRIMARY_CORE);
   if (get_pg_shard_manager().is_stopping()) {
     return seastar::now();
   }
@@ -770,24 +769,9 @@ OSD::ms_dispatch(crimson::net::ConnectionRef conn, MessageRef m)
       case MSG_OSD_PG_UPDATE_LOG_MISSING:
       case MSG_OSD_PG_UPDATE_LOG_MISSING_REPLY:
       {
-        auto [insert_iter, inserted] = conn_to_core.emplace(conn, NULL_CORE);
-        if (inserted) {
-          srand((unsigned)time(NULL));
-          insert_iter->second = rand()% seastar::smp::count;
-        }
-        auto fut = seastar::now();
-        if (insert_iter->second != PRIMARY_CORE) {
-          fut = op_mutexes[insert_iter->second].lock();
-        }
-        return fut.then([=, this] {
-          return conn.get_foreign().then([this, m = std::move(m),
-            core = insert_iter->second](auto f_conn) {
-            return shard_dispatchers.invoke_on(core,
-              [f_conn = std::move(f_conn), m = std::move(m)]
-              (auto &local_dispatcher) mutable ->seastar::future<>{
-              return local_dispatcher.ms_dispatch(std::move(f_conn), std::move(m));
-            });
-          });
+        std::cout<<"-------ms_dispatch shard = "<<seastar::this_shard_id()<<std::endl;
+        return conn.get_foreign().then([this, m = std::move(m)](auto f_conn) {
+          return shard_dispatchers.local().ms_dispatch(std::move(f_conn), std::move(m));
         });
       }
       default:
@@ -805,14 +789,6 @@ OSD::ShardDispatcher::ms_dispatch(
   crimson::net::ConnectionFRef f_conn,
    MessageRef m)
 {
-  if (seastar::this_shard_id() != PRIMARY_CORE) {
-    auto core = seastar::this_shard_id();
-    std::ignore = container().invoke_on(PRIMARY_CORE,
-      [core](auto& dispatcher) {
-      auto &mutex = dispatcher.osd.op_mutexes[core];
-      mutex.unlock();
-    });
-  }
   if (seastar::this_shard_id() != PRIMARY_CORE) {
     switch (m->get_type()) {
     case CEPH_MSG_OSD_MAP:
