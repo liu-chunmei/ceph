@@ -194,6 +194,10 @@ public:
   seastar::sharded<ShardServices> shard_services;
   seastar::sharded<ShardDispatcher> shard_dispatchers;
 
+  std::map<crimson::net::ConnectionRef, core_id_t> conn_to_core;
+  std::array<seastar::shared_mutex, 5> op_mutexes;
+  uint32_t next_conn_core = 0;
+
   std::unique_ptr<Heartbeat> heartbeat;
   seastar::timer<seastar::lowres_clock> tick_timer;
 

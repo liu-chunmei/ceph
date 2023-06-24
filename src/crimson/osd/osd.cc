@@ -742,6 +742,7 @@ void OSD::ShardDispatcher::print(std::ostream& out) const
 std::optional<seastar::future<>>
 OSD::ms_dispatch(crimson::net::ConnectionRef conn, MessageRef m)
 {
+  ceph_assert(seastar::this_shard_id() == PRIMARY_CORE);
   if (get_pg_shard_manager().is_stopping()) {
     return seastar::now();
   }
@@ -776,9 +777,19 @@ OSD::ms_dispatch(crimson::net::ConnectionRef conn, MessageRef m)
       case MSG_OSD_PG_UPDATE_LOG_MISSING:
       case MSG_OSD_PG_UPDATE_LOG_MISSING_REPLY:
       {
-        return conn.get_foreign().then([this, m = std::move(m)](auto f_conn) {
-          return shard_dispatchers.local().ms_dispatch(std::move(f_conn), std::move(m));
-        });
+        auto [insert_iter, inserted] = conn_to_core.emplace(conn, NULL_CORE);
+        if (inserted) {
+          insert_iter->second = next_conn_core++;
+          if (next_conn_core >= seastar::smp::count) next_conn_core = 0;
+        }
+          return conn.get_foreign().then([this, m = std::move(m),
+            core = insert_iter->second](auto f_conn) {
+            return shard_dispatchers.invoke_on(core,
+              [f_conn = std::move(f_conn), m = std::move(m)]
+              (auto &local_dispatcher) mutable ->seastar::future<>{
+              return local_dispatcher.ms_dispatch(std::move(f_conn), std::move(m));
+            });
+          });
       }
       default:
       {
