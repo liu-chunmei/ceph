@@ -270,6 +270,7 @@ public:
   struct Onode;
   class Scanner;
   class Estimator;
+  Estimator* create_estimator();
 
   typedef boost::intrusive_ptr<Collection> CollectionRef;
   typedef boost::intrusive_ptr<Onode> OnodeRef;
@@ -1691,6 +1692,7 @@ public:
     pool_opts_t pool_opts;
     uint32_t segment_size;
     ContextQueue *commit_queue;
+    Estimator* estimator;
 
     OnodeCacheShard* get_onode_cache() const {
       return onode_space.cache;
