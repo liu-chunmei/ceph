@@ -17523,6 +17523,8 @@ int BlueStore::_do_write_v2(
   o->extent_map.fault_range(db, start, end - start);
   BlueStore::Writer wr(this, txc, &wctx, o);
   wr.do_write(offset, bl);
+  o->extent_map.dirty_range(offset, length);
+  o->extent_map.maybe_reshard(offset, offset + length);
   return r;
 }
 
