@@ -12362,6 +12362,8 @@ int BlueStore::set_collection_opts(
     return -ENOENT;
   std::unique_lock l{c->lock};
   c->pool_opts = opts;
+  c->segment_size = c->pool_opts.value_or(
+  pool_opts_t::SEGMENT_SIZE, (int64_t)cct->_conf->bluestore_onode_segment_size);
   return 0;
 }
 
@@ -17244,7 +17246,7 @@ void BlueStore::_do_write_data(
     if (head_length) {
       _do_write_small(txc, c, o, head_offset, head_length, p, wctx);
     }
-    uint32_t segment_size = cct->_conf->bluestore_segment_data_size;
+    uint32_t segment_size = c->segment_size;
     if (segment_size) {
       // split data to chunks
       uint64_t write_offset = middle_offset;

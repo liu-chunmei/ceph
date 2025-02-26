@@ -1107,6 +1107,7 @@ public:
     DEDUP_CDC_CHUNK_SIZE,
     PG_NUM_MAX, // max pg_num
     READ_RATIO, // read ration for the read balancer work [0-100]
+    SEGMENT_SIZE, // BlueStore onode segmentation see conf.bluestore_onode_segment_size
     /**
      * PCT_UPDATE_DELAY
      *
