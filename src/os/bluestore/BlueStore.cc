@@ -4190,8 +4190,11 @@ std::pair<uint32_t, uint32_t> BlueStore::ExtentMap::fault_range_ex(
   auto last = seek_shard(offset + length);
   maybe_load_shard(db, start, last);
   uint32_t left_bound = shards[start].shard_info->offset;
-  uint32_t right_bound =  (size_t)last < shards.size() ?
-                          shards[last].shard_info->offset : OBJECT_MAX_SIZE;
+  uint32_t right_bound =  (size_t)last + 1 < shards.size() ?
+                          shards[last + 1].shard_info->offset : OBJECT_MAX_SIZE;
+  dout(20) << __func__ << " start=" << start << " last=" << last
+    << " -> 0x" << std::hex << left_bound << "~" << right_bound
+    << std::dec << dendl;
   return {left_bound, right_bound};
 }
 
@@ -17547,15 +17550,14 @@ int BlueStore::_do_write_v2(
   if (bl.length() != length) {
     bl.splice(length, bl.length() - length);
   }
+  BlueStore::Writer wr(this, txc, &wctx, o);
   uint64_t start = p2align(offset, min_alloc_size);
   uint64_t end = p2roundup(offset + length, min_alloc_size);
-  o->extent_map.fault_range(db, start, end - start);
-  BlueStore::Writer wr(this, txc, &wctx, o);
   std::tie(wr.left_shard_bound, wr.right_shard_bound) =
-    o->extent_map.fault_range_ex(db, offset, length);
+    o->extent_map.fault_range_ex(db, start, end - start);
   wr.do_write(offset, bl);
-  o->extent_map.dirty_range(offset, length);
-  o->extent_map.maybe_reshard(offset, offset + length);
+  o->extent_map.dirty_range(wr.left_shard_bound, wr.right_shard_bound - wr.left_shard_bound);
+  o->extent_map.maybe_reshard(wr.left_shard_bound, wr.right_shard_bound);
   return r;
 }
 

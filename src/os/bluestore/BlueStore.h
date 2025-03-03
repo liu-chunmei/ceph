@@ -932,6 +932,7 @@ public:
       return blob_start() < o || blob_end() > o + l;
     }
   };
+
   typedef boost::intrusive::set<Extent> extent_map_t;
 
 
