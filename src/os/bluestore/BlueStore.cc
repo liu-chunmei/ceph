@@ -17695,6 +17695,8 @@ int BlueStore::_do_write_v2_compressed(
     } else {
       wr.do_write(i.offset, data_bl);
     }
+    wr.statfs_delta.stored() += length;
+    wr.statfs_delta.compressed_original() += length;
     txc->statfs_delta += wr.statfs_delta;
   }
   estimator->finish();

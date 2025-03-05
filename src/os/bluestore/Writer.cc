@@ -577,7 +577,7 @@ BlueStore::BlobRef BlueStore::Writer::_blob_create_full_compressed(
   bblob.allocated_full(object_length, std::move(blob_allocs));
   //no unused in compressed //bblob.mark_used(0, disk_length);
   statfs_delta.compressed_allocated() += disk_length;
-  statfs_delta.compressed_original() += object_length;
+  //statfs_delta.compressed_original() += object_length;
   statfs_delta.compressed() += compressed_length;
   return blob;
 }
@@ -1388,6 +1388,7 @@ void BlueStore::Writer::do_write(
   if (ref_end < onode->onode.size) {
     ref_end = std::min<uint32_t>(data_end, onode->onode.size);
   }
+  statfs_delta.stored() += ref_end - location;
   do_write_with_blobs(location, data_end, ref_end, bd);
 }
 
@@ -1398,7 +1399,6 @@ void BlueStore::Writer::do_write_with_blobs(
   blob_vec& bd)
 {
   dout(20) << "blobs to put:" << blob_data_printer(bd, location) << dendl;
-  statfs_delta.stored() += ref_end - location;
   exmp_it after_punch_it =
     bstore->_punch_hole_2(onode->c, onode, location, data_end - location,
     released, pruned_blobs, txc->shared_blobs, statfs_delta);
