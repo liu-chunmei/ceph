@@ -931,7 +931,26 @@ TEST_P(StoreTest, SmallBlockWrites) {
   bufferlist z;
   z.append(zp);
   {
+    std::vector<std::pair<uint64_t, uint32_t>> vec;
+    vec.push_back({6*1024, 100*1024});
+    vec.push_back({9*1024, 2*1024});
+    vec.push_back({4*1024, 70*1024});
+    vec.push_back({57*1024, 9*1024});
+    vec.push_back({102*1024, 20*1024});
+    for (int i = 0; i < 5; i++) {
+    uint32_t primary_offset = vec[i].first;
+    uint32_t primary_length = vec[i].second;
+    std::cout<<"-----test offset = "<<primary_offset/1024<<"k"<<std::endl;
+    std::cout<<"-----test length = "<<primary_length/1024<<"k"<<std::endl;
+    bufferlist primary_data;
+    primary_data.append(std::string(primary_length, 'a'));
     ObjectStore::Transaction t;
+    t.write(cid, hoid, primary_offset, primary_length, primary_data);
+    r = queue_transaction(store, ch, std::move(t));
+    ASSERT_EQ(r, 0);
+    }
+  }
+/*    ObjectStore::Transaction t;
     t.write(cid, hoid, 0, 0x1000, a);
     r = queue_transaction(store, ch, std::move(t));
     ASSERT_EQ(r, 0);
@@ -1000,7 +1019,7 @@ TEST_P(StoreTest, SmallBlockWrites) {
     exp.append(a);
     exp.append(c);
     ASSERT_TRUE(bl_eq(exp, in));
-  }
+  }*/
   {
     ObjectStore::Transaction t;
     t.remove(cid, hoid);

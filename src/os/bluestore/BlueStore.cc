@@ -17550,6 +17550,11 @@ int BlueStore::_do_write_v2(
   if (bl.length() != length) {
     bl.splice(length, bl.length() - length);
   }
+  if (o->extent_map.extent_map.size()!=0){
+  for (auto &e : o->extent_map.extent_map){
+       std::cout<<__func__<<"----1. logic_offset="<<e.logical_offset/1024<<"K  blob_offset = "<<e.blob_offset/1024<<"K length="<<e.length/1024<<"K extent blob ="<<e.blob<<"  disk location = "<<e.blob->dirty_blob().get_allocation_at(e.blob_offset)/1024<<"K blob logical_length = "<<e.blob->dirty_blob().get_logical_length()/1024<<"K"<<std::endl;
+     }
+  }
   BlueStore::Writer wr(this, txc, &wctx, o);
   uint64_t start = p2align(offset, min_alloc_size);
   uint64_t end = p2roundup(offset + length, min_alloc_size);
@@ -17560,6 +17565,11 @@ int BlueStore::_do_write_v2(
   wr.do_write(offset, bl);
   o->extent_map.dirty_range(wr.left_affected_range, wr.right_affected_range - wr.left_affected_range);
   o->extent_map.maybe_reshard(wr.left_affected_range, wr.right_affected_range);
+  if (o->extent_map.extent_map.size()!=0){
+  for (auto &e : o->extent_map.extent_map){
+       std::cout<<__func__<<"----2. logic_offset="<<e.logical_offset/1024<<"K  blob_offset = "<<e.blob_offset/1024<<"K length="<<e.length/1024<<"K extent blob ="<<e.blob<<"  disk location = "<<e.blob->dirty_blob().get_allocation_at(e.blob_offset)/1024<<"K blob logical_length = "<<e.blob->dirty_blob().get_logical_length()/1024<<"K"<<std::endl;
+     }
+  }
   return r;
 }
 
