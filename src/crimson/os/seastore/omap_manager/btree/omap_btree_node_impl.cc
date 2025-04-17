@@ -216,6 +216,83 @@ OMapInnerNode::rm_key(omap_context_t oc, const std::string &key)
   });
 }
 
+OMapInnerNode::rm_key_range_ret
+OMapInnerNode::rm_key_range(omap_context_t oc, const std::string &first, const std::string &last)
+{
+  LOG_PREFIX(OMapInnerNode::rm_key_range);
+  DEBUGT("remove keys: {}--{}, *this: {}", oc.t, first, last, *this);
+  auto child_fiter = first == ""? iter_cbegin() : get_containing_child(first);
+  auto child_liter = last == ""? (iter_cend()-1) : get_containing_child(last);
+  assert(child_fiter != iter_cend());
+
+  return seastar::do_with(
+    child_fiter,
+    child_liter,
+    iter_t(child_fiter),
+    mutation_result_t(mutation_status_t::SUCCESS,
+      std::nullopt, std::nullopt),
+    std::map<uint16_t, OMapNodeRef>{},
+    [this, oc, &first, &last] (
+      auto &fiter,
+      auto &liter,
+      auto &iter,
+      auto &ret,
+      auto &m_entries)
+    {
+      return trans_intr::repeat(
+        [&, oc, this]() -> rm_key_range_iertr::future<seastar::stop_iteration>
+      {
+        if (iter > liter) {
+          return rm_key_range_iertr::make_ready_future<seastar::stop_iteration>(
+            seastar::stop_iteration::yes);
+        }
+        return get_child_node(oc, iter)
+          .si_then([&, oc, this](auto &&extent) {
+          return seastar::do_with(
+            iter == fiter ? first : std::string{},
+            iter == liter ? last : std::string{},
+            [&, extent = std::move(extent)] (auto &first, auto &last) {
+            return extent->rm_key_range(oc, first, last)
+              .si_then([&, oc, this]  (auto mresult) {
+                ret.status = mresult.status;
+                if (mresult.status == mutation_status_t::NEED_MERGE) {
+                  m_entries.emplace(iter->get_offset(), *(mresult.need_merge));
+                }
+                iter++;
+                switch (mresult.status) {
+                  case mutation_status_t::SUCCESS:
+                  case mutation_status_t::NEED_MERGE:
+                    return rm_key_range_iertr::make_ready_future<seastar::stop_iteration>(
+                          seastar::stop_iteration::no);
+                  case mutation_status_t::FAIL:
+                    return rm_key_range_iertr::make_ready_future<seastar::stop_iteration>(
+                      seastar::stop_iteration::yes);
+                  default: {
+                    assert("not defined status!");
+                    return rm_key_range_iertr::make_ready_future<seastar::stop_iteration>(
+                      seastar::stop_iteration::yes);
+                  }
+                }
+            });
+          });
+        });
+      }).si_then([&, oc, this] {
+        if (m_entries.size() != 0) {
+          return merge_entry_for_node(oc, m_entries);
+        }
+        if (ret.status == mutation_status_t::FAIL) {
+          return rm_key_range_ret(
+            interruptible::ready_future_marker{},
+              mutation_result_t(mutation_status_t::FAIL, std::nullopt, std::nullopt));
+        } else {
+          return rm_key_range_ret(
+            interruptible::ready_future_marker{},
+              mutation_result_t(mutation_status_t::SUCCESS, std::nullopt, std::nullopt));
+        }
+      });
+    });
+}
+
 OMapInnerNode::iterate_ret
 OMapInnerNode::iterate(
   omap_context_t oc,
@@ -472,19 +549,71 @@ OMapInnerNode::make_balanced(omap_context_t oc, OMapNodeRef _right)
 }
 
 OMapInnerNode::merge_entry_ret
+OMapInnerNode::merge_entry_for_node(
+  omap_context_t oc,
+  std::map<uint16_t, OMapNodeRef> entries)
+{
+  LOG_PREFIX(OMapInnerNode::merge_entry_for_node);
+  DEBUGT("parent: {}", oc.t, *this);
+  if (!is_mutable()) {
+    auto mut = oc.tm.get_mutable_extent(oc.t, this)->cast<OMapInnerNode>();
+    return mut->merge_entry_for_node(oc, entries);
+  }
+  return seastar::do_with(
+    std::move(entries),
+    uint16_t(0),
+    [this, oc] (std::map<uint16_t, OMapNodeRef>& entries, uint16_t& adjust_index) {
+      return trans_intr::do_for_each(
+        entries.begin(),
+        entries.end(),
+        [this, oc, &adjust_index](const std::pair<uint16_t, OMapNodeRef>& entry) {
+          auto iter = iter_idx(entry.first - adjust_index);
+          assert(iter != iter_cend());
+          if (iter != iter_cbegin()) {
+            return merge_entry(oc, iter, entry.second, true)
+              .si_then([this, oc, &adjust_index] (auto &&mresult) {
+                if (mresult.status == mutation_status_t::WAS_MERGED) {
+                  ++adjust_index;
+                }
+                return merge_entry_iertr::now();
+            });
+          }
+          return merge_entry_iertr::now();
+      }).si_then([this]() {
+        if (extent_is_below_min()) {
+          return merge_entry_ret(
+            interruptible::ready_future_marker{},
+            mutation_result_t(mutation_status_t::NEED_MERGE,
+                              std::nullopt, this));
+        } else {
+          return merge_entry_ret(
+            interruptible::ready_future_marker{},
+            mutation_result_t(mutation_status_t::SUCCESS,
+                              std::nullopt, std::nullopt));
+        }
+      });
+  });
+}
+
+OMapInnerNode::merge_entry_ret
 OMapInnerNode::merge_entry(
   omap_context_t oc,
   internal_const_iterator_t iter,
-  OMapNodeRef entry)
+  OMapNodeRef entry,
+  bool to_left)
 {
   LOG_PREFIX(OMapInnerNode::merge_entry);
   DEBUGT("{}, parent: {}", oc.t, *entry, *this);
+  if (to_left) {
+    assert(is_mutable());
+    assert(iter != iter_cbegin());
+  }
   if (!is_mutable()) {
     auto mut = oc.tm.get_mutable_extent(oc.t, this)->cast<OMapInnerNode>();
     auto mut_iter = mut->iter_idx(iter->get_offset());
     return mut->merge_entry(oc, mut_iter, entry);
   }
-  auto is_left = (iter + 1) == iter_cend();
+  auto is_left = to_left ? true: (iter + 1) == iter_cend();
   auto donor_iter = is_left ? iter - 1 : iter + 1;
   return get_child_node(oc, donor_iter
   ).si_then([=, this](auto &&donor) mutable {
@@ -499,7 +628,7 @@ OMapInnerNode::merge_entry(
 	oc.t, *l, *r, liter->get_key(), riter->get_key());
       assert(entry->extent_is_below_min());
       return l->make_full_merge(oc, r
-      ).si_then([liter=liter, riter=riter, l=l, r=r, oc, this]
+      ).si_then([liter=liter, riter=riter, l=l, r=r, oc, to_left, this]
 		(auto &&replacement) {
 	LOG_PREFIX(OMapInnerNode::merge_entry);
 	DEBUGT("to update parent: {}", oc.t, *this);
@@ -526,8 +655,14 @@ OMapInnerNode::merge_entry(
 	    *r->template cast<OMapInnerNode>());
 	}
         return dec_ref(oc, dec_laddrs
-	).si_then([this, oc, r=std::move(replacement)] {
+	).si_then([this, oc, to_left, r=std::move(replacement)] {
 	  --(oc.t.get_omap_tree_stats().extents_num_delta);
+          if (to_left) {
+            return merge_entry_ret(
+                   interruptible::ready_future_marker{},
+                   mutation_result_t(mutation_status_t::WAS_MERGED,
+                                     std::nullopt, std::nullopt));
+          }
           if (extent_is_below_min()) {
             return merge_entry_ret(
                    interruptible::ready_future_marker{},
@@ -542,6 +677,13 @@ OMapInnerNode::merge_entry(
         });
       });
     } else { // !l->can_merge(r)
+      if (to_left) {   // for rm_key_range only do merger left
+        DEBUGT("can't do left merge for iter: {}", oc.t, iter->get_offset());
+        return merge_entry_ret(
+               interruptible::ready_future_marker{},
+               mutation_result_t(mutation_status_t::FAIL,
+                                 std::nullopt, std::nullopt));
+      }
       DEBUGT("balanced l {} r {} liter {} riter {}",
 	oc.t, *l, *r, liter->get_key(), riter->get_key());
       return l->make_balanced(oc, r
@@ -753,6 +895,41 @@ OMapLeafNode::rm_key(omap_context_t oc, const std::string &key)
       mutation_result_t(mutation_status_t::FAIL, std::nullopt, std::nullopt));
   }
 
+}
+
+OMapLeafNode::rm_key_range_ret
+OMapLeafNode::rm_key_range(omap_context_t oc, const std::string &first, const std::string &last)
+{
+  LOG_PREFIX(OMapLeafNode::rm_key_range);
+  DEBUGT("remove kyes: {}--{}, this: {}", oc.t, first, last, *this);
+
+  auto fiter = first == ""? iter_begin() : find_string_key(first);
+  auto liter = last == ""? (iter_end()-1) : find_string_key(last);
+  if (!is_mutable() && fiter != iter_end() &&(last == "" || (last != "" && liter != iter_end()))) {
+    auto mut =  oc.tm.get_mutable_extent(oc.t, this)->cast<OMapLeafNode>();
+    return mut->rm_key_range(oc, first, last);
+  }
+
+  if (fiter == iter_end() || (last != "" && liter == iter_end())) {
+    return rm_key_range_ret(
+      interruptible::ready_future_marker{},
+      mutation_result_t(mutation_status_t::FAIL, std::nullopt, std::nullopt));
+  }
+  auto dist = liter - fiter + 1;
+
+  (oc.t.get_omap_tree_stats().num_erases) += dist;
+  journal_leaf_remove_range(fiter, liter, maybe_get_delta_buffer());
+
+  if (extent_is_below_min()) {
+    return rm_key_ret(
+	    interruptible::ready_future_marker{},
+	    mutation_result_t(mutation_status_t::NEED_MERGE, std::nullopt,
+			  this->cast<OMapNode>()));
+  } else {
+    return rm_key_ret(
+	    interruptible::ready_future_marker{},
+	    mutation_result_t(mutation_status_t::SUCCESS, std::nullopt, this->cast<OMapNode>()));
+  }
 }
 
 OMapLeafNode::iterate_ret
