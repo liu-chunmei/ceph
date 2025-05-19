@@ -425,6 +425,24 @@ BlockSegmentManager::~BlockSegmentManager()
 {
 }
 
+SegmentManager::read_ertr::future<unsigned int> BlockSegmentManager::get_shard_nums()
+{
+  LOG_PREFIX(BlockSegmentManager::get_shard_nums);
+  return open_device(
+    device_path
+  ).safe_then([this](auto p) {
+    device = std::move(p.first);
+    auto sd = p.second;
+    return read_superblock(device, sd);
+  }).safe_then([FNAME](auto sb) {
+    return read_ertr::make_ready_future<unsigned int>(sb.shard_num);
+  }).handle_error(
+    crimson::ct_error::assert_all{
+      "Invalid error in BlockSegmentManager::get_shard_nums"
+    }
+  );
+}
+
 BlockSegmentManager::mount_ret BlockSegmentManager::mount()
 {
   return shard_devices.invoke_on_all([](auto &local_device) {

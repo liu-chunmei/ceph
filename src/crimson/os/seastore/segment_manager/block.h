@@ -112,7 +112,7 @@ public:
 class BlockSegmentManager final : public SegmentManager {
 // interfaces used by Device
 public:
-  seastar::future<> start() {
+  seastar::future<> start(int shard_nums) final {
     return shard_devices.start(device_path, superblock.config.spec.dtype);
   }
 
@@ -148,6 +148,8 @@ public:
     paddr_t addr,
     size_t len,
     ceph::bufferptr &out) final;
+
+  read_ertr::future<unsigned int> get_shard_nums() final;
 
   device_type_t get_device_type() const final {
     return superblock.config.spec.dtype;

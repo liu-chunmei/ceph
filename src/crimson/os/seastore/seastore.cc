@@ -147,6 +147,7 @@ SeaStore::SeaStore(
   : root(root),
     mdstore(std::move(mdstore))
 {
+  store_shard_nums = seastar::smp::count;
 }
 
 SeaStore::~SeaStore() = default;
@@ -205,6 +206,29 @@ void SeaStore::Shard::register_metrics()
   );
 }
 
+seastar::future<> SeaStore::get_shard_nums()
+{
+  LOG_PREFIX(SeaStore::get_shard_nums);
+  return read_meta("mkfs_done"
+  ).then([this, FNAME](auto tuple) {
+    auto [done, value] = tuple;
+    if (done == -1) {
+      INFO("seastore not mkfs yet");
+      store_shard_nums = seastar::smp::count;
+      return seastar::now();
+    } else {
+      INFO("seastore mkfs done");
+      return device->get_shard_nums(
+      ).safe_then([this](auto shard_nums) {
+        store_shard_nums = shard_nums;
+        return seastar::now();
+      }).handle_error(
+        crimson::ct_error::assert_all{
+          "Invalid error in device->get_shard_nums"
+      });
+    }
+  });
+}
 seastar::future<> SeaStore::start()
 {
   LOG_PREFIX(SeaStore::start);
@@ -226,7 +250,9 @@ seastar::future<> SeaStore::start()
   return Device::make_device(root, d_type
   ).then([this](DeviceRef device_obj) {
     device = std::move(device_obj);
-    return device->start();
+    return get_shard_nums();
+  }).then([this, is_test] () {
+    return device->start(store_shard_nums);
   }).then([this, is_test] {
     ceph_assert(device);
     return shard_stores.start(root, device.get(), is_test);
@@ -302,7 +328,7 @@ SeaStore::mount_ertr::future<> SeaStore::mount()
         fmt::format("{}/block.{}.{}", root, dtype, std::to_string(id));
       return Device::make_device(path, dtype
       ).then([this, path, magic](DeviceRef sec_dev) {
-        return sec_dev->start(
+        return sec_dev->start(store_shard_nums
         ).then([this, magic, sec_dev = std::move(sec_dev)]() mutable {
           return sec_dev->mount(
           ).safe_then([this, sec_dev=std::move(sec_dev), magic]() mutable {
@@ -544,7 +570,7 @@ SeaStore::mkfs_ertr::future<> SeaStore::mkfs(uuid_d new_osd_fsid)
                 ).then([this, &sds, id, dtype, new_osd_fsid](DeviceRef sec_dev) {
                   auto p_sec_dev = sec_dev.get();
                   secondaries.emplace_back(std::move(sec_dev));
-                  return p_sec_dev->start(
+                  return p_sec_dev->start(store_shard_nums
                   ).then([&sds, id, dtype, new_osd_fsid, p_sec_dev]() {
                     magic_t magic = (magic_t)std::rand();
                     sds.emplace(

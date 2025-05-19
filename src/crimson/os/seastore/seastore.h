@@ -576,6 +576,7 @@ public:
 
   seastar::future<> start() final;
   seastar::future<> stop() final;
+  seastar::future<> get_shard_nums();
 
   mount_ertr::future<> mount() final;
   seastar::future<> umount() final;
@@ -630,6 +631,7 @@ private:
   DeviceRef device;
   std::vector<DeviceRef> secondaries;
   seastar::sharded<SeaStore::Shard> shard_stores;
+  int store_shard_nums = 0;
 
   mutable seastar::lowres_clock::time_point last_tp =
     seastar::lowres_clock::time_point::min();

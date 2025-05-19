@@ -308,7 +308,7 @@ public:
     return device_path;
   }
 
-  seastar::future<> start() final {
+  seastar::future<> start(int shard_nums) final {
     return shard_devices.start(device_path);
   }
 

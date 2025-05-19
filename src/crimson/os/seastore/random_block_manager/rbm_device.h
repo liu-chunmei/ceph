@@ -115,6 +115,8 @@ public:
   std::size_t get_available_size() const { return super.size; }
   extent_len_t get_block_size() const { return super.block_size; }
 
+  read_ertr::future<unsigned int> get_shard_nums() final;
+
   virtual read_ertr::future<> read(
     uint64_t offset,
     bufferptr &bptr) = 0;
