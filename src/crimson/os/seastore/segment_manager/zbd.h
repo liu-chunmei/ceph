@@ -128,7 +128,7 @@ namespace crimson::os::seastore::segment_manager::zbd {
       return shard_devices.stop();
     }
 
-    Device& get_sharded_device() final {
+    Device& get_sharded_device(int shard_index) final {
       return shard_devices.local();
     }
 

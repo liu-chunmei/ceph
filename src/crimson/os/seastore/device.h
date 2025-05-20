@@ -90,7 +90,7 @@ class Device {
 public:
   virtual ~Device() {}
 
-  virtual seastar::future<> start(int shard_nums) {
+  virtual seastar::future<> start(unsigned int shard_nums) {
     return seastar::now();
   }
 
@@ -99,7 +99,7 @@ public:
   }
 
   // called on the shard to get this shard device;
-  virtual Device& get_sharded_device() {
+  virtual Device& get_sharded_device(unsigned int shard_index = 0) {
     return *this;
   }
 

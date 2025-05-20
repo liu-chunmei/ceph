@@ -112,17 +112,12 @@ public:
 class BlockSegmentManager final : public SegmentManager {
 // interfaces used by Device
 public:
-  seastar::future<> start(int shard_nums) final {
-    return shard_devices.start(device_path, superblock.config.spec.dtype);
-  }
+  seastar::future<> start(unsigned int shard_nums) final;
 
-  seastar::future<> stop() {
-    return shard_devices.stop();
-  }
+  seastar::future<> stop() final;
 
-  Device& get_sharded_device() final {
-    return shard_devices.local();
-  }
+  Device& get_sharded_device(unsigned int shard_index = 0) final;
+
   mount_ret mount() final;
 
   mkfs_ret mkfs(device_config_t) final;
@@ -132,8 +127,10 @@ public:
 
   BlockSegmentManager(
     const std::string &path,
-    device_type_t dtype)
-  : device_path(path) {
+    device_type_t dtype,
+    unsigned int shard_index = 0)
+  : device_path(path),
+    shard_index(shard_index) {
     ceph_assert(get_device_type() == device_type_t::NONE);
     superblock.config.spec.dtype = dtype;
   }
@@ -258,7 +255,10 @@ private:
   // all shards mount
   mount_ret shard_mount();
 
-  seastar::sharded<BlockSegmentManager> shard_devices;
+  unsigned int device_shard_nums = 0;
+  unsigned int shard_index = 0;
+  bool shard_status = true;
+  std::vector<std::unique_ptr<seastar::sharded<BlockSegmentManager>>> shard_devices;
 };
 
 }

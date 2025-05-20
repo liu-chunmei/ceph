@@ -119,7 +119,7 @@ public:
     uint64_t len,
     uint32_t op_flags) final;
 
-  FuturizedStore::Shard& get_sharded_store() final {
+  FuturizedStore::Shard& get_sharded_store(unsigned int shard_index = 0) final {
     return *this;
   }
 
