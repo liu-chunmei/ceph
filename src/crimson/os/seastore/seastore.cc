@@ -1126,7 +1126,7 @@ SeaStore::Shard::open_collection(const coll_t& cid)
   ).then([cid, this, FNAME] (auto colls_cores) {
     if (auto found = std::find(colls_cores.begin(),
                                colls_cores.end(),
-                               std::make_pair(cid, seastar::this_shard_id()));
+                               std::make_pair(cid, std::make_pair(seastar::this_shard_id(), shard_index)));
       found != colls_cores.end()) {
       DEBUG("cid={} exists", cid);
       return seastar::make_ready_future<CollectionRef>(_get_collection(cid));
@@ -1173,12 +1173,12 @@ SeaStore::Shard::list_collections()
           return transaction_manager->read_collection_root(t
           ).si_then([this, &t](auto coll_root) {
             return collection_manager->list(coll_root, t);
-          }).si_then([&ret](auto colls) {
+          }).si_then([this, &ret](auto colls) {
             ret.resize(colls.size());
             std::transform(
               colls.begin(), colls.end(), ret.begin(),
-              [](auto p) {
-              return std::make_pair(p.first, seastar::this_shard_id());
+              [this](auto p) {
+              return std::make_pair(p.first, std::make_pair(seastar::this_shard_id(), shard_index));
             });
           });
         });

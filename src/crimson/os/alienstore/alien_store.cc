@@ -273,7 +273,7 @@ seastar::future<std::vector<coll_core_t>> AlienStore::list_collections()
       ret.resize(ls.size());
       std::transform(
         ls.begin(), ls.end(), ret.begin(),
-        [](auto p) { return std::make_pair(p, NULL_CORE); });
+        [](auto p) { return std::make_pair(p, std::make_pair(NULL_CORE, 0)); });
       return seastar::make_ready_future<std::vector<coll_core_t>>(std::move(ret));
     });
   });

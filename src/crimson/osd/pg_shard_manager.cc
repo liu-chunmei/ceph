@@ -20,7 +20,8 @@ seastar::future<> PGShardManager::load_pgs(crimson::os::FuturizedStore& store)
     return seastar::parallel_for_each(
       colls_cores,
       [this](auto coll_core) {
-        auto[coll, shard_core] = coll_core;
+        auto[coll, shard_core_index] = coll_core;
+        auto[shard_core, shard_index] = shard_core_index;
 	spg_t pgid;
 	if (coll.is_pg(&pgid)) {
           return get_pg_to_shard_mapping().get_or_create_pg_mapping(

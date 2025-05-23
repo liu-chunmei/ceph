@@ -209,7 +209,7 @@ public:
   virtual seastar::future<std::tuple<int, std::string>> read_meta(
     const std::string& key) = 0;
 
-  using coll_core_t = std::pair<coll_t, core_id_t>;
+  using coll_core_t = std::pair<coll_t, std::pair<core_id_t, unsigned int>>;
   virtual seastar::future<std::vector<coll_core_t>> list_collections() = 0;
 
   virtual seastar::future<std::string> get_default_device_class() = 0;

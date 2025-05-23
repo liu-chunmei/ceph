@@ -250,7 +250,7 @@ CyanStore::Shard::list_collections()
 {
   std::vector<coll_core_t> collections;
   for (auto& coll : coll_map) {
-    collections.push_back(std::make_pair(coll.first, seastar::this_shard_id()));
+    collections.push_back(std::make_pair(coll.first, std::make_pair(seastar::this_shard_id(), 0)));
   }
   return seastar::make_ready_future<std::vector<coll_core_t>>(std::move(collections));
 }
