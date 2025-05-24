@@ -29,7 +29,7 @@ public:
              const ConfigValues& values);
   ~AlienStore() final;
 
-  seastar::future<> start() final;
+  seastar::future<unsigned int> start() final;
   seastar::future<> stop() final;
   mount_ertr::future<> mount() final;
   seastar::future<> umount() final;

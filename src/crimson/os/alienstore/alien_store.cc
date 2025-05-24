@@ -84,7 +84,7 @@ AlienStore::~AlienStore()
 {
 }
 
-seastar::future<> AlienStore::start()
+seastar::future<unsigned int> AlienStore::start()
 {
   cct = std::make_unique<CephContext>(
     CEPH_ENTITY_TYPE_OSD,
@@ -119,7 +119,9 @@ seastar::future<> AlienStore::start()
   const auto num_threads =
     get_conf<uint64_t>("crimson_alien_op_num_threads");
   tp = std::make_unique<crimson::os::ThreadPool>(num_threads, 128, alien_thread_cpu_cores);
-  return tp->start();
+  return tp->start().then([]() {
+    return seastar::make_ready_future<unsigned int>(1);
+  });
 }
 
 seastar::future<> AlienStore::stop()

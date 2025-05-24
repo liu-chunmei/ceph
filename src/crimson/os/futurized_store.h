@@ -181,7 +181,9 @@ public:
   explicit FuturizedStore(const FuturizedStore& o) = delete;
   const FuturizedStore& operator=(const FuturizedStore& o) = delete;
 
-  virtual seastar::future<> start() = 0;
+  virtual seastar::future<unsigned int> start() {
+    return seastar::make_ready_future<unsigned int>(1);
+  }
 
   virtual seastar::future<> stop() = 0;
 

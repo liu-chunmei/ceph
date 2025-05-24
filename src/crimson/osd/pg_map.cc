@@ -14,12 +14,13 @@ namespace crimson::osd {
 
 seastar::future<core_id_t> PGShardMapping::get_or_create_pg_mapping(
   spg_t pgid,
-  core_id_t core_expected)
+  core_id_t core_expected,
+  unsigned int store_shard_index)
 {
   LOG_PREFIX(PGShardMapping::get_or_create_pg_mapping);
   auto find_iter = pg_to_core.find(pgid);
   if (find_iter != pg_to_core.end()) {
-    auto core_found = find_iter->second;
+    auto core_found = find_iter->second.first;
     assert(core_found != NULL_CORE);
     if (core_expected != NULL_CORE && core_expected != core_found) {
       ERROR("the mapping is inconsistent for pg {}: core {}, expected {}",
@@ -31,14 +32,14 @@ seastar::future<core_id_t> PGShardMapping::get_or_create_pg_mapping(
     DEBUG("calling primary to add mapping for pg {} to the expected core {}",
           pgid, core_expected);
     return container().invoke_on(
-        0, [pgid, core_expected, FNAME](auto &primary_mapping) {
+        0, [pgid, core_expected, store_shard_index, FNAME](auto &primary_mapping) {
       auto core_to_update = core_expected;
+      auto shard_index_update = store_shard_index;
       auto find_iter = primary_mapping.pg_to_core.find(pgid);
       if (find_iter != primary_mapping.pg_to_core.end()) {
         // this pgid was already mapped within primary_mapping, assert that the
         // mapping is consistent and avoid emplacing once again.
-        auto core_found = find_iter->second;
-        assert(core_found != NULL_CORE);
+        auto core_found = find_iter->second.first;
         if (core_expected != NULL_CORE) {
           if (core_expected != core_found) {
             ERROR("the mapping is inconsistent for pg {} (primary): core {}, expected {}",
@@ -59,6 +60,8 @@ seastar::future<core_id_t> PGShardMapping::get_or_create_pg_mapping(
         // add the mapping and ajust core_to_num_pgs
         ceph_assert_always(primary_mapping.core_to_num_pgs.size() > 0);
         std::map<core_id_t, unsigned>::iterator count_iter;
+        std::map<core_id_t, std::map<unsigned, unsigned>>::iterator core_shard_iter;
+        std::map<unsigned, unsigned>::iterator shard_iter;
         if (core_expected == NULL_CORE) {
           count_iter = std::min_element(
             primary_mapping.core_to_num_pgs.begin(),
@@ -73,24 +76,43 @@ seastar::future<core_id_t> PGShardMapping::get_or_create_pg_mapping(
         }
         ceph_assert_always(primary_mapping.core_to_num_pgs.end() != count_iter);
         ++(count_iter->second);
+
+        core_shard_iter = primary_mapping.core_shard_to_num_pgs.find(core_to_update);
+        ceph_assert_always(core_shard_iter != primary_mapping.core_shard_to_num_pgs.end());
+        if (shard_index_update == NULL_STORE_INDEX) {
+            // find the store shard index with the least number of pgs
+            // on this core
+          shard_iter = std::min_element(
+            core_shard_iter->second.begin(),
+            core_shard_iter->second.end(),
+            [](const auto &left, const auto &right) {
+              return left.second < right.second;
+            }
+          );
+          shard_index_update = shard_iter->first; //find the store shard index on this core
+        } else {
+          shard_iter = core_shard_iter->second.find(shard_index_update);
+        }
+        ++(shard_iter->second);
+
         [[maybe_unused]] auto [insert_iter, inserted] =
-          primary_mapping.pg_to_core.emplace(pgid, core_to_update);
+          primary_mapping.pg_to_core.emplace(pgid, std::make_pair(core_to_update, shard_index_update));
         assert(inserted);
-        DEBUG("mapping pg {} to core {} (primary): num_pgs {}",
-              pgid, core_to_update, count_iter->second);
+        DEBUG("mapping pg {} to core {} (primary): num_pgs {}, store_shard_index {}",
+              pgid, core_to_update, count_iter->second, shard_index_update);
       }
       assert(core_to_update != NULL_CORE);
       return primary_mapping.container().invoke_on_others(
-          [pgid, core_to_update, FNAME](auto &other_mapping) {
+          [pgid, core_to_update, shard_index_update, FNAME](auto &other_mapping) {
         auto find_iter = other_mapping.pg_to_core.find(pgid);
         if (find_iter == other_mapping.pg_to_core.end()) {
           DEBUG("mapping pg {} to core {} (others)",
                 pgid, core_to_update);
           [[maybe_unused]] auto [insert_iter, inserted] =
-            other_mapping.pg_to_core.emplace(pgid, core_to_update);
+            other_mapping.pg_to_core.emplace(pgid, std::make_pair(core_to_update, shard_index_update));
           assert(inserted);
         } else {
-          auto core_found = find_iter->second;
+          auto core_found = find_iter->second.first;
           if (core_found != core_to_update) {
             ERROR("the mapping is inconsistent for pg {} (others): core {}, expected {}",
                   pgid, core_found, core_to_update);
@@ -107,7 +129,7 @@ seastar::future<core_id_t> PGShardMapping::get_or_create_pg_mapping(
               pgid, core_expected);
         ceph_abort("The pg mapping is inconsistent!");
       }
-      auto core_found = find_iter->second;
+      auto core_found = find_iter->second.first;
       if (core_expected != NULL_CORE && core_found != core_expected) {
         ERROR("the mapping is inconsistent for pg {}: core {}, expected {}",
               pgid, core_found, core_expected);
@@ -135,13 +157,21 @@ seastar::future<> PGShardMapping::remove_pg_mapping(spg_t pgid) {
       ERROR("trying to remove non-exist mapping for pg {} (primary)", pgid);
       ceph_abort("The pg mapping is inconsistent!");
     }
-    assert(find_iter->second != NULL_CORE);
-    auto count_iter = primary_mapping.core_to_num_pgs.find(find_iter->second);
+    assert(find_iter->second.first != NULL_CORE);
+    auto count_iter = primary_mapping.core_to_num_pgs.find(find_iter->second.first);
     assert(count_iter != primary_mapping.core_to_num_pgs.end());
     assert(count_iter->second > 0);
     --(count_iter->second);
+
+    auto core_shard_iter = primary_mapping.core_shard_to_num_pgs.find(find_iter->second.first);
+    auto shard_iter = core_shard_iter->second.find(find_iter->second.second);
+    assert(shard_iter != core_shard_iter->second.end());
+    assert(shard_iter->second > 0);
+    --(shard_iter->second);
+
     primary_mapping.pg_to_core.erase(find_iter);
     DEBUG("pg {} mapping erased (primary)", pgid);
+
     return primary_mapping.container().invoke_on_others(
       [pgid, FNAME](auto &other_mapping) {
       auto find_iter = other_mapping.pg_to_core.find(pgid);

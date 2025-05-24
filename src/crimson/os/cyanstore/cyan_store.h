@@ -179,9 +179,12 @@ public:
   CyanStore(const std::string& path);
   ~CyanStore() final;
 
-  seastar::future<> start() final {
+  seastar::future<unsigned int> start() final {
     ceph_assert(seastar::this_shard_id() == primary_core);
-    return shard_stores.start(path);
+    return shard_stores.start(path)
+      .then([]() {
+        return seastar::make_ready_future<unsigned int>(1);
+      });
   }
 
   seastar::future<> stop() final {

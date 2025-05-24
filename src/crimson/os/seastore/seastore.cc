@@ -262,7 +262,7 @@ seastar::future<> SeaStore::shard_stores_stop()
   });
 }
 
-seastar::future<> SeaStore::start()
+seastar::future<unsigned int> SeaStore::start()
 {
   LOG_PREFIX(SeaStore::start);
   INFO("...");
@@ -289,8 +289,9 @@ seastar::future<> SeaStore::start()
   }).then([this, is_test] {
     ceph_assert(device);
     return shard_stores_start(is_test);
-  }).then([FNAME] {
+  }).then([this, FNAME] {
     INFO("done");
+    return store_shard_nums;  
   });
 }
 

@@ -451,8 +451,8 @@ seastar::future<> OSD::start()
   }
   startup_time = ceph::mono_clock::now();
   ceph_assert(seastar::this_shard_id() == PRIMARY_CORE);
-  return store.start().then([this] {
-    return pg_to_shard_mappings.start(0, seastar::smp::count
+  return store.start().then([this] (auto store_shard_nums) {
+    return pg_to_shard_mappings.start(0, seastar::smp::count, store_shard_nums
     ).then([this] {
       return osd_singleton_state.start_single(
         whoami, std::ref(*cluster_msgr), std::ref(*public_msgr),
