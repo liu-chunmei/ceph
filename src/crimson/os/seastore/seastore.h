@@ -18,6 +18,7 @@
 
 #include "os/Transaction.h"
 #include "crimson/common/throttle.h"
+#include "crimson/common/smp_helpers.h"
 #include "crimson/os/futurized_collection.h"
 #include "crimson/os/futurized_store.h"
 
@@ -224,6 +225,10 @@ public:
 
     unsigned int get_shard_index() const {
       return shard_index;
+    }
+
+    bool get_status() const {
+      return shard_status;
     }
   private:
     struct internal_context_t {
@@ -609,6 +614,16 @@ public:
   FuturizedStore::Shard& get_sharded_store(unsigned int shard_index = 0) final {
     assert(shard_index < shard_stores.size());
     return shard_stores[shard_index]->local();
+  }
+  std::vector<FuturizedStore::Shard*> get_sharded_stores() final {
+    std::vector<FuturizedStore::Shard*> ret;
+    ret.reserve(shard_stores.size());
+    for (auto& shard_store : shard_stores) {
+      if (shard_store->local().get_status() == true) {
+        ret.push_back(&shard_store->local());
+      }  
+    }
+    return ret;
   }
 
   static col_obj_ranges_t

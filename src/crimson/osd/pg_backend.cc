@@ -59,7 +59,7 @@ PGBackend::create(pg_t pgid,
 					       coll, shard_services,
 					       dpp);
   case pg_pool_t::TYPE_ERASURE:
-    return std::make_unique<ECBackend>(pg_shard.shard, coll, shard_services,
+    return std::make_unique<ECBackend>( pg_shard.shard, coll, shard_services, pg.store_index,
                                        std::move(ec_profile),
                                        pool.stripe_width,
 				       dpp);
@@ -72,12 +72,13 @@ PGBackend::create(pg_t pgid,
 PGBackend::PGBackend(shard_id_t shard,
                      CollectionRef coll,
                      crimson::osd::ShardServices &shard_services,
+                     unsigned int store_index,
 		     DoutPrefixProvider &dpp)
   : shard{shard},
     coll{coll},
     shard_services{shard_services},
     dpp{dpp},
-    store{&shard_services.get_store()}
+    store{&shard_services.get_store(store_index)}
 {}
 
 PGBackend::load_metadata_iertr::future

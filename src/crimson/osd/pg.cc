@@ -95,6 +95,7 @@ public:
 PG::PG(
   spg_t pgid,
   pg_shard_t pg_shard,
+  unsigned int store_index,
   crimson::os::CollectionRef coll_ref,
   pg_pool_t&& pool,
   std::string&& name,
@@ -104,6 +105,7 @@ PG::PG(
   : pgid{pgid},
     pg_whoami{pg_shard},
     coll_ref{coll_ref},
+    store_index{store_index},
     pgmeta_oid{pgid.make_pgmeta_oid()},
     osdmap_gate("PG::osdmap_gate"),
     shard_services{shard_services},
@@ -143,7 +145,7 @@ PG::PG(
       *backend.get(),
       *this},
     osdriver(
-      &shard_services.get_store(),
+      &shard_services.get_store(store_index),
       coll_ref,
       pgid.make_snapmapper_oid()),
     snap_mapper(
@@ -184,7 +186,7 @@ void PG::check_blocklisted_watchers()
 
 bool PG::try_flush_or_schedule_async() {
   logger().debug("PG::try_flush_or_schedule_async: flush ...");
-  (void)shard_services.get_store().flush(
+  (void)shard_services.get_store(store_index).flush(
     coll_ref
   ).then(
     [this, epoch=get_osdmap_epoch()]() {
@@ -284,7 +286,7 @@ PG::interruptible_future<> PG::find_unfound(epoch_t epoch_started)
         PeeringState::UnfoundRecovery());
     }
   }
-  return get_shard_services().dispatch_context(get_collection_ref(), std::move(rctx));
+  return get_shard_services().dispatch_context(store_index, get_collection_ref(), std::move(rctx));
 }
 
 void PG::recheck_readable()
@@ -482,7 +484,7 @@ PG::do_delete_work(ceph::os::Transaction &t, ghobject_t _next)
 {
   logger().info("removing pg {}", pgid);
   auto fut = interruptor::make_interruptible(
-    shard_services.get_store().list_objects(
+    shard_services.get_store(store_index).list_objects(
       coll_ref,
       _next,
       ghobject_t::get_max(),
@@ -494,7 +496,7 @@ PG::do_delete_work(ceph::os::Transaction &t, ghobject_t _next)
     t.remove(coll_ref->get_cid(), pgid.make_snapmapper_oid());
     t.remove(coll_ref->get_cid(), pgmeta_oid);
     t.remove_collection(coll_ref->get_cid());
-    (void) shard_services.get_store().do_transaction(
+    (void) shard_services.get_store(store_index).do_transaction(
       coll_ref, t.claim_and_reset()).then([this] {
       return shard_services.remove_pg(pgid);
     });
@@ -539,11 +541,11 @@ seastar::future<> PG::clear_temp_objects()
   ceph::os::Transaction t;
   auto max_size = local_conf()->osd_target_transaction_size;
   while(true) {
-    auto [objs, next] = co_await shard_services.get_store().list_objects(
+    auto [objs, next] = co_await shard_services.get_store(store_index).list_objects(
       coll_ref, _next, ghobject_t::get_max(), max_size);
     if (objs.empty()) {
       if (!t.empty()) {
-        co_await shard_services.get_store().do_transaction(
+        co_await shard_services.get_store(store_index).do_transaction(
           coll_ref, std::move(t));
       }
       break;
@@ -555,7 +557,7 @@ seastar::future<> PG::clear_temp_objects()
     }
     _next = next;
     if (t.get_num_ops() >= max_size) {
-      co_await shard_services.get_store().do_transaction(
+      co_await shard_services.get_store(store_index).do_transaction(
         coll_ref, t.claim_and_reset());
     }
   }
@@ -786,7 +788,7 @@ seastar::future<> PG::init(
     role, newup, new_up_primary, newacting,
     new_acting_primary, history, pi, t);
   assert(coll_ref);
-  return shard_services.get_store().exists(
+  return shard_services.get_store(store_index).exists(
     get_collection_ref(), pgid.make_snapmapper_oid()
   ).safe_then([&t, this](bool existed) {
       if (!existed) {
@@ -897,7 +899,7 @@ void PG::handle_initialize(PeeringCtx &rctx)
 
 void PG::init_collection_pool_opts()
 {
-  std::ignore = shard_services.get_store().set_collection_opts(coll_ref, get_pgpool().info.opts);
+  std::ignore = shard_services.get_store(store_index).set_collection_opts(coll_ref, get_pgpool().info.opts);
 }
 
 void PG::on_pool_change()
@@ -1139,7 +1141,7 @@ PG::interruptible_future<eversion_t> PG::submit_error_log(
   }
 
   co_await interruptor::make_interruptible(
-    shard_services.get_store().do_transaction(
+    shard_services.get_store(store_index).do_transaction(
       get_collection_ref(), std::move(t)
     ));
 
@@ -1321,7 +1323,7 @@ PG::handle_rep_op_fut PG::handle_rep_op(Ref<MOSDRepOp> req)
   DEBUGDPP("{} do_transaction", *this, *req);
 
   auto commit_fut = interruptor::make_interruptible(
-    shard_services.get_store().do_transaction(coll_ref, std::move(txn))
+    shard_services.get_store(store_index).do_transaction(coll_ref, std::move(txn))
   );
 
   const auto &lcod = peering_state.get_info().last_complete;
@@ -1437,7 +1439,7 @@ PG::interruptible_future<> PG::do_update_log_missing(
   peering_state.append_log_entries_update_missing(
     m->entries, t, op_trim_to, op_pg_committed_to);
 
-  return interruptor::make_interruptible(shard_services.get_store().do_transaction(
+  return interruptor::make_interruptible(shard_services.get_store(store_index).do_transaction(
     coll_ref, std::move(t))).then_interruptible(
     [m, conn, lcod=peering_state.get_info().last_complete, this] {
     if (!peering_state.pg_has_reset_since(m->get_epoch())) {

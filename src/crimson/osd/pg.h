@@ -89,7 +89,7 @@ class PG : public boost::intrusive_ref_counter<
   pg_shard_t pg_whoami;
   crimson::os::CollectionRef coll_ref;
   ghobject_t pgmeta_oid;
-
+  
   seastar::timer<seastar::lowres_clock> check_readable_timer;
   seastar::timer<seastar::lowres_clock> renew_lease_timer;
 
@@ -101,6 +101,7 @@ public:
 
   PG(spg_t pgid,
      pg_shard_t pg_shard,
+     unsigned int store_index,
      crimson::os::CollectionRef coll_ref,
      pg_pool_t&& pool,
      std::string&& name,
@@ -109,6 +110,8 @@ public:
      ec_profile_t profile);
 
   ~PG();
+
+  unsigned int store_index;
 
   const pg_shard_t& get_pg_whoami() const final {
     return pg_whoami;
@@ -198,6 +201,7 @@ public:
     std::swap(o, orderer);
     return seastar::when_all(
       shard_services.dispatch_context(
+        store_index,
 	get_collection_ref(),
 	std::move(rctx)),
       shard_services.run_orderer(std::move(o))

@@ -67,7 +67,7 @@ class PerShardState {
 #define assert_core() ceph_assert(seastar::this_shard_id() == core);
 
   const int whoami;
-  crimson::os::FuturizedStore::Shard &store;
+  std::vector<crimson::os::FuturizedStore::Shard*> stores;
   crimson::common::CephContext cct;
 
   OSDState &osd_state;
@@ -470,8 +470,9 @@ public:
 
   FORWARD_TO_OSD_SINGLETON(send_to_osd)
 
-  crimson::os::FuturizedStore::Shard &get_store() {
-    return local_state.store;
+  crimson::os::FuturizedStore::Shard& get_store(unsigned int shard_index) {
+    assert(shard_index < local_state.stores.size());
+    return *(local_state.stores[shard_index]);
   }
 
   struct shard_stats_t {
@@ -520,8 +521,10 @@ public:
   seastar::future<Ref<PG>> make_pg(
     cached_map_t create_map,
     spg_t pgid,
+    unsigned int store_index,
     bool do_create);
   seastar::future<Ref<PG>> handle_pg_create_info(
+    unsigned int store_index,
     std::unique_ptr<PGCreateInfo> info);
 
   using get_or_create_pg_ertr = PGMap::wait_for_pg_ertr;
@@ -529,17 +532,18 @@ public:
   get_or_create_pg_ret get_or_create_pg(
     PGMap::PGCreationBlockingEvent::TriggerI&&,
     spg_t pgid,
+    unsigned int store_index,
     std::unique_ptr<PGCreateInfo> info);
 
   using wait_for_pg_ertr = PGMap::wait_for_pg_ertr;
   using wait_for_pg_ret = wait_for_pg_ertr::future<Ref<PG>>;
   wait_for_pg_ret wait_for_pg(
     PGMap::PGCreationBlockingEvent::TriggerI&&, spg_t pgid);
-  seastar::future<Ref<PG>> load_pg(spg_t pgid);
+  seastar::future<Ref<PG>> load_pg(spg_t pgid, unsigned int store_index);
 
   /// Dispatch and reset ctx transaction
   seastar::future<> dispatch_context_transaction(
-    crimson::os::CollectionRef col, PeeringCtx &ctx);
+    crimson::os::CollectionRef col, PeeringCtx &ctx, unsigned int store_index);
 
   /// Dispatch and reset ctx messages
   seastar::future<> dispatch_context_messages(
@@ -547,13 +551,15 @@ public:
 
   /// Dispatch ctx and dispose of context
   seastar::future<> dispatch_context(
+    unsigned int store_index,
     crimson::os::CollectionRef col,
     PeeringCtx &&ctx);
 
   /// Dispatch ctx and dispose of ctx, transaction must be empty
   seastar::future<> dispatch_context(
+    unsigned int store_index,
     PeeringCtx &&ctx) {
-    return dispatch_context({}, std::move(ctx));
+    return dispatch_context(store_index, {}, std::move(ctx));
   }
 
   PerShardPipeline &get_client_request_pipeline() {

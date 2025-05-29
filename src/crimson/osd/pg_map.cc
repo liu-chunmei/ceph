@@ -12,7 +12,7 @@ using std::make_pair;
 
 namespace crimson::osd {
 
-seastar::future<core_id_t> PGShardMapping::get_or_create_pg_mapping(
+seastar::future<std::pair<core_id_t, unsigned int>> PGShardMapping::get_or_create_pg_mapping(
   spg_t pgid,
   core_id_t core_expected,
   unsigned int store_shard_index)
@@ -27,7 +27,7 @@ seastar::future<core_id_t> PGShardMapping::get_or_create_pg_mapping(
             pgid, core_found, core_expected);
       ceph_abort("The pg mapping is inconsistent!");
     }
-    return seastar::make_ready_future<core_id_t>(core_found);
+    return seastar::make_ready_future<std::pair<core_id_t, unsigned int>>(find_iter->second);
   } else {
     DEBUG("calling primary to add mapping for pg {} to the expected core {}",
           pgid, core_expected);
@@ -137,7 +137,7 @@ seastar::future<core_id_t> PGShardMapping::get_or_create_pg_mapping(
       }
       DEBUG("returning pg {} mapping to core {} after broadcasted",
             pgid, core_found);
-      return seastar::make_ready_future<core_id_t>(core_found);
+      return seastar::make_ready_future<std::pair<core_id_t, unsigned int>>(find_iter->second);
     });
   }
 }

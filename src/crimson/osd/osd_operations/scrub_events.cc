@@ -185,13 +185,13 @@ ScrubScan::ifut<> ScrubScan::scan_object(
   DEBUGDPP("obj: {}", pg, obj);
   auto &entry = ret.objects[obj.hobj];
   return interruptor::make_interruptible(
-    pg.shard_services.get_store().stat(
+    pg.shard_services.get_store(pg.store_index).stat(
       pg.get_collection_ref(),
       obj)
   ).then_interruptible([FNAME, &pg, &obj, &entry](struct stat obj_stat) {
     DEBUGDPP("obj: {}, stat complete, size {}", pg, obj, obj_stat.st_size);
     entry.size = obj_stat.st_size;
-    return pg.shard_services.get_store().get_attrs(
+    return pg.shard_services.get_store(pg.store_index).get_attrs(
       pg.get_collection_ref(),
       obj);
   }).safe_then_interruptible([FNAME, &pg, &obj, &entry](auto &&attrs) {
@@ -239,7 +239,7 @@ ScrubScan::ifut<> ScrubScan::deep_scan_object(
 		 pg, *this, obj, progress);
 	const auto stride = local_conf().get_val<Option::size_t>(
 	  "osd_deep_scrub_stride");
-	return pg.shard_services.get_store().read(
+	return pg.shard_services.get_store(pg.store_index).read(
 	  pg.get_collection_ref(),
 	  obj,
 	  *(progress.offset),
@@ -271,7 +271,7 @@ ScrubScan::ifut<> ScrubScan::deep_scan_object(
       } else if (!progress.header_done) {
 	DEBUGDPP("op: {}, obj: {}, progress: {} scanning omap header",
 		 pg, *this, obj, progress);
-	return pg.shard_services.get_store().omap_get_header(
+	return pg.shard_services.get_store(pg.store_index).omap_get_header(
 	  pg.get_collection_ref(),
 	  obj
 	).safe_then([&progress](auto bl) {
@@ -291,7 +291,7 @@ ScrubScan::ifut<> ScrubScan::deep_scan_object(
       } else if (!progress.keys_done) {
 	DEBUGDPP("op: {}, obj: {}, progress: {} scanning omap keys",
 		 pg, *this, obj, progress);
-	return pg.shard_services.get_store().omap_get_values(
+	return pg.shard_services.get_store(pg.store_index).omap_get_values(
 	  pg.get_collection_ref(),
 	  obj,
 	  progress.next_key

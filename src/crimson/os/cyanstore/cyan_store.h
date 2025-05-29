@@ -220,9 +220,14 @@ public:
 
   seastar::future<> write_meta(const std::string& key,
 		  const std::string& value) final;
-
-  FuturizedStore::Shard& get_sharded_store(unsigned int shard_index = 0) final{
+      
+  FuturizedStore::Shard& get_sharded_store(unsigned int shard_index = 0) final {
     return shard_stores.local();
+  }
+  std::vector<FuturizedStore::Shard*> get_sharded_stores() final{  //fix later
+    std::vector<FuturizedStore::Shard*> ret;
+    ret.push_back(&shard_stores.local());
+    return ret;
   }
 
   seastar::future<std::tuple<int, std::string>>

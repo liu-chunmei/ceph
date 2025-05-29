@@ -17,11 +17,11 @@ SET_SUBSYS(osd);
 
 ReplicatedBackend::ReplicatedBackend(pg_t pgid,
                                      pg_shard_t whoami,
-				     crimson::osd::PG& pg,
+                                     crimson::osd::PG& pg,
                                      ReplicatedBackend::CollectionRef coll,
                                      crimson::osd::ShardServices& shard_services,
 				     DoutPrefixProvider &dpp)
-  : PGBackend{whoami.shard, coll, shard_services, dpp},
+  : PGBackend{whoami.shard, coll, shard_services, pg.store_index, dpp},
     pgid{pgid},
     whoami{whoami},
     pg(pg),
@@ -174,7 +174,7 @@ ReplicatedBackend::submit_transaction(
     false);
 
   auto all_completed = interruptor::make_interruptible(
-      shard_services.get_store().do_transaction(coll, std::move(txn))
+      shard_services.get_store(pg.store_index).do_transaction(coll, std::move(txn))
    ).then_interruptible([FNAME, this,
 			peers=pending_txn->second.weak_from_this()] {
     if (!peers) {

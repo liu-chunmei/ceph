@@ -159,7 +159,7 @@ RecoveryBackend::handle_backfill_progress(
     m.op == MOSDPGBackfill::OP_BACKFILL_PROGRESS,
     t);
   DEBUGDPP("submitting transaction", pg);
-  return shard_services.get_store().do_transaction(
+  return shard_services.get_store(pg.store_index).do_transaction(
     pg.get_collection_ref(), std::move(t)).or_terminate();
 }
 
@@ -218,7 +218,7 @@ RecoveryBackend::handle_backfill_remove(
   }
   DEBUGDPP("submitting transaction", pg);
   co_await interruptor::make_interruptible(
-    shard_services.get_store().do_transaction(
+    shard_services.get_store(pg.store_index).do_transaction(
       pg.get_collection_ref(), std::move(t)).or_terminate());
 }
 

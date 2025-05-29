@@ -5,10 +5,11 @@
 ECBackend::ECBackend(shard_id_t shard,
                      ECBackend::CollectionRef coll,
                      crimson::osd::ShardServices& shard_services,
+                     unsigned int store_index,
                      const ec_profile_t&,
                      uint64_t,
 		     DoutPrefixProvider &dpp)
-  : PGBackend{shard, coll, shard_services, dpp}
+  : PGBackend{shard, coll, shard_services, store_index, dpp}
 {
   // todo
 }

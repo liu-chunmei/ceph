@@ -35,7 +35,7 @@ public:
   }
 
   /// Returns mapping for pgid, creates new one if it doesn't already exist
-  seastar::future<core_id_t> get_or_create_pg_mapping(
+  seastar::future<std::pair<core_id_t, unsigned int>> get_or_create_pg_mapping(
     spg_t pgid,
     core_id_t core_expected = NULL_CORE,
     unsigned int store_shard_index = NULL_STORE_INDEX);

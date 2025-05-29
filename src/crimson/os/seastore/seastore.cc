@@ -161,6 +161,7 @@ SeaStore::~SeaStore() = default;
 
 void SeaStore::Shard::register_metrics()
 {
+  assert(shard_status);
   namespace sm = seastar::metrics;
   using op_type_t = crimson::os::seastore::op_type_t;
   std::pair<op_type_t, sm::label_instance> labels_by_op_type[] = {
@@ -243,11 +244,11 @@ seastar::future<> SeaStore::shard_stores_start(bool is_test)
   LOG_PREFIX(SeaStore::shard_stores_start);
   auto num_shard_services = (store_shard_nums + seastar::smp::count - 1 ) / seastar::smp::count;
   INFO("store_shard_nums={} seastar::smp={}, num_shard_services={}", store_shard_nums, seastar::smp::count, num_shard_services);
-  shard_stores.resize(num_shard_services);
+  shard_stores.reserve(num_shard_services);
 
   return seastar::do_for_each(
     boost::counting_iterator<size_t>(0),
-    boost::counting_iterator<size_t>(shard_stores.size()),
+    boost::counting_iterator<size_t>(num_shard_services),
     [this, is_test](size_t index) {
     shard_stores[index] = std::make_unique<seastar::sharded<SeaStore::Shard>>();
     return shard_stores[index]->start(root, device.get(), is_test, store_shard_nums, index);
@@ -395,6 +396,9 @@ SeaStore::mount_ertr::future<> SeaStore::mount()
 
 seastar::future<> SeaStore::Shard::mount_managers()
 {
+  if(!shard_status) {
+    return seastar::now();
+  }
   init_managers();
   return transaction_manager->mount(
   ).handle_error(
@@ -420,6 +424,9 @@ seastar::future<> SeaStore::umount()
 
 seastar::future<> SeaStore::Shard::umount()
 {
+  if(!shard_status) {
+    return seastar::now();
+  }
   return [this] {
     if (transaction_manager) {
       return transaction_manager->close();
@@ -469,6 +476,9 @@ seastar::future<> SeaStore::write_fsid(uuid_d new_osd_fsid)
 seastar::future<>
 SeaStore::Shard::mkfs_managers()
 {
+  if(!shard_status) {
+    return seastar::now();
+  }
   init_managers();
   return transaction_manager->mkfs(
   ).safe_then([this] {
@@ -704,7 +714,7 @@ SeaStore::list_collections()
 
 store_statfs_t SeaStore::Shard::stat() const
 {
-  if(shard_status == false) {
+  if(!shard_status) {
     return store_statfs_t();
   }
   LOG_PREFIX(SeaStoreS::stat);
@@ -1009,6 +1019,7 @@ SeaStore::Shard::list_objects(CollectionRef ch,
 			      uint64_t limit,
 			      uint32_t op_flags) const
 {
+  assert(shard_status);
   ++(shard_stats.read_num);
   ++(shard_stats.pending_read_num);
 
@@ -1113,6 +1124,7 @@ SeaStore::Shard::list_objects(CollectionRef ch,
 seastar::future<CollectionRef>
 SeaStore::Shard::create_new_collection(const coll_t& cid)
 {
+  assert(shard_status);
   LOG_PREFIX(SeaStoreS::create_new_collection);
   DEBUG("cid={}", cid);
   return seastar::make_ready_future<CollectionRef>(_get_collection(cid));
@@ -1121,6 +1133,7 @@ SeaStore::Shard::create_new_collection(const coll_t& cid)
 seastar::future<CollectionRef>
 SeaStore::Shard::open_collection(const coll_t& cid)
 {
+  assert(shard_status);
   LOG_PREFIX(SeaStoreS::open_collection);
   DEBUG("cid={} ...", cid);
   return list_collections(
@@ -1142,6 +1155,7 @@ seastar::future<>
 SeaStore::Shard::set_collection_opts(CollectionRef c,
                                         const pool_opts_t& opts)
 {
+  assert(shard_status);
   LOG_PREFIX(SeaStoreS::set_collection_opts);
   DEBUG("cid={}, opts={} not implemented", c->get_cid(), opts);
   //TODO
@@ -1151,7 +1165,7 @@ SeaStore::Shard::set_collection_opts(CollectionRef c,
 seastar::future<std::vector<coll_core_t>>
 SeaStore::Shard::list_collections()
 {
-  if(shard_status == false) {
+  if(!shard_status) {
     return seastar::make_ready_future<std::vector<coll_core_t>>();
   }
   ++(shard_stats.read_num);
@@ -1205,6 +1219,7 @@ SeaStore::Shard::_read(
   std::size_t len,
   uint32_t op_flags)
 {
+  assert(shard_status);
   LOG_PREFIX(SeaStoreS::_read);
   size_t size = onode.get_layout().size;
   if (offset >= size) {
@@ -1241,6 +1256,7 @@ SeaStore::Shard::read(
   size_t len,
   uint32_t op_flags)
 {
+  assert(shard_status);
   ++(shard_stats.read_num);
   ++(shard_stats.pending_read_num);
 
@@ -1265,6 +1281,7 @@ SeaStore::Shard::exists(
   const ghobject_t& oid,
   uint32_t op_flags)
 {
+  assert(shard_status);
   LOG_PREFIX(SeaStoreS::exists);
   ++(shard_stats.read_num);
   ++(shard_stats.pending_read_num);
@@ -1298,6 +1315,7 @@ SeaStore::Shard::readv(
   interval_set<uint64_t>& m,
   uint32_t op_flags)
 {
+  assert(shard_status);
   LOG_PREFIX(SeaStoreS::readv);
   DEBUG("cid={} oid={} op_flags=0x{:x} {} intervals",
         ch->get_cid(), _oid, op_flags, m.num_intervals());
@@ -1328,6 +1346,7 @@ SeaStore::Shard::_get_attr(
   Onode& onode,
   std::string_view name) const
 {
+  assert(shard_status);
   LOG_PREFIX(SeaStoreS::_get_attr);
   auto& layout = onode.get_layout();
   if (name == OI_ATTR && layout.oi_size) {
@@ -1352,6 +1371,7 @@ SeaStore::Shard::get_attr(
   std::string_view name,
   uint32_t op_flags) const
 {
+  assert(shard_status);
   ++(shard_stats.read_num);
   ++(shard_stats.pending_read_num);
 
@@ -1379,6 +1399,7 @@ SeaStore::Shard::_get_attrs(
   Transaction& t,
   Onode& onode)
 {
+  assert(shard_status);
   auto& layout = onode.get_layout();
   return omaptree_get_values(
     t, get_omap_root(omap_type_t::XATTR, onode), std::nullopt
@@ -1407,6 +1428,7 @@ SeaStore::Shard::get_attrs(
   const ghobject_t& oid,
   uint32_t op_flags)
 {
+  assert(shard_status);
   ++(shard_stats.read_num);
   ++(shard_stats.pending_read_num);
 
@@ -1451,7 +1473,7 @@ seastar::future<struct stat> SeaStore::Shard::stat(
   const ghobject_t& oid,
   uint32_t op_flags)
 {
-  if(shard_status == false) {
+  if(!shard_status) {
     return seastar::make_ready_future<struct stat>();
   }
   ++(shard_stats.read_num);
@@ -1482,11 +1504,13 @@ SeaStore::Shard::omap_get_header(
   const ghobject_t& oid,
   uint32_t op_flags)
 {
+  assert(shard_status);
   return get_attr(ch, oid, OMAP_HEADER_XATTR_KEY, op_flags);
 }
 
 omap_root_t SeaStore::Shard::select_log_omap_root(Onode& onode) const
 {
+  assert(shard_status);
   auto log_root = get_omap_root(omap_type_t::LOG, onode);
   if (log_root.is_null()) {
     return get_omap_root(omap_type_t::OMAP, onode);
@@ -1503,6 +1527,7 @@ SeaStore::Shard::omap_get_values(
   const omap_keys_t &keys,
   uint32_t op_flags)
 {
+  assert(shard_status);
   ++(shard_stats.read_num);
   ++(shard_stats.pending_read_num);
 
@@ -1531,6 +1556,7 @@ SeaStore::Shard::omap_get_values(
   const std::optional<std::string> &start,
   uint32_t op_flags)
 {
+  assert(shard_status);
   ++(shard_stats.read_num);
   ++(shard_stats.pending_read_num);
 
@@ -1596,6 +1622,7 @@ SeaStore::Shard::fiemap(
   uint64_t len,
   uint32_t op_flags)
 {
+  assert(shard_status);
   ++(shard_stats.read_num);
   ++(shard_stats.pending_read_num);
 
@@ -1631,6 +1658,7 @@ seastar::future<> SeaStore::Shard::do_transaction_no_callbacks(
   CollectionRef _ch,
   ceph::os::Transaction&& _t)
 {
+  assert(shard_status);
   ++(shard_stats.io_num);
   ++(shard_stats.pending_io_num);
   ++(shard_stats.starting_io_num);
@@ -1700,6 +1728,7 @@ seastar::future<> SeaStore::Shard::do_transaction_no_callbacks(
 
 seastar::future<> SeaStore::Shard::flush(CollectionRef ch)
 {
+  assert(shard_status);
   ++(shard_stats.flush_num);
   ++(shard_stats.pending_flush_num);
 
@@ -2427,6 +2456,7 @@ seastar::future<> SeaStore::Shard::write_meta(
   const std::string& key,
   const std::string& value)
 {
+  assert(shard_status);
   ++(shard_stats.io_num);
   ++(shard_stats.pending_io_num);
   // For TM::submit_transaction()
@@ -2497,6 +2527,7 @@ uuid_d SeaStore::Shard::get_fsid() const
 
 void SeaStore::Shard::init_managers()
 {
+  assert(shard_status);
   transaction_manager.reset();
   collection_manager.reset();
   onode_manager.reset();
@@ -2512,6 +2543,9 @@ void SeaStore::Shard::init_managers()
 
 double SeaStore::Shard::reset_report_interval() const
 {
+  if(!shard_status) {
+    return 0;
+  }
   double seconds;
   auto now = seastar::lowres_clock::now();
   if (last_tp == seastar::lowres_clock::time_point::min()) {
@@ -2527,12 +2561,18 @@ double SeaStore::Shard::reset_report_interval() const
 device_stats_t SeaStore::Shard::get_device_stats(
     bool report_detail, double seconds) const
 {
+  if (!shard_status) {
+    return device_stats_t();
+  }
   return transaction_manager->get_device_stats(report_detail, seconds);
 }
 
 shard_stats_t SeaStore::Shard::get_io_stats(
     bool report_detail, double seconds) const
 {
+  if (!shard_status) {
+    return shard_stats_t();
+  }
   shard_stats_t ret = shard_stats;
   ret.minus(last_shard_stats);
 
@@ -2580,6 +2620,9 @@ shard_stats_t SeaStore::Shard::get_io_stats(
 cache_stats_t SeaStore::Shard::get_cache_stats(
     bool report_detail, double seconds) const
 {
+  if (!shard_status) {
+    return cache_stats_t();
+  }
   return transaction_manager->get_cache_stats(
       report_detail, seconds);
 }
@@ -2611,6 +2654,7 @@ SeaStore::Shard::omaptree_get_value(
   omap_root_t&& root,
   std::string_view key) const
 {
+  assert(shard_status);
   return seastar::do_with(
     BtreeOMapManager(*transaction_manager),
     std::move(root),
@@ -2642,6 +2686,7 @@ SeaStore::Shard::omaptree_get_values(
   omap_root_t&& root,
   const omap_keys_t& keys) const
 {
+  assert(shard_status);
   LOG_PREFIX(SeaStoreS::omaptree_get_values);
   auto type = root.get_type();
   if (root.is_null()) {
@@ -2688,6 +2733,7 @@ SeaStore::Shard::omaptree_list(
   const std::optional<std::string>& start,
   OMapManager::omap_list_config_t config) const
 {
+  assert(shard_status);
   if (root.is_null()) {
     return seastar::make_ready_future<omaptree_list_bare_ret>(
       true, omap_values_t{}
@@ -2710,6 +2756,7 @@ SeaStore::Shard::omaptree_get_values(
   omap_root_t&& root,
   const std::optional<std::string>& start) const
 {
+  assert(shard_status);
   LOG_PREFIX(SeaStoreS::omaptree_get_values);
   auto type = root.get_type();
   DEBUGT("{} start={} ...", t, type, start.has_value() ? *start : "");
@@ -2729,6 +2776,7 @@ SeaStore::Shard::omaptree_do_clear(
   Transaction& t,
   omap_root_t&& root)
 {
+  assert(shard_status);
   assert(!root.is_null());
   return seastar::do_with(
     BtreeOMapManager(*transaction_manager),
@@ -2748,6 +2796,7 @@ SeaStore::Shard::omaptree_clear_no_onode(
   Transaction& t,
   omap_root_t&& root)
 {
+  assert(shard_status);
   LOG_PREFIX(SeaStoreS::omaptree_clear_no_onode);
   if (root.is_null()) {
     DEBUGT("{}, null root", t, root.get_type());
@@ -2783,6 +2832,7 @@ SeaStore::Shard::omaptree_clear(
   omap_root_t&& root,
   Onode& onode)
 {
+  assert(shard_status);
   LOG_PREFIX(SeaStoreS::omaptree_clear);
   if (root.is_null()) {
     DEBUGT("{}, null root", t, root.get_type());
@@ -2805,6 +2855,7 @@ SeaStore::Shard::omaptree_clone(
   Onode& onode,
   Onode& d_onode)
 {
+  assert(shard_status);
   LOG_PREFIX(SeaStoreS::omaptree_clone);
   DEBUGT("{} start, list ...", t, type);
   return trans_intr::repeat([&t, &onode, &d_onode, this, type, FNAME] {
@@ -2858,6 +2909,7 @@ SeaStore::Shard::omaptree_set_keys(
   Onode& onode,
   std::map<std::string, ceph::bufferlist>&& kvs)
 {
+  assert(shard_status);
   return seastar::do_with(
     BtreeOMapManager(*transaction_manager),
     std::move(root),
@@ -2893,6 +2945,7 @@ SeaStore::Shard::omaptree_rm_keys(
   Onode& onode,
   omap_keys_t&& keys)
 {
+  assert(shard_status);
   LOG_PREFIX(SeaStoreS::omaptree_rm_keys);
   auto type = root.get_type();
   if (root.is_null()) {
@@ -2930,6 +2983,7 @@ SeaStore::Shard::omaptree_rm_keyrange(
   std::string first,
   std::string last)
 {
+  assert(shard_status);
   LOG_PREFIX(SeaStoreS::omaptree_rm_keyrange);
   auto type = root.get_type();
   if (first > last) {
@@ -2970,6 +3024,7 @@ SeaStore::Shard::omaptree_rm_key(
   Onode& onode,
   std::string&& name)
 {
+  assert(shard_status);
   LOG_PREFIX(SeaStoreS::omaptree_rm_key);
   if (root.is_null()) {
     DEBUGT("{} key={}, null root", t, root.get_type(), name);

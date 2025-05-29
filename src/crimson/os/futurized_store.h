@@ -207,6 +207,7 @@ public:
 				       const std::string& value) = 0;
   // called on the shard and get this FuturizedStore::shard;
   virtual Shard& get_sharded_store(unsigned int shard_index = 0) = 0;
+  virtual std::vector<Shard*> get_sharded_stores() = 0;
 
   virtual seastar::future<std::tuple<int, std::string>> read_meta(
     const std::string& key) = 0;

@@ -123,6 +123,12 @@ public:
     return *this;
   }
 
+  std::vector<FuturizedStore::Shard*> get_sharded_stores() final {
+    std::vector<FuturizedStore::Shard*> ret;
+    ret.push_back(this);
+    return ret;
+  }
+
 private:
 
   template <class... Args>

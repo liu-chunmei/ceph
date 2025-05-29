@@ -40,7 +40,7 @@ PerShardState::PerShardState(
   crimson::os::FuturizedStore &store,
   OSDState &osd_state)
   : whoami(whoami),
-    store(store.get_sharded_store()),
+    stores(store.get_sharded_stores()),
     osd_state(osd_state),
     osdmap_gate("PerShardState::osdmap_gate"),
     perf(perf), recoverystate_perf(recoverystate_perf),
@@ -558,6 +558,7 @@ void OSDSingletonState::trim_maps(ceph::os::Transaction& t,
 seastar::future<Ref<PG>> ShardServices::make_pg(
   OSDMapService::cached_map_t create_map,
   spg_t pgid,
+  unsigned store_index,
   bool do_create)
 {
   using ec_profile_t = std::map<std::string, std::string>;
@@ -581,41 +582,43 @@ seastar::future<Ref<PG>> ShardServices::make_pg(
       return get_pool_info(pgid.pool());
     }
   };
-  auto get_collection = [pgid, do_create, this] {
+  auto get_collection = [pgid, do_create, store_index, this] {
     const coll_t cid{pgid};
     if (do_create) {
-      return get_store().create_new_collection(cid);
+      return get_store(store_index).create_new_collection(cid);
     } else {
-      return get_store().open_collection(cid);
+      return get_store(store_index).open_collection(cid);
     }
   };
   return seastar::when_all(
     std::move(get_pool_info_for_pg),
     std::move(get_collection)
-  ).then([pgid, create_map, this](auto &&ret) {
+  ).then([pgid, create_map, store_index, this](auto &&ret) {
     auto [pool, name, ec_profile] = std::move(std::get<0>(ret).get());
     auto coll = std::move(std::get<1>(ret).get());
     return seastar::make_ready_future<Ref<PG>>(
       new PG{
-	pgid,
-	pg_shard_t{local_state.whoami, pgid.shard},
-	std::move(coll),
-	std::move(pool),
-	std::move(name),
-	create_map,
-	*this,
-	ec_profile});
+        pgid,
+        pg_shard_t{local_state.whoami, pgid.shard}, 
+        std::move(store_index),
+        std::move(coll),
+        std::move(pool),
+        std::move(name),
+        create_map,
+        *this,
+        ec_profile});
   });
 }
 
 seastar::future<Ref<PG>> ShardServices::handle_pg_create_info(
+  unsigned int store_index,
   std::unique_ptr<PGCreateInfo> info) {
   return seastar::do_with(
     std::move(info),
-    [this](auto &info)
+    [store_index, this](auto &info)
     -> seastar::future<Ref<PG>> {
       return get_map(info->epoch).then(
-	[&info, this](cached_map_t startmap)
+	[&info, store_index, this](cached_map_t startmap)
 	-> seastar::future<std::tuple<Ref<PG>, cached_map_t>> {
 	  LOG_PREFIX(ShardServices::handle_pg_create_info);
 	  const spg_t &pgid = info->pgid;
@@ -657,7 +660,7 @@ seastar::future<Ref<PG>> ShardServices::handle_pg_create_info(
 	    }
 	  }
 	  return make_pg(
-	    startmap, pgid, true
+	    startmap, pgid, store_index, true
 	  ).then([startmap=std::move(startmap)](auto pg) mutable {
 	    return seastar::make_ready_future<
 	      std::tuple<Ref<PG>, OSDMapService::cached_map_t>
@@ -714,6 +717,7 @@ ShardServices::get_or_create_pg_ret
 ShardServices::get_or_create_pg(
   PGMap::PGCreationBlockingEvent::TriggerI&& trigger,
   spg_t pgid,
+  unsigned int store_index,
   std::unique_ptr<PGCreateInfo> info)
 {
   if (info) {
@@ -722,7 +726,8 @@ ShardServices::get_or_create_pg(
     if (!existed) {
       local_state.pg_map.set_creating(pgid);
       (void)handle_pg_create_info(
-	std::move(info));
+        store_index,
+        std::move(info));
     }
     return std::move(fut);
   } else {
@@ -739,20 +744,19 @@ ShardServices::wait_for_pg(
   return local_state.pg_map.wait_for_pg(std::move(trigger), pgid).first;
 }
 
-seastar::future<Ref<PG>> ShardServices::load_pg(spg_t pgid)
-
+seastar::future<Ref<PG>> ShardServices::load_pg(spg_t pgid, unsigned int store_index)
 {
   LOG_PREFIX(OSDSingletonState::load_pg);
   DEBUG("{}", pgid);
 
-  return seastar::do_with(PGMeta(get_store(), pgid), [](auto& pg_meta) {
+  return seastar::do_with(PGMeta(get_store(store_index), pgid), [](auto& pg_meta) {
     return pg_meta.get_epoch();
   }).then([this](epoch_t e) {
     return get_map(e);
-  }).then([pgid, this](auto&& create_map) {
-    return make_pg(std::move(create_map), pgid, false);
-  }).then([this](Ref<PG> pg) {
-    return pg->read_state(&get_store()).then([pg] {
+  }).then([pgid, store_index, this](auto&& create_map) {
+    return make_pg(std::move(create_map), pgid, store_index, false);
+  }).then([store_index, this](Ref<PG> pg) {
+    return pg->read_state(&get_store(store_index)).then([pg] {
 	return seastar::make_ready_future<Ref<PG>>(std::move(pg));
     });
   }).handle_exception([FNAME, pgid](auto ep) {
@@ -763,11 +767,11 @@ seastar::future<Ref<PG>> ShardServices::load_pg(spg_t pgid)
 }
 
 seastar::future<> ShardServices::dispatch_context_transaction(
-  crimson::os::CollectionRef col, PeeringCtx &ctx) {
+  crimson::os::CollectionRef col, PeeringCtx &ctx, unsigned int store_index) {
   LOG_PREFIX(OSDSingletonState::dispatch_context_transaction);
   if (ctx.transaction.empty()) {
     DEBUG("empty transaction");
-    co_await get_store().flush(col);
+    co_await get_store(store_index).flush(col);
     Context* on_commit(
       ceph::os::Transaction::collect_all_contexts(ctx.transaction));
     if (on_commit) {
@@ -777,7 +781,7 @@ seastar::future<> ShardServices::dispatch_context_transaction(
   }
 
   DEBUG("do_transaction ...");
-  co_await get_store().do_transaction(
+  co_await get_store(store_index).do_transaction(
     col,
     ctx.transaction.claim_and_reset());
   co_return;
@@ -806,17 +810,18 @@ seastar::future<> ShardServices::dispatch_context_messages(
 }
 
 seastar::future<> ShardServices::dispatch_context(
+  unsigned int store_index,
   crimson::os::CollectionRef col,
   PeeringCtx &&pctx)
 {
   return seastar::do_with(
     std::move(pctx),
-    [this, col](auto &ctx) {
+    [this, col, store_index](auto &ctx) {
     ceph_assert(col || ctx.transaction.empty());
     return seastar::when_all_succeed(
       dispatch_context_messages(
        BufferedRecoveryMessages{ctx}),
-      col ? dispatch_context_transaction(col, ctx) : seastar::now()
+      col ? dispatch_context_transaction(col, ctx, store_index) : seastar::now()
     ).then_unpack([] {
       return seastar::now();
     });
