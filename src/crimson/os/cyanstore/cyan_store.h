@@ -29,8 +29,10 @@ class CyanStore final : public FuturizedStore {
 public:
   class Shard : public FuturizedStore::Shard {
   public:
-    Shard(std::string path)
-      :path(path){}
+    Shard(std::string path,
+      unsigned int store_shard_nums,
+      unsigned int shard_index = 0);
+    ~Shard() = default;
 
     seastar::future<struct stat> stat(
       CollectionRef c,
@@ -129,6 +131,13 @@ public:
 
     uint64_t get_used_bytes() const { return used_bytes; }
 
+    unsigned int get_shard_index() const {
+      return shard_index;
+    }
+    bool get_status() const {
+      return shard_status;
+    }
+
   private:
     int _remove(const coll_t& cid, const ghobject_t& oid);
     int _touch(const coll_t& cid, const ghobject_t& oid);
@@ -174,41 +183,20 @@ public:
     const std::string path;
     std::unordered_map<coll_t, boost::intrusive_ptr<Collection>> coll_map;
     std::map<coll_t, boost::intrusive_ptr<Collection>> new_coll_map;
+    unsigned int shard_index;
+    bool shard_status = true;
   };
 
   CyanStore(const std::string& path);
   ~CyanStore() final;
 
-  seastar::future<unsigned int> start() final {
-    ceph_assert(seastar::this_shard_id() == primary_core);
-    return shard_stores.start(path)
-      .then([]() {
-        return seastar::make_ready_future<unsigned int>(1);
-      });
-  }
+  seastar::future<unsigned int> start() final;
 
-  seastar::future<> stop() final {
-    ceph_assert(seastar::this_shard_id() == primary_core);
-    return shard_stores.stop();
-  }
+  seastar::future<> stop() final;
 
-  mount_ertr::future<> mount() final {
-    ceph_assert(seastar::this_shard_id() == primary_core);
-    return shard_stores.invoke_on_all(
-      [](auto &local_store) {
-      return local_store.mount().handle_error(
-      crimson::stateful_ec::assert_failure(
-        fmt::format("error mounting cyanstore").c_str()));
-    });
-  }
+  mount_ertr::future<> mount() final;
 
-  seastar::future<> umount() final {
-    ceph_assert(seastar::this_shard_id() == primary_core);
-    return shard_stores.invoke_on_all(
-      [](auto &local_store) {
-      return local_store.umount();
-    });
-  }
+  seastar::future<> umount() final;
 
   mkfs_ertr::future<> mkfs(uuid_d new_osd_fsid) final;
 
@@ -222,11 +210,17 @@ public:
 		  const std::string& value) final;
       
   FuturizedStore::Shard& get_sharded_store(unsigned int shard_index = 0) final {
-    return shard_stores.local();
+    assert(shard_index < shard_stores.size());
+    return shard_stores[shard_index]->local();
   }
   std::vector<FuturizedStore::Shard*> get_sharded_stores() final{  //fix later
     std::vector<FuturizedStore::Shard*> ret;
-    ret.push_back(&shard_stores.local());
+    ret.reserve(shard_stores.size());
+    for (auto& shard_store : shard_stores) {
+      if (shard_store->local().get_status() == true) {
+        ret.push_back(&shard_store->local());
+      }
+    }
     return ret;
   }
 
@@ -237,8 +231,12 @@ public:
 
   seastar::future<std::string> get_default_device_class() final;
 
+  seastar::future<> get_shard_nums();
+
+
 private:
-  seastar::sharded<CyanStore::Shard> shard_stores;
+  std::vector<std::unique_ptr<seastar::sharded<CyanStore::Shard>>> shard_stores;
+  unsigned int store_shard_nums = 0;
   const std::string path;
   uuid_d osd_fsid;
 };
