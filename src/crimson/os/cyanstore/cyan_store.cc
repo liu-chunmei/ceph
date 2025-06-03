@@ -78,11 +78,11 @@ seastar::future<unsigned int> CyanStore::start()
   return get_shard_nums().then([this] {
     auto num_shard_services = (store_shard_nums + seastar::smp::count - 1 ) / seastar::smp::count;
     logger().info("store_shard_nums={} seastar::smp={}, num_shard_services={}", store_shard_nums, seastar::smp::count, num_shard_services);
-    shard_stores.reserve(num_shard_services);
+    shard_stores.resize(num_shard_services);
 
     return seastar::do_for_each(
       boost::counting_iterator<size_t>(0),
-      boost::counting_iterator<size_t>(num_shard_services),
+      boost::counting_iterator<size_t>(shard_stores.size()),
       [this](size_t index) {
       shard_stores[index] = std::make_unique<seastar::sharded<CyanStore::Shard>>();
       return shard_stores[index]->start(path, store_shard_nums, index);

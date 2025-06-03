@@ -656,7 +656,7 @@ private:
   MDStoreRef mdstore;
   DeviceRef device;
   std::vector<DeviceRef> secondaries;
-  std::vector<std::unique_ptr<seastar::sharded<SeaStore::Shard>>> shard_stores;
+  std::vector<std::unique_ptr<seastar::sharded<SeaStore::Shard>>> shard_stores{};
   unsigned int store_shard_nums = 0;
 
   mutable seastar::lowres_clock::time_point last_tp =

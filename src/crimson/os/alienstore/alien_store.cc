@@ -120,7 +120,7 @@ seastar::future<unsigned int> AlienStore::start()
     get_conf<uint64_t>("crimson_alien_op_num_threads");
   tp = std::make_unique<crimson::os::ThreadPool>(num_threads, 128, alien_thread_cpu_cores);
   return tp->start().then([]() {
-    return seastar::make_ready_future<unsigned int>(1);
+    return seastar::make_ready_future<unsigned int>(seastar::smp::count);
   });
 }
 

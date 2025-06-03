@@ -50,6 +50,9 @@ public:
     ceph_assert_always(min_core_mapping < core_mapping_limit);
     auto max_core_mapping = std::min(min_core_mapping + store_shard_nums, core_mapping_limit);
     auto num_shard_services = (store_shard_nums + seastar::smp::count - 1 ) / seastar::smp::count;
+    std::cout<< "----------------------PGShardMapping: min_core_mapping=" << min_core_mapping
+              << ", max_core_mapping=" << max_core_mapping
+              << ", num_shard_services=" << num_shard_services << std::endl;
     for (auto i = min_core_mapping; i != max_core_mapping; ++i) {
       for (unsigned int j = 0; j < num_shard_services; ++j) {
         core_shard_to_num_pgs[i].emplace(j, 0);

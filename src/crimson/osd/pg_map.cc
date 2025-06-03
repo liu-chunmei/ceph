@@ -106,16 +106,16 @@ seastar::future<std::pair<core_id_t, unsigned int>> PGShardMapping::get_or_creat
           [pgid, core_to_update, shard_index_update, FNAME](auto &other_mapping) {
         auto find_iter = other_mapping.pg_to_core.find(pgid);
         if (find_iter == other_mapping.pg_to_core.end()) {
-          DEBUG("mapping pg {} to core {} (others)",
-                pgid, core_to_update);
+          DEBUG("mapping pg {} to core {} (others), store_shard_index {}",
+                pgid, core_to_update, shard_index_update);
           [[maybe_unused]] auto [insert_iter, inserted] =
             other_mapping.pg_to_core.emplace(pgid, std::make_pair(core_to_update, shard_index_update));
           assert(inserted);
         } else {
           auto core_found = find_iter->second.first;
           if (core_found != core_to_update) {
-            ERROR("the mapping is inconsistent for pg {} (others): core {}, expected {}",
-                  pgid, core_found, core_to_update);
+            ERROR("the mapping is inconsistent for pg {} (others): core {}, expected {}, store_shard_index {}",
+                  pgid, core_found, core_to_update, shard_index_update);
             ceph_abort("The pg mapping is inconsistent!");
           }
           DEBUG("mapping pg {} to core {} (others): already mapped",
