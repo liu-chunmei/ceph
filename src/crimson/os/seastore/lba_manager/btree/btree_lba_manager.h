@@ -259,7 +259,7 @@ public:
   BtreeLBAManager(Cache &cache)
     : cache(cache)
   {
-    register_metrics();
+    //register_metrics();
   }
 
   mkfs_ret mkfs(

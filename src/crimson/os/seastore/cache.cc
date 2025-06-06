@@ -36,7 +36,7 @@ Cache::Cache(
 {
   LOG_PREFIX(Cache::Cache);
   INFO("created, lru_capacity=0x{:x}B", lru.get_capacity_bytes());
-  register_metrics();
+  //register_metrics();
   segment_providers_by_device_id.resize(DEVICE_ID_MAX, nullptr);
 }
 

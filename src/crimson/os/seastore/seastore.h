@@ -207,7 +207,7 @@ public:
 
     seastar::future<std::string> get_default_device_class();
 
-    store_statfs_t stat() const;
+    seastar::future<store_statfs_t> stat() const;
 
     uuid_d get_fsid() const;
 
@@ -600,7 +600,7 @@ public:
 
   uuid_d get_fsid() const final {
     ceph_assert(seastar::this_shard_id() == primary_core);
-    return shard_stores[0]->local().get_fsid();
+    return shard_stores.local().mshard_stores[0]->get_fsid();
   }
 
   seastar::future<> write_meta(const std::string& key, const std::string& value) final;
@@ -612,15 +612,15 @@ public:
   seastar::future<std::string> get_default_device_class() final;
 
   FuturizedStore::Shard& get_sharded_store(unsigned int shard_index = 0) final {
-    assert(shard_index < shard_stores.size());
-    return shard_stores[shard_index]->local();
+    assert(shard_index < shard_stores.local().mshard_stores.size());
+    return *shard_stores.local().mshard_stores[shard_index];
   }
   std::vector<FuturizedStore::Shard*> get_sharded_stores() final {
     std::vector<FuturizedStore::Shard*> ret;
-    ret.reserve(shard_stores.size());
-    for (auto& shard_store : shard_stores) {
-      if (shard_store->local().get_status() == true) {
-        ret.push_back(&shard_store->local());
+    ret.reserve(shard_stores.local().mshard_stores.size());
+    for (auto& mshard_store : shard_stores.local().mshard_stores) {
+      if (mshard_store->get_status() == true) {
+        ret.push_back(mshard_store.get());
       }  
     }
     return ret;
@@ -652,11 +652,32 @@ private:
   seastar::future<> shard_stores_stop();
 
 private:
+class MultiShardStores {
+  public:
+    std::vector<std::unique_ptr<SeaStore::Shard>> mshard_stores;
+  
+  public:
+    MultiShardStores(size_t count,
+                     const std::string& root,
+                     Device* dev,
+                     bool is_test,
+                     unsigned int store_shard_nums)
+    : mshard_stores() {
+      mshard_stores.reserve(count); // Reserve space for the shards
+      for (size_t shard_index = 0; shard_index < count; ++shard_index) {
+        mshard_stores.emplace_back(std::make_unique<SeaStore::Shard>(
+          root, dev, is_test, store_shard_nums, shard_index));
+      }
+    }
+    ~MultiShardStores() {
+      mshard_stores.clear();
+    }
+  };
   std::string root;
   MDStoreRef mdstore;
   DeviceRef device;
   std::vector<DeviceRef> secondaries;
-  std::vector<std::unique_ptr<seastar::sharded<SeaStore::Shard>>> shard_stores{};
+  seastar::sharded<SeaStore::MultiShardStores> shard_stores;
   unsigned int store_shard_nums = 0;
 
   mutable seastar::lowres_clock::time_point last_tp =

@@ -52,6 +52,7 @@ public:
     auto num_shard_services = (store_shard_nums + seastar::smp::count - 1 ) / seastar::smp::count;
     std::cout<< "----------------------PGShardMapping: min_core_mapping=" << min_core_mapping
               << ", max_core_mapping=" << max_core_mapping
+              <<", store_shard_nums=" << store_shard_nums
               << ", num_shard_services=" << num_shard_services << std::endl;
     for (auto i = min_core_mapping; i != max_core_mapping; ++i) {
       for (unsigned int j = 0; j < num_shard_services; ++j) {

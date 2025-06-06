@@ -179,7 +179,7 @@ seastar::future<> PGShardMapping::remove_pg_mapping(spg_t pgid) {
         ERROR("trying to remove non-exist mapping for pg {} (others)", pgid);
         ceph_abort("The pg mapping is inconsistent!");
       }
-      assert(find_iter->second != NULL_CORE);
+      assert(find_iter->second.first != NULL_CORE);
       other_mapping.pg_to_core.erase(find_iter);
       DEBUG("pg {} mapping erased (others)", pgid);
     });

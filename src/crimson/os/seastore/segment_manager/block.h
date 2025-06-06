@@ -258,7 +258,26 @@ private:
   unsigned int device_shard_nums = 0;
   unsigned int shard_index = 0;
   bool shard_status = true;
-  std::vector<std::unique_ptr<seastar::sharded<BlockSegmentManager>>> shard_devices;
+  class MultiShardDevices {
+    public:
+      std::vector<std::unique_ptr<BlockSegmentManager>> mshard_devices;
+    
+    public:
+    MultiShardDevices(size_t count,
+                      const std::string path,
+                      device_type_t dtype)
+    : mshard_devices() {
+      mshard_devices.reserve(count);
+      for (size_t shard_index = 0; shard_index < count; ++shard_index) {
+        mshard_devices.emplace_back(std::make_unique<BlockSegmentManager>(
+          path, dtype, shard_index));
+      }
+    }
+    ~MultiShardDevices() {
+     mshard_devices.clear();
+    }
+  };
+  seastar::sharded<MultiShardDevices> shard_devices;
 };
 
 }

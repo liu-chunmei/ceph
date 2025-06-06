@@ -743,7 +743,7 @@ private:
       state = state_t::MOUNT;
       trimmer->reset();
       stats = {};
-      register_metrics();
+      //register_metrics();
       return main_cleaner->mount(
       ).safe_then([this] {
         return has_cold_tier() ? cold_cleaner->mount() : mount_ertr::now();

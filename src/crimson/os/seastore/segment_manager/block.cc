@@ -433,25 +433,19 @@ seastar::future<> BlockSegmentManager::start(unsigned int shard_nums)
   device_shard_nums = shard_nums;
   auto num_shard_services = (device_shard_nums + seastar::smp::count - 1 ) / seastar::smp::count;
   INFO("device_shard_nums={} seastar::smp={}, num_shard_services={}", device_shard_nums, seastar::smp::count, num_shard_services);
-  shard_devices.resize(num_shard_services);
-  auto range = boost::irange<size_t>(0, shard_devices.size());
-  return seastar::do_for_each(range, [this](size_t index) {
-    shard_devices[index] = std::make_unique<seastar::sharded<BlockSegmentManager>>();
-    return shard_devices[index]->start(device_path, superblock.config.spec.dtype, index);
-  });
+  return shard_devices.start(num_shard_services, device_path, superblock.config.spec.dtype);
+
 }
 
 seastar::future<> BlockSegmentManager::stop()
 {
-  return seastar::do_for_each(shard_devices, [this](auto& ptr) {
-    return ptr->stop();
-  });
+  return shard_devices.stop();
 }
 
 Device& BlockSegmentManager::get_sharded_device(unsigned int shard_index)
 {
-  assert(shard_index < shard_devices.size());
-  return shard_devices[shard_index]->local();
+  assert(shard_index < shard_devices.local().mshard_devices.size());
+  return *shard_devices.local().mshard_devices[shard_index];
 }
 
 SegmentManager::read_ertr::future<unsigned int> BlockSegmentManager::get_shard_nums()
@@ -474,9 +468,9 @@ SegmentManager::read_ertr::future<unsigned int> BlockSegmentManager::get_shard_n
 
 BlockSegmentManager::mount_ret BlockSegmentManager::mount()
 {
-  return seastar::do_for_each(shard_devices, [this](auto& shard_device) {
-    return shard_device->invoke_on_all([this](auto &local_device) {
-      return local_device.shard_mount(
+  return shard_devices.invoke_on_all([](auto &local_device) {
+    return seastar::do_for_each(local_device.mshard_devices, [](auto& mshard_device) {
+      return mshard_device->shard_mount(
       ).handle_error(
         crimson::ct_error::assert_all{
           "Invalid error in BlockSegmentManager::mount"
@@ -495,15 +489,15 @@ BlockSegmentManager::mount_ret BlockSegmentManager::shard_mount()
     auto sd = p.second;
     return read_superblock(device, sd);
   }).safe_then([=, this](auto sb) ->mount_ertr::future<> {
-    set_device_id(sb.config.spec.id);
     if(seastar::this_shard_id() + seastar::smp::count * shard_index >= sb.shard_num) {
       INFO("{} shard_id {} out of range {}",
-            device_id_printer_t{get_device_id()},
-            seastar::this_shard_id() + seastar::smp::count * shard_index,
-            sb.shard_num);
+      device_id_printer_t{get_device_id()},
+        seastar::this_shard_id() + seastar::smp::count * shard_index,
+        sb.shard_num);
       shard_status = false;
       return mount_ertr::now();
     }
+    set_device_id(sb.config.spec.id);
     shard_info = sb.shard_infos[seastar::this_shard_id() + seastar::smp::count * shard_index];
     INFO("{} read {}", device_id_printer_t{get_device_id()}, shard_info);
     sb.validate();
@@ -531,18 +525,20 @@ BlockSegmentManager::mount_ret BlockSegmentManager::shard_mount()
     });
   }).safe_then([this, FNAME] {
     INFO("{} complete", device_id_printer_t{get_device_id()});
-    register_metrics();
+    if (shard_index == 0) {
+      //register_metrics();
+    }
   });
 }
 
 BlockSegmentManager::mkfs_ret BlockSegmentManager::mkfs(
   device_config_t sm_config)
 {
-  return shard_devices[0]->local().primary_mkfs(sm_config
+  return shard_devices.local().mshard_devices[0]->primary_mkfs(sm_config
   ).safe_then([this] {
-    return seastar::do_for_each(shard_devices, [this](auto& shard_device) {
-      return shard_device->invoke_on_all([this](auto &local_device) {
-        return local_device.shard_mkfs(
+    return shard_devices.invoke_on_all([](auto &local_device) {
+      return seastar::do_for_each(local_device.mshard_devices, [](auto& mshard_device) {
+        return mshard_device->shard_mkfs(
         ).handle_error(
           crimson::ct_error::assert_all{
             "Invalid error in BlockSegmentManager::mkfs"
