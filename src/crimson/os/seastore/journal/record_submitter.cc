@@ -397,7 +397,7 @@ RecordSubmitter::open(bool is_mkfs)
     DEBUG("{} register metrics", get_name());
     stats = {};
     last_stats = {};
-    namespace sm = seastar::metrics;
+  /*  namespace sm = seastar::metrics;
     std::vector<sm::label_instance> label_instances;
     label_instances.push_back(sm::label_instance("submitter", get_name()));
     metrics.add_group(
@@ -440,7 +440,7 @@ RecordSubmitter::open(bool is_mkfs)
           label_instances
         ),
       }
-    );
+    ); */
     return ret;
   });
 }

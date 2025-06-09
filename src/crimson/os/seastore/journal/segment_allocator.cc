@@ -113,7 +113,6 @@ SegmentAllocator::do_open(bool is_mkfs)
     iter.copy(bl.length(), bp.c_str());
     bl.clear();
     bl.append(bp);
-
     ceph_assert(sref->get_write_ptr() == 0);
     assert((unsigned)header_length == bl.length());
     written_to = header_length;

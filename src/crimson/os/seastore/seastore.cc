@@ -146,7 +146,7 @@ SeaStore::Shard::Shard(
   }
   device = &(dev->get_sharded_device(shard_index));
   if (shard_index == 0) {
-    //register_metrics();
+    register_metrics();
   }
 }
 
@@ -285,7 +285,6 @@ seastar::future<unsigned int> SeaStore::start()
     return shard_stores_start(is_test);
   }).then([this, FNAME] {
     INFO("done");
-    std::cout<<"---------------------seastore start done---------------------"<<std::endl;
     return store_shard_nums;  
   });
 }
@@ -349,7 +348,6 @@ SeaStore::mount_ertr::future<> SeaStore::mount()
   ).safe_then([this] {
     ceph_assert(device->get_sharded_device(0).get_block_size()
 		>= laddr_t::UNIT_SIZE);
-    std::cout<<"---------------------seastore device mount done---------------------"<<std::endl;
     auto &sec_devices = device->get_sharded_device(0).get_secondary_devices();
     return crimson::do_for_each(sec_devices, [this](auto& device_entry) {
       device_id_t id = device_entry.first;
@@ -377,7 +375,6 @@ SeaStore::mount_ertr::future<> SeaStore::mount()
   }).safe_then([this] {
     return shard_stores.invoke_on_all([this](auto &local_store) {
       return seastar::do_for_each(local_store.mshard_stores, [this](auto& mshard_store) {
-        std::cout<<"------------------do---seastore mshard_store mount_manager ---------------------"<<std::endl;
         return mshard_store->mount_managers();
       });
     });
@@ -392,7 +389,6 @@ SeaStore::mount_ertr::future<> SeaStore::mount()
 
 seastar::future<> SeaStore::Shard::mount_managers()
 {
-  std::cout<<"-------------Shard::mount_managers shard_index = "<<shard_index<<" shard_status = "<<shard_status<<" shard_id = "<<seastar::this_shard_id()<<std::endl;
   if(!shard_status) {
     return seastar::now();
   }

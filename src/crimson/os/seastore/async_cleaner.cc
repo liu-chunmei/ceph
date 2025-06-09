@@ -417,7 +417,7 @@ JournalTrimmerImpl::JournalTrimmerImpl(
   config.validate();
   ceph_assert(roll_start >= 0);
   ceph_assert(roll_size > 0);
-  register_metrics();
+ // register_metrics();
 }
 
 void JournalTrimmerImpl::set_journal_head(journal_seq_t head)
@@ -889,7 +889,7 @@ void SegmentCleaner::register_metrics()
   // NOTE: by default the segments are empty
   i = get_bucket_index(UTIL_STATE_EMPTY);
   stats.segment_util.buckets[i].count = segments.get_num_segments();
-
+/*
   std::string prefix;
   if (is_cold) {
     prefix.append("cold_");
@@ -989,7 +989,7 @@ void SegmentCleaner::register_metrics()
 		         return stats.segment_util;
 		       },
 		       sm::description("utilization distribution of all segments"))
-  });
+  }); */
 }
 
 segment_id_t SegmentCleaner::allocate_segment(
@@ -1793,7 +1793,7 @@ RBMCleaner::clean_space_ret RBMCleaner::clean_space()
 RBMCleaner::mount_ret RBMCleaner::mount()
 {
   stats = {};
-  register_metrics();
+  //register_metrics();
   return seastar::do_with(
     rb_group->get_rb_managers(),
     [](auto &rbs) {

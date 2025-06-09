@@ -489,6 +489,7 @@ BlockSegmentManager::mount_ret BlockSegmentManager::shard_mount()
     auto sd = p.second;
     return read_superblock(device, sd);
   }).safe_then([=, this](auto sb) ->mount_ertr::future<> {
+    set_device_id(sb.config.spec.id);
     if(seastar::this_shard_id() + seastar::smp::count * shard_index >= sb.shard_num) {
       INFO("{} shard_id {} out of range {}",
       device_id_printer_t{get_device_id()},
@@ -497,7 +498,6 @@ BlockSegmentManager::mount_ret BlockSegmentManager::shard_mount()
       shard_status = false;
       return mount_ertr::now();
     }
-    set_device_id(sb.config.spec.id);
     shard_info = sb.shard_infos[seastar::this_shard_id() + seastar::smp::count * shard_index];
     INFO("{} read {}", device_id_printer_t{get_device_id()}, shard_info);
     sb.validate();
@@ -525,9 +525,9 @@ BlockSegmentManager::mount_ret BlockSegmentManager::shard_mount()
     });
   }).safe_then([this, FNAME] {
     INFO("{} complete", device_id_printer_t{get_device_id()});
-    if (shard_index == 0) {
-      //register_metrics();
-    }
+    //if (shard_index == 0) {
+      register_metrics();
+    //}
   });
 }
 
@@ -742,6 +742,7 @@ void BlockSegmentManager::register_metrics()
   std::vector<sm::label_instance> label_instances;
   label_instances.push_back(sm::label_instance("device_id", get_device_id()));
   stats.reset();
+  /*
   metrics.add_group(
     "segment_manager",
     {
@@ -806,7 +807,7 @@ void BlockSegmentManager::register_metrics()
 	label_instances
       ),
     }
-  );
+  );*/
 }
 
 }
