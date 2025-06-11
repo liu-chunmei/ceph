@@ -525,9 +525,7 @@ BlockSegmentManager::mount_ret BlockSegmentManager::shard_mount()
     });
   }).safe_then([this, FNAME] {
     INFO("{} complete", device_id_printer_t{get_device_id()});
-    //if (shard_index == 0) {
-      register_metrics();
-    //}
+    register_metrics(shard_index);
   });
 }
 
@@ -734,15 +732,23 @@ SegmentManager::read_ertr::future<> BlockSegmentManager::read(
     out);
 }
 
-void BlockSegmentManager::register_metrics()
+void BlockSegmentManager::register_metrics(unsigned int shard_index)
 {
   LOG_PREFIX(BlockSegmentManager::register_metrics);
+  if (!shard_status) {
+    INFO("{} shard {} is not active, skip registering metrics",
+         device_id_printer_t{get_device_id()}, shard_index);
+    return;
+  }
+  
   DEBUG("{}", device_id_printer_t{get_device_id()});
   namespace sm = seastar::metrics;
   std::vector<sm::label_instance> label_instances;
   label_instances.push_back(sm::label_instance("device_id", get_device_id()));
+  label_instances.push_back(
+    sm::label_instance("shard_device_index", std::to_string(shard_index)));
   stats.reset();
-  /*
+  
   metrics.add_group(
     "segment_manager",
     {
@@ -750,64 +756,64 @@ void BlockSegmentManager::register_metrics()
         "data_read_num",
         stats.data_read.num,
         sm::description("total number of data read"),
-	label_instances
+        label_instances
       ),
       sm::make_counter(
         "data_read_bytes",
         stats.data_read.bytes,
         sm::description("total bytes of data read"),
-	label_instances
+        label_instances
       ),
       sm::make_counter(
         "data_write_num",
         stats.data_write.num,
         sm::description("total number of data write"),
-	label_instances
+        label_instances
       ),
       sm::make_counter(
         "data_write_bytes",
         stats.data_write.bytes,
         sm::description("total bytes of data write"),
-	label_instances
+        label_instances
       ),
       sm::make_counter(
         "metadata_write_num",
         stats.metadata_write.num,
         sm::description("total number of metadata write"),
-	label_instances
+        label_instances
       ),
       sm::make_counter(
         "metadata_write_bytes",
         stats.metadata_write.bytes,
         sm::description("total bytes of metadata write"),
-	label_instances
+        label_instances
       ),
       sm::make_counter(
         "opened_segments",
         stats.opened_segments,
         sm::description("total segments opened"),
-	label_instances
+        label_instances
       ),
       sm::make_counter(
         "closed_segments",
         stats.closed_segments,
         sm::description("total segments closed"),
-	label_instances
+        label_instances
       ),
       sm::make_counter(
         "closed_segments_unused_bytes",
         stats.closed_segments_unused_bytes,
         sm::description("total unused bytes of closed segments"),
-	label_instances
+        label_instances
       ),
       sm::make_counter(
         "released_segments",
         stats.released_segments,
         sm::description("total segments released"),
-	label_instances
+	      label_instances
       ),
     }
-  );*/
+  );
 }
 
 }

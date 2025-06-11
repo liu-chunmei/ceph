@@ -256,10 +256,10 @@ using LBABtree = FixedKVBtree<
  */
 class BtreeLBAManager : public LBAManager {
 public:
-  BtreeLBAManager(Cache &cache)
+  BtreeLBAManager(Cache &cache, unsigned int shard_index)
     : cache(cache)
   {
-    //register_metrics();
+    register_metrics(shard_index);
   }
 
   mkfs_ret mkfs(
@@ -605,7 +605,7 @@ private:
   }
 
   seastar::metrics::metric_group metrics;
-  void register_metrics();
+  void register_metrics(unsigned int shard_index);
 
   /**
    * update_refcount

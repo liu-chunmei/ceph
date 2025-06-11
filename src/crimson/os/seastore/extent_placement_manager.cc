@@ -961,20 +961,25 @@ ExtentPlacementManager::BackgroundProcess::do_background_cycle()
   }
 }
 
-void ExtentPlacementManager::BackgroundProcess::register_metrics()
+void ExtentPlacementManager::BackgroundProcess::register_metrics(unsigned int shard_index)
 {
   namespace sm = seastar::metrics;
   metrics.add_group("background_process", {
     sm::make_counter("io_count", stats.io_count,
-                     sm::description("the sum of IOs")),
+                     sm::description("the sum of IOs"),
+                     {sm::label_instance("shard_store_index", std::to_string(shard_index))}),
     sm::make_counter("io_blocked_count", stats.io_blocked_count,
-                     sm::description("IOs that are blocked by gc")),
+                     sm::description("IOs that are blocked by gc"),
+                     {sm::label_instance("shard_store_index", std::to_string(shard_index))}),
     sm::make_counter("io_blocked_count_trim", stats.io_blocked_count_trim,
-                     sm::description("IOs that are blocked by trimming")),
+                     sm::description("IOs that are blocked by trimming"),
+                     {sm::label_instance("shard_store_index", std::to_string(shard_index))}),
     sm::make_counter("io_blocked_count_clean", stats.io_blocked_count_clean,
-                     sm::description("IOs that are blocked by cleaning")),
+                     sm::description("IOs that are blocked by cleaning"),
+                     {sm::label_instance("shard_store_index", std::to_string(shard_index))}),
     sm::make_counter("io_blocked_sum", stats.io_blocked_sum,
-                     sm::description("the sum of blocking IOs"))
+                     sm::description("the sum of blocking IOs"),
+                     {sm::label_instance("shard_store_index", std::to_string(shard_index))})
   });
 }
 

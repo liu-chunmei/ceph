@@ -145,9 +145,9 @@ SeaStore::Shard::Shard(
     shard_status = false;
   }
   device = &(dev->get_sharded_device(shard_index));
-  if (shard_index == 0) {
-    register_metrics();
-  }
+  
+  register_metrics(shard_index);
+  
 }
 
 SeaStore::SeaStore(
@@ -161,9 +161,11 @@ SeaStore::SeaStore(
 
 SeaStore::~SeaStore() = default;
 
-void SeaStore::Shard::register_metrics()
+void SeaStore::Shard::register_metrics(unsigned int shard_index)
 {
-  assert(shard_status);
+  if(!shard_status) {
+    return;
+  }
   namespace sm = seastar::metrics;
   using op_type_t = crimson::os::seastore::op_type_t;
   std::pair<op_type_t, sm::label_instance> labels_by_op_type[] = {
@@ -188,7 +190,7 @@ void SeaStore::Shard::register_metrics()
             return get_latency(op_type);
           },
           sm::description(desc),
-          {label}
+          {label, sm::label_instance("shard_store_index", std::to_string(shard_index))}
         ),
       }
     );
@@ -202,7 +204,8 @@ void SeaStore::Shard::register_metrics()
 	[this] {
 	  return throttler.get_current();
 	},
-	sm::description("transactions that are running inside seastore")
+	sm::description("transactions that are running inside seastore"),
+  {sm::label_instance("shard_store_index", std::to_string(shard_index))}
       ),
       sm::make_gauge(
 	"pending_transactions",
@@ -210,7 +213,8 @@ void SeaStore::Shard::register_metrics()
 	  return throttler.get_pending();
 	},
 	sm::description("transactions waiting to get "
-		        "through seastore's throttler")
+		        "through seastore's throttler"),
+  {sm::label_instance("shard_store_index", std::to_string(shard_index))}
       )
     }
   );
@@ -2536,7 +2540,7 @@ void SeaStore::Shard::init_managers()
   shard_stats = {};
 
   transaction_manager = make_transaction_manager(
-      device, secondaries, shard_stats, is_test);
+      device, secondaries, shard_stats, shard_index, is_test);
   collection_manager = std::make_unique<collection_manager::FlatCollectionManager>(
       *transaction_manager);
   onode_manager = std::make_unique<crimson::os::seastore::onode::FLTreeOnodeManager>(

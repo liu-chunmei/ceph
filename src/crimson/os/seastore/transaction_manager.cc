@@ -801,11 +801,12 @@ TransactionManagerRef make_transaction_manager(
     Device *primary_device,
     const std::vector<Device*> &secondary_devices,
     shard_stats_t& shard_stats,
+    unsigned int shard_index,
     bool is_test)
 {
-  auto epm = std::make_unique<ExtentPlacementManager>();
-  auto cache = std::make_unique<Cache>(*epm);
-  auto lba_manager = lba_manager::create_lba_manager(*cache);
+  auto epm = std::make_unique<ExtentPlacementManager>(shard_index);
+  auto cache = std::make_unique<Cache>(*epm, shard_index);
+  auto lba_manager = lba_manager::create_lba_manager(*cache, shard_index);
   auto sms = std::make_unique<SegmentManagerGroup>();
   auto rbs = std::make_unique<RBMDeviceGroup>();
   auto backref_manager = create_backref_manager(*cache);
@@ -878,7 +879,7 @@ TransactionManagerRef make_transaction_manager(
 
   auto journal_trimmer = JournalTrimmerImpl::create(
       *backref_manager, trimmer_config,
-      backend_type, roll_start, roll_size);
+      backend_type, roll_start, roll_size, shard_index);
 
   AsyncCleanerRef cleaner;
   JournalRef journal;
@@ -887,6 +888,7 @@ TransactionManagerRef make_transaction_manager(
 
   if (cold_sms) {
     cold_segment_cleaner = SegmentCleaner::create(
+      shard_index,
       cleaner_config,
       std::move(cold_sms),
       *backref_manager,
@@ -903,6 +905,7 @@ TransactionManagerRef make_transaction_manager(
 
   if (backend_type == backend_type_t::SEGMENTED) {
     cleaner = SegmentCleaner::create(
+      shard_index,
       cleaner_config,
       std::move(sms),
       *backref_manager,

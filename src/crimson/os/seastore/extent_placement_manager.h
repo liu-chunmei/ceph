@@ -255,8 +255,9 @@ struct reserve_io_result_t {
 
 class ExtentPlacementManager {
 public:
-  ExtentPlacementManager()
-    : ool_segment_seq_allocator(
+  ExtentPlacementManager(unsigned int shard_index)
+    : shard_index(shard_index),
+      ool_segment_seq_allocator(
           std::make_unique<SegmentSeqAllocator>(segment_type_t::OOL)),
       max_data_allocation_size(crimson::common::get_conf<Option::size_t>(
 	  "seastore_max_data_allocation_size"))
@@ -311,7 +312,7 @@ public:
       crimson::ct_error::input_output_error>;
   using mount_ret = mount_ertr::future<>;
   mount_ret mount() {
-    return background_process.mount();
+    return background_process.mount(shard_index);
   }
 
   using open_ertr = ExtentOolWriter::open_ertr;
@@ -738,12 +739,12 @@ private:
     }
 
     using mount_ret = ExtentPlacementManager::mount_ret;
-    mount_ret mount() {
+    mount_ret mount(unsigned int shard_index) {
       ceph_assert(state == state_t::STOP);
       state = state_t::MOUNT;
       trimmer->reset();
       stats = {};
-      //register_metrics();
+      register_metrics(shard_index);
       return main_cleaner->mount(
       ).safe_then([this] {
         return has_cold_tier() ? cold_cleaner->mount() : mount_ertr::now();
@@ -1054,7 +1055,7 @@ private:
 
     seastar::future<> do_background_cycle();
 
-    void register_metrics();
+    void register_metrics(unsigned int shard_index);
 
     struct {
       uint64_t io_blocking_num = 0;
@@ -1097,6 +1098,7 @@ private:
   rewrite_gen_t dynamic_max_rewrite_generation = REWRITE_GENERATIONS;
   BackgroundProcess background_process;
   // TODO: drop once paddr->journal_seq_t is introduced
+  unsigned int shard_index = 0;
   SegmentSeqAllocatorRef ool_segment_seq_allocator;
   extent_len_t max_data_allocation_size = 0;
 

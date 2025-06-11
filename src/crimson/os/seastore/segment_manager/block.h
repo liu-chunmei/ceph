@@ -212,7 +212,7 @@ private:
     }
   } stats;
 
-  void register_metrics();
+  void register_metrics(unsigned int shard_index);
   seastar::metrics::metric_group metrics;
 
   std::string device_path;

@@ -572,7 +572,7 @@ public:
     bool shard_status = true;
 
     seastar::metrics::metric_group metrics;
-    void register_metrics();
+    void register_metrics(unsigned int shard_index);
 
     mutable shard_stats_t shard_stats;
     mutable seastar::lowres_clock::time_point last_tp =

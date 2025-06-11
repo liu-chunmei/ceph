@@ -6,8 +6,8 @@
 
 namespace crimson::os::seastore {
 
-LBAManagerRef lba_manager::create_lba_manager(Cache &cache) {
-  return LBAManagerRef(new btree::BtreeLBAManager(cache));
+LBAManagerRef lba_manager::create_lba_manager(Cache &cache, unsigned int shard_index) {
+  return LBAManagerRef(new btree::BtreeLBAManager(cache, shard_index));
 }
 
 }
