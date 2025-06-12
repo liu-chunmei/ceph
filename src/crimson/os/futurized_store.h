@@ -18,6 +18,10 @@
 #include "include/uuid.h"
 #include "osd/osd_types.h"
 
+#include <seastar/core/shared_ptr.hh>
+#include <seastar/core/sharded.hh>
+#include "crimson/common/local_shared_foreign_ptr.h"
+
 namespace ceph::os {
 class Transaction;
 }
@@ -205,9 +209,16 @@ public:
 
   virtual seastar::future<> write_meta(const std::string& key,
 				       const std::string& value) = 0;
+
+  using StoreShardLRef = seastar::shared_ptr<FuturizedStore::Shard>;
+  using StoreShardFRef = seastar::foreign_ptr<StoreShardLRef>;
+  using StoreShardRef = ::crimson::local_shared_foreign_ptr<StoreShardLRef>;
+  using StoreShardFFRef = seastar::foreign_ptr<StoreShardRef>;
+  using StoreShardXcoreRef = ::crimson::local_shared_foreign_ptr<StoreShardRef>;
+
   // called on the shard and get this FuturizedStore::shard;
   virtual Shard& get_sharded_store(unsigned int shard_index = 0) = 0;
-  virtual std::vector<Shard*> get_sharded_stores() = 0;
+  virtual std::vector<StoreShardRef> get_sharded_stores() = 0;
 
   virtual seastar::future<std::tuple<int, std::string>> read_meta(
     const std::string& key) = 0;

@@ -5,6 +5,7 @@
 
 #include <seastar/core/future.hh>
 #include <seastar/core/shared_mutex.hh>
+#include <seastar/core/shared_ptr.hh>
 
 #include "common/ceph_context.h"
 #include "os/ObjectStore.h"
@@ -22,7 +23,8 @@ class Transaction;
 namespace crimson::os {
 using coll_core_t = FuturizedStore::coll_core_t;
 class AlienStore final : public FuturizedStore,
-                         public FuturizedStore::Shard {
+                         public FuturizedStore::Shard,
+                         public seastar::enable_shared_from_this<AlienStore> {
 public:
   AlienStore(const std::string& type,
              const std::string& path,
@@ -123,9 +125,11 @@ public:
     return *this;
   }
 
-  std::vector<FuturizedStore::Shard*> get_sharded_stores() final {
-    std::vector<FuturizedStore::Shard*> ret;
-    ret.push_back(this);
+  std::vector<FuturizedStore::StoreShardRef> get_sharded_stores() final {
+    std::vector<FuturizedStore::StoreShardRef> ret;
+    auto self = seastar::static_pointer_cast<FuturizedStore::Shard>(shared_from_this());
+    ret.emplace_back(make_local_shared_foreign(
+      seastar::make_foreign(std::move(self))));
     return ret;
   }
 

@@ -67,7 +67,7 @@ class PerShardState {
 #define assert_core() ceph_assert(seastar::this_shard_id() == core);
 
   const int whoami;
-  std::vector<crimson::os::FuturizedStore::Shard*> stores;
+  std::vector<crimson::os::FuturizedStore::StoreShardRef> stores;
   crimson::common::CephContext cct;
 
   OSDState &osd_state;

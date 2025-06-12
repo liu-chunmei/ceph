@@ -615,13 +615,14 @@ public:
     assert(shard_index < shard_stores.local().mshard_stores.size());
     return *shard_stores.local().mshard_stores[shard_index];
   }
-  std::vector<FuturizedStore::Shard*> get_sharded_stores() final {
-    std::vector<FuturizedStore::Shard*> ret;
+  std::vector<FuturizedStore::StoreShardRef> get_sharded_stores() final {
+    std::vector<FuturizedStore::StoreShardRef> ret;
     ret.reserve(shard_stores.local().mshard_stores.size());
     for (auto& mshard_store : shard_stores.local().mshard_stores) {
       if (mshard_store->get_status() == true) {
-        ret.push_back(mshard_store.get());
-      }  
+        ret.emplace_back(make_local_shared_foreign(
+          seastar::make_foreign(seastar::static_pointer_cast<FuturizedStore::Shard>(mshard_store))));
+      }
     }
     return ret;
   }
@@ -654,7 +655,7 @@ private:
 private:
 class MultiShardStores {
   public:
-    std::vector<std::unique_ptr<SeaStore::Shard>> mshard_stores;
+    std::vector<seastar::shared_ptr<SeaStore::Shard>> mshard_stores;
   
   public:
     MultiShardStores(size_t count,
@@ -665,7 +666,7 @@ class MultiShardStores {
     : mshard_stores() {
       mshard_stores.reserve(count); // Reserve space for the shards
       for (size_t shard_index = 0; shard_index < count; ++shard_index) {
-        mshard_stores.emplace_back(std::make_unique<SeaStore::Shard>(
+        mshard_stores.emplace_back(seastar::make_shared<SeaStore::Shard>(
           root, dev, is_test, store_shard_nums, shard_index));
       }
     }
