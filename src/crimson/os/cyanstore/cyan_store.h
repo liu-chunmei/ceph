@@ -12,6 +12,8 @@
 #include <optional>
 #include <seastar/core/future.hh>
 #include <seastar/core/future-util.hh>
+#include <seastar/core/sharded.hh>
+#include <seastar/core/shared_ptr.hh>
 
 #include "osd/osd_types.h"
 #include "include/uuid.h"
@@ -210,15 +212,16 @@ public:
 		  const std::string& value) final;
       
   FuturizedStore::Shard& get_sharded_store(unsigned int shard_index = 0) final {
-    assert(shard_index < shard_stores.size());
-    return shard_stores[shard_index]->local();
+    assert(shard_index < shard_stores.local().mshard_stores.size());
+    return *shard_stores.local().mshard_stores[shard_index];
   }
-  std::vector<FuturizedStore::Shard*> get_sharded_stores() final{  //fix later
-    std::vector<FuturizedStore::Shard*> ret;
-    ret.reserve(shard_stores.size());
-    for (auto& shard_store : shard_stores) {
-      if (shard_store->local().get_status() == true) {
-        ret.push_back(&shard_store->local());
+  std::vector<FuturizedStore::StoreShardRef> get_sharded_stores() final{
+    std::vector<FuturizedStore::StoreShardRef> ret;
+    ret.reserve(shard_stores.local().mshard_stores.size());
+    for (auto& mshard_store : shard_stores.local().mshard_stores) {
+      if (mshard_store->get_status() == true) {
+        ret.emplace_back(make_local_shared_foreign(
+          seastar::make_foreign(seastar::static_pointer_cast<FuturizedStore::Shard>(mshard_store))));
       }
     }
     return ret;
@@ -235,7 +238,26 @@ public:
 
 
 private:
-  std::vector<std::unique_ptr<seastar::sharded<CyanStore::Shard>>> shard_stores;
+class MultiShardStores {
+  public:
+    std::vector<seastar::shared_ptr<CyanStore::Shard>> mshard_stores;
+  
+  public:
+    MultiShardStores(size_t count,
+                     const std::string path,
+                     unsigned int store_shard_nums)
+    : mshard_stores() {
+      mshard_stores.reserve(count); // Reserve space for the shards
+      for (size_t shard_index = 0; shard_index < count; ++shard_index) {
+        mshard_stores.emplace_back(seastar::make_shared<CyanStore::Shard>(
+          path, store_shard_nums, shard_index));
+      }
+    }
+    ~MultiShardStores() {
+      mshard_stores.clear();
+    }
+  };
+  seastar::sharded<CyanStore::MultiShardStores> shard_stores;
   unsigned int store_shard_nums = 0;
   const std::string path;
   uuid_d osd_fsid;

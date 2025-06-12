@@ -78,17 +78,9 @@ seastar::future<unsigned int> CyanStore::start()
   return get_shard_nums().then([this] {
     auto num_shard_services = (store_shard_nums + seastar::smp::count - 1 ) / seastar::smp::count;
     logger().info("store_shard_nums={} seastar::smp={}, num_shard_services={}", store_shard_nums, seastar::smp::count, num_shard_services);
-    shard_stores.resize(num_shard_services);
-
-    return seastar::do_for_each(
-      boost::counting_iterator<size_t>(0),
-      boost::counting_iterator<size_t>(shard_stores.size()),
-      [this](size_t index) {
-      shard_stores[index] = std::make_unique<seastar::sharded<CyanStore::Shard>>();
-      return shard_stores[index]->start(path, store_shard_nums, index);
-    });
+    return shard_stores.start(num_shard_services, path, store_shard_nums);
   }).then([this] {
-    logger().debug("CyanStore started with {} shard stores", shard_stores.size());
+    logger().debug("CyanStore started with {} shard stores", store_shard_nums);
     return seastar::make_ready_future<unsigned int>(store_shard_nums);
   });
 }
@@ -96,17 +88,15 @@ seastar::future<unsigned int> CyanStore::start()
 seastar::future<> CyanStore::stop()
 {
   logger().debug("stopping shard stores");
-  return seastar::do_for_each(shard_stores, [this](auto& ptr) {
-    return ptr->stop();
-  });
+  return shard_stores.stop();
 }
 
 CyanStore::mount_ertr::future<> CyanStore::mount()
 {
   ceph_assert(seastar::this_shard_id() == primary_core);
-  return seastar::do_for_each(shard_stores, [](auto& shard_store) {
-    return shard_store->invoke_on_all([](auto &local_store) {
-      return local_store.mount().handle_error(
+  return shard_stores.invoke_on_all([](auto &local_store) {
+    return seastar::do_for_each(local_store.mshard_stores, [](auto& mshard_store) {
+      return mshard_store->mount().handle_error(
         crimson::ct_error::assert_all{
           "Invalid error in CyanStore::mount"
         });
@@ -117,9 +107,9 @@ CyanStore::mount_ertr::future<> CyanStore::mount()
 seastar::future<> CyanStore::umount()
 {
   ceph_assert(seastar::this_shard_id() == primary_core);
-  return seastar::do_for_each(shard_stores, [](auto& shard_store) {
-    return shard_store->invoke_on_all([](auto &local_store) {
-      return local_store.umount();
+  return shard_stores.invoke_on_all([](auto &local_store) {
+    return seastar::do_for_each(local_store.mshard_stores, [](auto& mshard_store) {
+      return mshard_store->umount();
     });
   });
 }
@@ -128,23 +118,29 @@ seastar::future<store_statfs_t> CyanStore::stat() const
 {
   ceph_assert(seastar::this_shard_id() == primary_core);
   logger().debug("{}", __func__);
-  return seastar::do_with(
-    store_statfs_t(),
-    [this](auto& st) {
-    st.total = crimson::common::local_conf().get_val<Option::size_t>("memstore_device_bytes");
-    st.available = st.total; // Initially assume all space is available
-    return seastar::do_for_each(shard_stores, [this, &st](auto& shard_store) {
-      return shard_store->map_reduce0([](const CyanStore::Shard &local_store) {
-        return local_store.get_used_bytes();
+
+  return shard_stores.map_reduce0(
+    [](const auto& local_store) {
+      return seastar::map_reduce(
+        local_store.mshard_stores.begin(),
+        local_store.mshard_stores.end(),
+        [](const auto& mshard_store) {
+          return seastar::make_ready_future<uint64_t>(
+            mshard_store->get_used_bytes()
+          );
         },
-        (uint64_t)0,
+        uint64_t{0},
         std::plus<uint64_t>()
-      ).then([&st](uint64_t used_bytes) {
-      st.available = st.total - used_bytes;
-      });
-    }).then([&st] {
-      return seastar::make_ready_future<store_statfs_t>(std::move(st));
-    });
+      );
+    },
+    uint64_t{0},
+    std::plus<uint64_t>()
+  ).then([](uint64_t used_bytes) {
+    store_statfs_t st;
+    st.total = crimson::common::local_conf()
+      .get_val<Option::size_t>("memstore_device_bytes");
+    st.available = st.total - used_bytes;
+    return seastar::make_ready_future<store_statfs_t>(std::move(st));
   });
 }
 
@@ -185,9 +181,9 @@ CyanStore::mkfs_ertr::future<> CyanStore::mkfs(uuid_d new_osd_fsid)
   }).safe_then([this]{
     return write_meta("type", "memstore");
   }).safe_then([this] {
-    return seastar::do_for_each(shard_stores, [this](auto& shard_store) {
-      return shard_store->invoke_on_all([](auto &local_store) {
-        return local_store.mkfs();
+    return shard_stores.invoke_on_all([](auto &local_store) {
+      return seastar::do_for_each(local_store.mshard_stores, [](auto& mshard_store) {
+        return mshard_store->mkfs();
       });
     });
   });
@@ -221,21 +217,29 @@ seastar::future<std::vector<coll_core_t>>
 CyanStore::list_collections()
 {
   ceph_assert(seastar::this_shard_id() == primary_core);
-  return seastar::do_with(std::vector<coll_core_t>{}, [this](auto &collections) {
-    return seastar::do_for_each(shard_stores, [this, &collections](auto& shard_store) {
-      // Each shard store lists its collections
-      return shard_store->map([](auto &local_store) {
-        return local_store.list_collections();
-      }).then([&collections](std::vector<std::vector<coll_core_t>> results) {
-        for (auto& colls : results) {
-          collections.insert(collections.end(), colls.begin(), colls.end());
-        }
-      });
-    }).then([&collections] {
-      logger().debug("{} got {} collections", __func__, collections.size());
-      return seastar::make_ready_future<std::vector<coll_core_t>>(
-        std::move(collections));
-    });
+  return shard_stores.map_reduce0(
+    [this](auto& local_store) {
+    // For each local store, collect all collections from its mshard_stores
+    return seastar::map_reduce(
+      local_store.mshard_stores.begin(),
+      local_store.mshard_stores.end(),
+      [](auto& mshard_store) {
+        return mshard_store->list_collections();
+      },
+      std::vector<coll_core_t>(),  // Initial empty vector
+      [](auto&& merged, auto&& result) {  // Reduction function
+        merged.insert(merged.end(), result.begin(), result.end());
+        return std::move(merged);
+      }
+    );
+    },
+    std::vector<coll_core_t>(),  // Initial empty vector for final reduction
+    [](auto&& total, auto&& shard_result) {  // Final reduction function
+      total.insert(total.end(), shard_result.begin(), shard_result.end());
+      return std::move(total);
+    }
+  ).then([](auto all_collections) {
+    return seastar::make_ready_future<std::vector<coll_core_t>>(std::move(all_collections));
   });
 }
 
