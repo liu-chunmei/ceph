@@ -470,9 +470,9 @@ public:
 
   FORWARD_TO_OSD_SINGLETON(send_to_osd)
 
-  crimson::os::FuturizedStore::Shard& get_store(unsigned int shard_index) {
+  crimson::os::FuturizedStore::StoreShardRef get_store(unsigned int shard_index) {
     assert(shard_index < local_state.stores.size());
-    return *(local_state.stores[shard_index]);
+    return local_state.stores[shard_index];
   }
 
   struct shard_stats_t {

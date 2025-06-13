@@ -217,7 +217,7 @@ public:
   using StoreShardXcoreRef = ::crimson::local_shared_foreign_ptr<StoreShardRef>;
 
   // called on the shard and get this FuturizedStore::shard;
-  virtual Shard& get_sharded_store(unsigned int shard_index = 0) = 0;
+  virtual StoreShardRef get_sharded_store(unsigned int shard_index = 0) = 0;
   virtual std::vector<StoreShardRef> get_sharded_stores() = 0;
 
   virtual seastar::future<std::tuple<int, std::string>> read_meta(

@@ -78,7 +78,7 @@ PGBackend::PGBackend(shard_id_t shard,
     coll{coll},
     shard_services{shard_services},
     dpp{dpp},
-    store{&shard_services.get_store(store_index)}
+    store{shard_services.get_store(store_index)}
 {}
 
 PGBackend::load_metadata_iertr::future
@@ -1295,7 +1295,7 @@ static
 get_omap_iertr::future<
   crimson::os::FuturizedStore::Shard::omap_values_t>
 maybe_get_omap_vals_by_keys(
-  crimson::os::FuturizedStore::Shard* store,
+  crimson::os::FuturizedStore::StoreShardRef store,
   const crimson::os::CollectionRef& coll,
   const object_info_t& oi,
   const std::set<std::string>& keys_to_get)
@@ -1311,7 +1311,7 @@ static
 get_omap_iertr::future<
   std::tuple<bool, crimson::os::FuturizedStore::Shard::omap_values_t>>
 maybe_get_omap_vals(
-  crimson::os::FuturizedStore::Shard* store,
+  crimson::os::FuturizedStore::StoreShardRef store,
   const crimson::os::CollectionRef& coll,
   const object_info_t& oi,
   const std::string& start_after)

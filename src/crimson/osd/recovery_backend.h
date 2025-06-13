@@ -41,7 +41,7 @@ public:
 		  PGBackend* backend)
     : pg{pg},
       shard_services{shard_services},
-      store(&shard_services.get_store(store_index)),
+      store(shard_services.get_store(store_index)),
       coll{coll},
       backend{backend} {}
   virtual ~RecoveryBackend() {}
@@ -129,7 +129,7 @@ public:
 protected:
   crimson::osd::PG& pg;
   crimson::osd::ShardServices& shard_services;
-  crimson::os::FuturizedStore::Shard* store;
+  crimson::os::FuturizedStore::StoreShardRef store;
   crimson::os::CollectionRef coll;
   PGBackend* backend;
 

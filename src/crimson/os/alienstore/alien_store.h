@@ -121,8 +121,10 @@ public:
     uint64_t len,
     uint32_t op_flags) final;
 
-  FuturizedStore::Shard& get_sharded_store(unsigned int shard_index = 0) final {
-    return *this;
+  FuturizedStore::StoreShardRef get_sharded_store(unsigned int shard_index = 0) final {
+    auto self = seastar::static_pointer_cast<FuturizedStore::Shard>(shared_from_this());
+    return make_local_shared_foreign(
+      seastar::make_foreign(std::move(self)));
   }
 
   std::vector<FuturizedStore::StoreShardRef> get_sharded_stores() final {

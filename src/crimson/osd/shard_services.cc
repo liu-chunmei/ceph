@@ -585,9 +585,9 @@ seastar::future<Ref<PG>> ShardServices::make_pg(
   auto get_collection = [pgid, do_create, store_index, this] {
     const coll_t cid{pgid};
     if (do_create) {
-      return get_store(store_index).create_new_collection(cid);
+      return get_store(store_index)->create_new_collection(cid);
     } else {
-      return get_store(store_index).open_collection(cid);
+      return get_store(store_index)->open_collection(cid);
     }
   };
   return seastar::when_all(
@@ -756,7 +756,7 @@ seastar::future<Ref<PG>> ShardServices::load_pg(spg_t pgid, unsigned int store_i
   }).then([pgid, store_index, this](auto&& create_map) {
     return make_pg(std::move(create_map), pgid, store_index, false);
   }).then([store_index, this](Ref<PG> pg) {
-    return pg->read_state(&get_store(store_index)).then([pg] {
+    return pg->read_state(get_store(store_index)).then([pg] {
 	return seastar::make_ready_future<Ref<PG>>(std::move(pg));
     });
   }).handle_exception([FNAME, pgid](auto ep) {
@@ -771,7 +771,7 @@ seastar::future<> ShardServices::dispatch_context_transaction(
   LOG_PREFIX(OSDSingletonState::dispatch_context_transaction);
   if (ctx.transaction.empty()) {
     DEBUG("empty transaction");
-    co_await get_store(store_index).flush(col);
+    co_await get_store(store_index)->flush(col);
     Context* on_commit(
       ceph::os::Transaction::collect_all_contexts(ctx.transaction));
     if (on_commit) {
@@ -781,7 +781,7 @@ seastar::future<> ShardServices::dispatch_context_transaction(
   }
 
   DEBUG("do_transaction ...");
-  co_await get_store(store_index).do_transaction(
+  co_await get_store(store_index)->do_transaction(
     col,
     ctx.transaction.claim_and_reset());
   co_return;

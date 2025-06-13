@@ -1755,7 +1755,7 @@ public:
 
 #ifdef WITH_CRIMSON
   seastar::future<> read_log_and_missing_crimson(
-    crimson::os::FuturizedStore::Shard &store,
+    crimson::os::FuturizedStore::StoreShardRef store,
     crimson::os::CollectionRef ch,
     const pg_info_t &info,
     ghobject_t pgmeta_oid
@@ -1767,7 +1767,7 @@ public:
   }
 
   static seastar::future<> read_log_and_missing_crimson(
-    crimson::os::FuturizedStore::Shard &store,
+    crimson::os::FuturizedStore::StoreShardRef store,
     crimson::os::CollectionRef ch,
     const pg_info_t &info,
     IndexedLog &log,

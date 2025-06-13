@@ -290,6 +290,6 @@ seastar::future<> FSDriver::init()
     crimson::common::local_conf().get_config_values()
   );
   return fs->start().then([this](unsigned int store_shard_nums) {
-    sharded_fs = &(fs->get_sharded_store());
+    sharded_fs = fs->get_sharded_store();
   });
 }

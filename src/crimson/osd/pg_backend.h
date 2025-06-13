@@ -441,7 +441,7 @@ protected:
   CollectionRef coll;
   crimson::osd::ShardServices &shard_services;
   DoutPrefixProvider &dpp; ///< provides log prefix context
-  crimson::os::FuturizedStore::Shard* store;
+  crimson::os::FuturizedStore::StoreShardRef store;
   virtual seastar::future<> request_committed(
     const osd_reqid_t& reqid,
     const eversion_t& at_version) = 0;

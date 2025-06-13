@@ -211,9 +211,11 @@ public:
   seastar::future<> write_meta(const std::string& key,
 		  const std::string& value) final;
       
-  FuturizedStore::Shard& get_sharded_store(unsigned int shard_index = 0) final {
+  FuturizedStore::StoreShardRef get_sharded_store(unsigned int shard_index = 0) final {
     assert(shard_index < shard_stores.local().mshard_stores.size());
-    return *shard_stores.local().mshard_stores[shard_index];
+    return make_local_shared_foreign(
+      seastar::make_foreign(seastar::static_pointer_cast<FuturizedStore::Shard>(
+        shard_stores.local().mshard_stores[shard_index])));
   }
   std::vector<FuturizedStore::StoreShardRef> get_sharded_stores() final{
     std::vector<FuturizedStore::StoreShardRef> ret;
