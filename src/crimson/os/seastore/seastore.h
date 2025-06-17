@@ -612,6 +612,9 @@ public:
   seastar::future<std::string> get_default_device_class() final;
 
   FuturizedStore::StoreShardRef get_sharded_store(unsigned int shard_index = 0) final {
+    if (shard_stores.local().mshard_stores[shard_index]->get_status() == false) {
+      return nullptr;
+    }
     assert(shard_index < shard_stores.local().mshard_stores.size());
     return make_local_shared_foreign(
       seastar::make_foreign(seastar::static_pointer_cast<FuturizedStore::Shard>(

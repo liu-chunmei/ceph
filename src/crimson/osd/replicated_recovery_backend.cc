@@ -235,7 +235,8 @@ ReplicatedRecoveryBackend::on_local_recover_persist(
       soid, _recovery_info, is_delete, t
     ).then_interruptible([FNAME, this, &t] {
       DEBUGDPP("submitting transaction", pg);
-      return shard_services.get_store(pg.store_index)->do_transaction(coll, std::move(t));
+      return shard_services.call_store<&crimson::os::FuturizedStore::Shard::do_transaction>(
+        pg.store_index, coll, std::move(t));
     }).then_interruptible(
       [this, epoch_frozen, last_complete = pg.get_info().last_complete] {
       pg.get_recovery_handler()->_committed_pushed_object(epoch_frozen, last_complete);
@@ -262,8 +263,9 @@ ReplicatedRecoveryBackend::local_recover_delete(
         }).then_interruptible(
 	  [FNAME, this, &txn]() mutable {
 	  DEBUGDPP("submitting transaction", pg);
-	  return shard_services.get_store(pg.store_index)->do_transaction(coll,
-							   std::move(txn));
+	  return shard_services.call_store<&crimson::os::FuturizedStore::Shard::do_transaction>(
+      pg.store_index, coll,
+      std::move(txn));
 	});
       });
     }
@@ -718,9 +720,23 @@ ReplicatedRecoveryBackend::read_omap_for_push_op(
   if (progress.omap_complete) {
     return seastar::make_ready_future<>();
   }
+  using omap_func_ptr_type = 
+  crimson::os::FuturizedStore::Shard::read_errorator::future<
+    crimson::os::FuturizedStore::Shard::omap_values_paged_t
+  > (crimson::os::FuturizedStore::Shard::*)(
+    crimson::os::CollectionRef,
+    const ghobject_t&,
+    const std::optional<std::string>&,
+    uint32_t
+    );
+constexpr omap_func_ptr_type func_ptr = 
+  static_cast<omap_func_ptr_type>(
+    &crimson::os::FuturizedStore::Shard::omap_get_values
+  );
   return seastar::repeat([&new_progress, &max_len, push_op, &oid, this] {
-    return shard_services.get_store(pg.store_index)->omap_get_values(
-      coll, ghobject_t{oid}, nullopt_if_empty(new_progress.omap_recovered_to)
+    return shard_services.call_store<func_ptr>(
+      pg.store_index,
+      coll, ghobject_t{oid}, nullopt_if_empty(new_progress.omap_recovered_to), 0
     ).safe_then([&new_progress, &max_len, push_op](const auto& ret) {
       const auto& [done, kvs] = ret;
       bool stop = done;
@@ -903,14 +919,16 @@ ReplicatedRecoveryBackend::_handle_pull_response(
     );
     DEBUGDPP("submitting transaction, complete", pg);
     co_await interruptor::make_interruptible(
-      shard_services.get_store(pg.store_index)->do_transaction(coll, std::move(t)));
+      shard_services.call_store<&crimson::os::FuturizedStore::Shard::do_transaction>(
+        pg.store_index, coll, std::move(t)));
   } else {
     response->soid = push_op.soid;
     response->recovery_info = pull_info.recovery_info;
     response->recovery_progress = pull_info.recovery_progress;
     DEBUGDPP("submitting transaction, incomplete", pg);
     co_await interruptor::make_interruptible(
-      shard_services.get_store(pg.store_index)->do_transaction(coll, std::move(t)));
+      shard_services.call_store<&crimson::os::FuturizedStore::Shard::do_transaction>(
+        pg.store_index, coll, std::move(t)));
   }
 
   co_return complete;
@@ -1028,14 +1046,16 @@ ReplicatedRecoveryBackend::handle_push(
       false, t);
 
     co_await interruptor::make_interruptible(
-      shard_services.get_store(pg.store_index)->do_transaction(coll, std::move(t)));
+      shard_services.call_store<&crimson::os::FuturizedStore::Shard::do_transaction>(
+        pg.store_index, coll, std::move(t)));
     replica_push_targets.erase(ptiter);
 
     pg.get_recovery_handler()->_committed_pushed_object(
       epoch_frozen, pg.get_info().last_complete);
   } else {
     co_await interruptor::make_interruptible(
-      shard_services.get_store(pg.store_index)->do_transaction(coll, std::move(t)));
+      shard_services.call_store<&crimson::os::FuturizedStore::Shard::do_transaction>(
+        pg.store_index, coll, std::move(t)));
   }
 
   auto reply = crimson::make_message<MOSDPGPushReply>();

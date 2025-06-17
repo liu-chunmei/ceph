@@ -353,6 +353,8 @@ class ShardServices : public OSDMapService {
   PerShardState local_state;
   seastar::sharded<OSDSingletonState> &osd_singleton_state;
   PGShardMapping& pg_to_shard_mapping;
+  seastar::sharded<ShardServices>* s_container = nullptr;
+  unsigned int store_shard_nums = 0;
 
   template <typename F, typename... Args>
   auto with_singleton(F &&f, Args&&... args) {
@@ -463,12 +465,49 @@ public:
   ShardServices(
     seastar::sharded<OSDSingletonState> &osd_singleton_state,
     PGShardMapping& pg_to_shard_mapping,
+    unsigned int store_shard_nums,
     PSSArgs&&... args)
     : local_state(std::forward<PSSArgs>(args)...),
       osd_singleton_state(osd_singleton_state),
-      pg_to_shard_mapping(pg_to_shard_mapping) {}
+      pg_to_shard_mapping(pg_to_shard_mapping),
+      store_shard_nums(store_shard_nums) {}
 
   FORWARD_TO_OSD_SINGLETON(send_to_osd)
+
+  void set_container(seastar::sharded<ShardServices>& ss) { s_container = &ss; }
+
+template<auto MemberFunc, typename... Args>
+auto call_store(unsigned store_index, Args&&... args)
+->decltype((std::declval<crimson::os::FuturizedStore::Shard>().*MemberFunc)(std::forward<Args>(args)...)) {
+  assert(store_index < (store_shard_nums + seastar::smp::count - 1 ) / seastar::smp::count);
+  if (seastar::this_shard_id() < store_shard_nums) {  //local store
+    auto store = get_store(store_index);
+    return ((*store).*MemberFunc)(std::forward<Args>(args)...);
+  } else {  //remote store
+    auto target_core = seastar::this_shard_id() % store_shard_nums;
+    using return_type = decltype((std::declval<crimson::os::FuturizedStore::Shard>().*MemberFunc)(std::forward<Args>(args)...));
+    if constexpr (is_errorated_future_v<return_type>) {
+      auto ret = s_container->invoke_on(
+        target_core,
+        [store_index, args=std::make_tuple(std::forward<Args>(args)...)] (auto& remote_service) mutable {
+        auto store = remote_service.get_store(store_index);
+        return std::apply([store](auto&&... args) {
+          return ((*store).*MemberFunc)(std::forward<decltype(args)>(args)...).to_base();
+        }, std::move(args));
+      });
+      return return_type(std::move(ret));
+    } else {
+      return s_container->invoke_on(
+        target_core,
+        [store_index, args=std::make_tuple(std::forward<Args>(args)...)] (auto& remote_service) mutable {
+        auto store = remote_service.get_store(store_index);
+        return std::apply([store](auto&&... args) {
+          return ((*store).*MemberFunc)(std::forward<decltype(args)>(args)...);
+        }, std::move(args));
+      });
+    }
+  }
+}
 
   crimson::os::FuturizedStore::StoreShardRef get_store(unsigned int shard_index) {
     assert(shard_index < local_state.stores.size());

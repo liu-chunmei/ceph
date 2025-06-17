@@ -459,17 +459,23 @@ seastar::future<> OSD::start()
         std::ref(*monc), std::ref(*mgrc));
     }).then([this] {
       return osd_states.start();
-    }).then([this] {
+    }).then([this, store_shard_nums] {
       ceph::mono_time startup_time = ceph::mono_clock::now();
       return shard_services.start(
         std::ref(osd_singleton_state),
         std::ref(pg_to_shard_mappings),
+        store_shard_nums,
         whoami,
         startup_time,
         osd_singleton_state.local().perf,
         osd_singleton_state.local().recoverystate_perf,
         std::ref(store),
         std::ref(osd_states));
+    }).then([this, FNAME] {
+      return shard_services.invoke_on_all(
+      [this](auto& local_service) {
+        local_service.set_container(shard_services);
+      });
     });
   }).then([this, FNAME] {
     heartbeat.reset(new Heartbeat{

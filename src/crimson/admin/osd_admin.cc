@@ -501,7 +501,8 @@ public:
       return seastar::make_ready_future<tell_result_t>(-EINVAL,
 	                                               e.what());
     }
-    return shard_services.get_store(0)->inject_data_error(obj).then([=] {
+    return shard_services.call_store<&crimson::os::FuturizedStore::Shard::inject_data_error>(
+      0, obj).then([=] {
       logger().info("successfully injected data error for obj={}", obj);
       ceph::bufferlist bl;
       bl.append("ok"sv);
@@ -543,7 +544,8 @@ public:
       return seastar::make_ready_future<tell_result_t>(-EINVAL,
 	                                               e.what());
     }
-    return shard_services.get_store(0)->inject_mdata_error(obj).then([=] {
+    return shard_services.call_store<&crimson::os::FuturizedStore::Shard::inject_mdata_error>(
+      0, obj).then([=] {
       logger().info("successfully injected metadata error for obj={}", obj);
       ceph::bufferlist bl;
       bl.append("ok"sv);
