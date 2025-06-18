@@ -42,7 +42,8 @@ ReplicatedBackend::_read(const hobject_t& hoid,
                          const uint64_t len,
                          const uint32_t flags)
 {
-  return store->read(coll, ghobject_t{hoid}, off, len, flags);
+  return crimson::os::with_store<&crimson::os::FuturizedStore::Shard::read>(
+    store, coll, ghobject_t{hoid}, off, len, flags);
 }
 
 MURef<MOSDRepOp> ReplicatedBackend::new_repop_msg(

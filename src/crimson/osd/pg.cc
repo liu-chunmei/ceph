@@ -853,7 +853,8 @@ seastar::future<> PG::read_state(crimson::os::FuturizedStore::StoreShardRef stor
     return seastar::now();
   }).then([this, store]() {
     logger().debug("{} setting collection options", __func__);
-    return store->set_collection_opts(
+    return crimson::os::with_store<&crimson::os::FuturizedStore::Shard::set_collection_opts>(
+          store,
           coll_ref,
           get_pgpool().info.opts);
   });

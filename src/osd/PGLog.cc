@@ -1163,8 +1163,22 @@ namespace {
                ghobject_t &pgmeta_oid,
                std::optional<std::string> &start) {
           return seastar::repeat([this, &ch, &pgmeta_oid, &start]() {
-            return store->omap_get_values(
-              ch, pgmeta_oid, start
+            using omap_func_ptr_type =
+            crimson::os::FuturizedStore::Shard::read_errorator::future<
+            crimson::os::FuturizedStore::Shard::omap_values_paged_t
+            > (crimson::os::FuturizedStore::Shard::*)(
+              crimson::os::CollectionRef,
+              const ghobject_t&,
+              const std::optional<std::string>&,
+              uint32_t
+              );
+          constexpr omap_func_ptr_type func_ptr =
+            static_cast<omap_func_ptr_type>(
+              &crimson::os::FuturizedStore::Shard::omap_get_values
+            );
+            return crimson::os::with_store<func_ptr>(
+              store, 
+              ch, pgmeta_oid, start, 0
             ).safe_then([this, &start](const auto& ret) {
               const auto& [done, kvs] = ret;
               for (const auto& [key, value] : kvs) {

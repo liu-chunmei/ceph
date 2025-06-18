@@ -37,11 +37,28 @@ namespace {
 
 seastar::future<epoch_t> PGMeta::get_epoch()
 {
-  return store->open_collection(coll_t{pgid}).then([this](auto ch) {
-    return store->omap_get_values(ch,
+  return crimson::os::with_store<&crimson::os::FuturizedStore::Shard::open_collection>(
+    store, coll_t{pgid}).then([this](auto ch) {
+      using omap_func_ptr_type =
+      crimson::os::FuturizedStore::Shard::read_errorator::future<
+        crimson::os::FuturizedStore::Shard::omap_values_t
+      > (crimson::os::FuturizedStore::Shard::*)(
+        crimson::os::CollectionRef,
+        const ghobject_t&,
+        const std::set<std::string>&,
+        uint32_t
+        );
+    constexpr omap_func_ptr_type func_ptr =
+      static_cast<omap_func_ptr_type>(
+        &crimson::os::FuturizedStore::Shard::omap_get_values
+      );  
+    return crimson::os::with_store<func_ptr>(
+                                 store, ch,
                                  pgid.make_pgmeta_oid(),
-                                 {string{infover_key},
-                                  string{epoch_key}}).safe_then(
+                                 std::set<std::string>{
+                                  string{infover_key},
+                                  string{epoch_key}},
+                                 0).safe_then(
     [](auto&& values) {
       {
         // sanity check
@@ -65,13 +82,30 @@ seastar::future<epoch_t> PGMeta::get_epoch()
 
 seastar::future<std::tuple<pg_info_t, PastIntervals>> PGMeta::load()
 {
-  return store->open_collection(coll_t{pgid}).then([this](auto ch) {
-    return store->omap_get_values(ch,
+  return crimson::os::with_store<&crimson::os::FuturizedStore::Shard::open_collection>(
+    store, coll_t{pgid}).then([this](auto ch) {
+      using omap_func_ptr_type =
+      crimson::os::FuturizedStore::Shard::read_errorator::future<
+        crimson::os::FuturizedStore::Shard::omap_values_t
+      > (crimson::os::FuturizedStore::Shard::*)(
+        crimson::os::CollectionRef,
+        const ghobject_t&,
+        const std::set<std::string>&,
+        uint32_t
+        );
+    constexpr omap_func_ptr_type func_ptr =
+      static_cast<omap_func_ptr_type>(
+        &crimson::os::FuturizedStore::Shard::omap_get_values
+      );
+    return crimson::os::with_store<func_ptr>(
+                                 store, ch,
                                  pgid.make_pgmeta_oid(),
-                                 {string{infover_key},
+                                 std::set<std::string>{
+                                  string{infover_key},
                                   string{info_key},
                                   string{biginfo_key},
-                                  string{fastinfo_key}});
+                                  string{fastinfo_key}},
+                                  0);
   }).safe_then([](auto&& values) {
     {
       // sanity check

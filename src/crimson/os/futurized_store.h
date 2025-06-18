@@ -230,4 +230,94 @@ public:
 protected:
   const core_id_t primary_core;
 };
+/*
+using omap_func_key_set_type =
+  FuturizedStore::Shard::read_errorator::future<FuturizedStore::Shard::omap_values_t>
+  (FuturizedStore::Shard::*)(
+    CollectionRef,
+    const ghobject_t&,
+    const std::set<std::string>&,
+    uint32_t
+  );
+
+constexpr omap_func_key_set_type omap_key_set_ptr =
+  &FuturizedStore::Shard::omap_get_values;
+
+using omap_func_key_string_type =
+  FuturizedStore::Shard::read_errorator::future<FuturizedStore::Shard::omap_values_paged_t>
+  (FuturizedStore::Shard::*)(
+    CollectionRef,
+    const ghobject_t&,
+    const std::optional<std::string>&,
+    uint32_t
+  );
+
+constexpr omap_func_key_string_type omap_key_string_ptr =
+  &FuturizedStore::Shard::omap_get_values;
+
+template<auto MemberFunc, typename... Args>
+auto with_store(crimson::os::FuturizedStore::StoreShardRef store, Args&&... args)
+->decltype((std::declval<crimson::os::FuturizedStore::Shard>().*MemberFunc)(std::forward<Args>(args)...)) {
+  if (store.get_owner_shard() == seastar::this_shard_id()) {  //local store
+    return ((*store).*MemberFunc)(std::forward<Args>(args)...);
+  } else { //remote store
+    using return_type = decltype((std::declval<crimson::os::FuturizedStore::Shard>().*MemberFunc)(std::forward<Args>(args)...));
+    if constexpr (is_errorated_future_v<return_type>) {
+      auto ret = seastar::smp::submit_to(
+        store.get_owner_shard(),
+        [f_store = store.get(), args=std::make_tuple(std::forward<Args>(args)...)]() mutable {
+          return std::apply([f_store](auto&&... args) {
+            return ((*f_store).*MemberFunc)(std::forward<decltype(args)>(args)...).to_base();
+          }, std::move(args));
+        });
+      return return_type(std::move(ret));
+    } else {
+      return seastar::smp::submit_to(
+        store.get_owner_shard(),
+        [f_store = store.get(), args=std::make_tuple(std::forward<Args>(args)...)]() mutable {
+          return std::apply([f_store](auto&&... args) {
+            return ((*f_store).*MemberFunc)(std::forward<decltype(args)>(args)...);
+          }, std::move(args));
+      });
+    }
+  }
+}*/
+
+template<auto MemberFunc, typename... Args>
+auto with_store(crimson::os::FuturizedStore::StoreShardRef store, Args&&... args)
+{
+  using raw_return_type = decltype((std::declval<crimson::os::FuturizedStore::Shard>().*MemberFunc)(std::forward<Args>(args)...));
+  
+  constexpr bool is_errorator = is_errorated_future_v<raw_return_type>;
+  constexpr bool is_seastar_future = seastar::is_future<raw_return_type>::value && !is_errorator;
+  constexpr bool is_plain = !is_errorator && !is_seastar_future;
+
+  if (store.get_owner_shard() == seastar::this_shard_id()) {
+    if constexpr (is_plain) {
+      return seastar::make_ready_future<raw_return_type>(
+        ((*store).*MemberFunc)(std::forward<Args>(args)...));
+    } else {
+      return ((*store).*MemberFunc)(std::forward<Args>(args)...);
+    } 
+  } else {
+    if constexpr (is_errorator) {
+      auto ret = seastar::smp::submit_to(
+        store.get_owner_shard(),
+        [f_store=store.get(), args=std::make_tuple(std::forward<Args>(args)...)]() mutable {
+          return std::apply([f_store](auto&&... args) {
+            return ((*f_store).*MemberFunc)(std::forward<decltype(args)>(args)...).to_base();
+          }, std::move(args));
+        });
+      return raw_return_type(std::move(ret));
+    } else {
+      return seastar::smp::submit_to(
+        store.get_owner_shard(),
+        [f_store=store.get(), args=std::make_tuple(std::forward<Args>(args)...)]() mutable {
+          return std::apply([f_store](auto&&... args) {
+            return ((*f_store).*MemberFunc)(std::forward<decltype(args)>(args)...);
+          }, std::move(args));
+        });
+    }
+  }
+}
 }

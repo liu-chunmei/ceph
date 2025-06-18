@@ -476,6 +476,11 @@ seastar::future<> OSD::start()
       [this](auto& local_service) {
         local_service.set_container(shard_services);
       });
+    }).then([this, FNAME] {
+      return shard_services.invoke_on_all(
+      [this](auto& local_service) {
+        return local_service.get_remote_store();
+      });
     });
   }).then([this, FNAME] {
     heartbeat.reset(new Heartbeat{

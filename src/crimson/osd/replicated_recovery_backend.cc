@@ -607,7 +607,8 @@ ReplicatedRecoveryBackend::read_metadata_for_push_op(
 	  return seastar::make_ready_future<bufferlist>();
 	})),
       interruptor::make_interruptible(
-        store->get_attrs(coll, ghobject_t(oid), CEPH_OSD_OP_FLAG_FADVISE_DONTNEED)
+        crimson::os::with_store<&crimson::os::FuturizedStore::Shard::get_attrs>(
+          store, coll, ghobject_t(oid), CEPH_OSD_OP_FLAG_FADVISE_DONTNEED)
       ).handle_error_interruptible<false>(
 	crimson::os::FuturizedStore::Shard::get_attrs_ertr::all_same_way(
 	  [FNAME, this, oid] (const std::error_code& e) {
@@ -671,10 +672,11 @@ ReplicatedRecoveryBackend::read_object_for_push_op(
     // 3. read the truncated extents
     // TODO: check if the returned extents are pruned
     return interruptor::make_interruptible(
-      store->readv(
+      crimson::os::with_store<&crimson::os::FuturizedStore::Shard::readv>(
+        store,
         coll,
         ghobject_t{oid},
-        push_op->data_included,
+        std::ref(push_op->data_included),
         CEPH_OSD_OP_FLAG_FADVISE_DONTNEED));
   }).safe_then_interruptible([push_op, range_end=copy_subset.range_end()](auto &&bl) {
     push_op->data.claim_append(std::move(bl));
@@ -1231,7 +1233,8 @@ ReplicatedRecoveryBackend::prep_push_target(
 
   // clone overlap content in local object if using a new object
   auto st = co_await interruptor::make_interruptible(
-    store->stat(coll, ghobject_t(recovery_info.soid)));
+    crimson::os::with_store<&crimson::os::FuturizedStore::Shard::stat>(
+      store, coll, ghobject_t(recovery_info.soid), 0));
 
   // TODO: pg num bytes counting
   uint64_t local_size = std::min(recovery_info.size, (uint64_t)st.st_size);

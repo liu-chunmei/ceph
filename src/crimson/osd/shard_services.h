@@ -476,6 +476,23 @@ public:
 
   void set_container(seastar::sharded<ShardServices>& ss) { s_container = &ss; }
 
+  seastar::future<> get_remote_store() {
+    if (local_state.stores.empty()) {
+      return s_container->invoke_on(
+        seastar::this_shard_id() % store_shard_nums,
+        [] (auto& remote_service) {
+        assert(remote_service.local_state.stores.size() == 1);
+        auto ret = remote_service.local_state.stores[0].get_foreign();
+        return std::move(ret);
+      }).then([this](auto&& remote_store) {
+        local_state.stores.emplace_back(make_local_shared_foreign(std::move(remote_store)));
+        return seastar::now();
+      });
+    } else {
+      return seastar::now();
+    }
+  }
+
 template<auto MemberFunc, typename... Args>
 auto call_store(unsigned store_index, Args&&... args)
 ->decltype((std::declval<crimson::os::FuturizedStore::Shard>().*MemberFunc)(std::forward<Args>(args)...)) {

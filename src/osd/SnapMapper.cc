@@ -90,8 +90,22 @@ int OSDriver::get_keys(
 {
   CRIMSON_DEBUG("OSDriver::{}", __func__);
   using crimson::os::FuturizedStore;
-  return interruptor::green_get(os->omap_get_values(
-    ch, hoid, keys
+  using omap_func_ptr_type =
+  crimson::os::FuturizedStore::Shard::read_errorator::future<
+    crimson::os::FuturizedStore::Shard::omap_values_t
+  > (crimson::os::FuturizedStore::Shard::*)(
+    crimson::os::CollectionRef,
+    const ghobject_t&,
+    const std::set<std::string>&,
+    uint32_t
+    );
+constexpr omap_func_ptr_type func_ptr =
+  static_cast<omap_func_ptr_type>(
+    &crimson::os::FuturizedStore::Shard::omap_get_values
+  );
+  return interruptor::green_get(crimson::os::with_store<func_ptr>(
+    os,
+    ch, hoid, keys, 0
   ).safe_then([out] (FuturizedStore::Shard::omap_values_t&& vals) {
     // just the difference in comparator (`std::less<>` in omap_values_t`)
     reinterpret_cast<FuturizedStore::Shard::omap_values_t&>(*out) = std::move(vals);
@@ -108,8 +122,22 @@ int OSDriver::get_next(
 {
   CRIMSON_DEBUG("OSDriver::{} key {}", __func__, key);
   using crimson::os::FuturizedStore;
-  return interruptor::green_get(os->omap_get_values(
-    ch, hoid, key
+  using omap_func_ptr_type =
+  crimson::os::FuturizedStore::Shard::read_errorator::future<
+  crimson::os::FuturizedStore::Shard::omap_values_paged_t
+  > (crimson::os::FuturizedStore::Shard::*)(
+    crimson::os::CollectionRef,
+    const ghobject_t&,
+    const std::optional<std::string>&,
+    uint32_t
+    );
+constexpr omap_func_ptr_type func_ptr =
+  static_cast<omap_func_ptr_type>(
+    &crimson::os::FuturizedStore::Shard::omap_get_values
+  );
+  return interruptor::green_get(crimson::os::with_store<func_ptr>(
+    os,
+    ch, hoid, key, 0
   ).safe_then_unpack([&key, next] (bool, FuturizedStore::Shard::omap_values_t&& vals) {
     CRIMSON_DEBUG("OSDriver::get_next key {} got omap values", key);
     if (auto nit = std::begin(vals);
@@ -135,8 +163,22 @@ int OSDriver::get_next_or_current(
   CRIMSON_DEBUG("OSDriver::{} key {}", __func__, key);
   using crimson::os::FuturizedStore;
   // let's try to get current first
-  return interruptor::green_get(os->omap_get_values(
-    ch, hoid, FuturizedStore::Shard::omap_keys_t{key}
+  using omap_func_ptr_type =
+  crimson::os::FuturizedStore::Shard::read_errorator::future<
+    crimson::os::FuturizedStore::Shard::omap_values_t
+  > (crimson::os::FuturizedStore::Shard::*)(
+    crimson::os::CollectionRef,
+    const ghobject_t&,
+    const std::set<std::string>&,
+    uint32_t
+    );
+constexpr omap_func_ptr_type func_ptr =
+  static_cast<omap_func_ptr_type>(
+    &crimson::os::FuturizedStore::Shard::omap_get_values
+  );
+  return interruptor::green_get(crimson::os::with_store<func_ptr>(
+    os,
+    ch, hoid, FuturizedStore::Shard::omap_keys_t{key}, 0
   ).safe_then([&key, next_or_current] (FuturizedStore::Shard::omap_values_t&& vals) {
     CRIMSON_DEBUG("OSDriver::get_next_or_current returning {}", key);
     assert(vals.size() == 1);
