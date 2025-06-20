@@ -27,12 +27,20 @@ seastar::future<std::pair<core_id_t, unsigned int>> PGShardMapping::get_or_creat
             pgid, core_found, core_expected);
       ceph_abort("The pg mapping is inconsistent!");
     }
-    return seastar::make_ready_future<std::pair<core_id_t, unsigned int>>(find_iter->second);
+
+      std::cout<<"-------1---------------PGShardMapping: get_or_create_pg_mapping: "
+               << "shard_id=" << seastar::this_shard_id()
+               << ", pgid=" << pgid
+               << ", core_found=" << find_iter->second.first
+               << ", store_shard_index=" << find_iter->second.second
+               << std::endl; 
+      return seastar::make_ready_future<std::pair<core_id_t, unsigned int>>(find_iter->second);
+ 
   } else {
     DEBUG("calling primary to add mapping for pg {} to the expected core {}",
           pgid, core_expected);
     return container().invoke_on(
-        0, [pgid, core_expected, store_shard_index, FNAME](auto &primary_mapping) {
+        0, [pgid, core_expected, store_shard_index, FNAME, this](auto &primary_mapping) {
       auto core_to_update = core_expected;
       auto shard_index_update = store_shard_index;
       auto find_iter = primary_mapping.pg_to_core.find(pgid);
@@ -40,17 +48,21 @@ seastar::future<std::pair<core_id_t, unsigned int>> PGShardMapping::get_or_creat
         // this pgid was already mapped within primary_mapping, assert that the
         // mapping is consistent and avoid emplacing once again.
         auto core_found = find_iter->second.first;
+        auto store_index_found = find_iter->second.second;
         if (core_expected != NULL_CORE) {
-          if (core_expected != core_found) {
+          assert(store_shard_index != NULL_STORE_INDEX);
+          if (core_expected != core_found || store_shard_index != store_index_found) {
             ERROR("the mapping is inconsistent for pg {} (primary): core {}, expected {}",
                   pgid, core_found, core_expected);
             ceph_abort("The pg mapping is inconsistent!");
           }
           // core_expected == core_found
-          DEBUG("mapping pg {} to core {} (primary): already mapped and expected",
-                pgid, core_to_update);
+          DEBUG("mapping pg {} to core {} (primary): already mapped and expected shard_index {}",
+                pgid, core_to_update, shard_index_update);
         } else { // core_expected == NULL_CORE
+          assert(store_shard_index == NULL_STORE_INDEX);
           core_to_update = core_found;
+          shard_index_update = store_index_found;
           DEBUG("mapping pg {} to core {} (primary): already mapped",
                 pgid, core_to_update);
         }
@@ -63,6 +75,7 @@ seastar::future<std::pair<core_id_t, unsigned int>> PGShardMapping::get_or_creat
         std::map<core_id_t, std::map<unsigned, unsigned>>::iterator core_shard_iter;
         std::map<unsigned, unsigned>::iterator shard_iter;
         if (core_expected == NULL_CORE) {
+          assert(store_shard_index == NULL_STORE_INDEX);
           count_iter = std::min_element(
             primary_mapping.core_to_num_pgs.begin(),
             primary_mapping.core_to_num_pgs.end(),
@@ -70,34 +83,55 @@ seastar::future<std::pair<core_id_t, unsigned int>> PGShardMapping::get_or_creat
               return left.second < right.second;
             }
           );
-          core_to_update = count_iter->first;
+          core_to_update = count_iter->first; //find the core with the least number of pgs
         } else { // core_expected != NULL_CORE
           count_iter = primary_mapping.core_to_num_pgs.find(core_to_update);
         }
         ceph_assert_always(primary_mapping.core_to_num_pgs.end() != count_iter);
         ++(count_iter->second);
 
-        core_shard_iter = primary_mapping.core_shard_to_num_pgs.find(core_to_update);
-        ceph_assert_always(core_shard_iter != primary_mapping.core_shard_to_num_pgs.end());
-        if (shard_index_update == NULL_STORE_INDEX) {
-            // find the store shard index with the least number of pgs
-            // on this core
-          shard_iter = std::min_element(
-            core_shard_iter->second.begin(),
-            core_shard_iter->second.end(),
+        if (seastar::smp::count > store_shard_nums ) { //&& core_expected == NULL_CORE
+          std::cout<<"---------------------------------------------------------core_expected = "<< core_expected <<std::endl;
+          auto alien_iter = primary_mapping.core_alien_to_num_pgs.find(core_to_update);
+          auto core_iter = std::min_element(
+            alien_iter->second.begin(),
+            alien_iter->second.end(),
             [](const auto &left, const auto &right) {
               return left.second < right.second;
             }
-          );
-          shard_index_update = shard_iter->first; //find the store shard index on this core
+          ); 
+          core_iter->second++;
+          core_to_update = core_iter->first;
+        } 
+        if (seastar::smp::count >= store_shard_nums) { //|| seastar::this_shard_id() == core_to_update
+          shard_index_update = 0; // use the first store shard index on this core
         } else {
-          shard_iter = core_shard_iter->second.find(shard_index_update);
+          core_shard_iter = primary_mapping.core_shard_to_num_pgs.find(core_to_update);
+          ceph_assert_always(core_shard_iter != primary_mapping.core_shard_to_num_pgs.end());
+          if (shard_index_update == NULL_STORE_INDEX) {
+            // find the store shard index with the least number of pgs
+            // on this core
+            shard_iter = std::min_element(
+              core_shard_iter->second.begin(),
+              core_shard_iter->second.end(),
+              [](const auto &left, const auto &right) {
+                return left.second < right.second;
+              }
+            );
+            shard_index_update = shard_iter->first; //find the store shard index on this core
+          } else {
+            shard_iter = core_shard_iter->second.find(shard_index_update);
+          }
+          ++(shard_iter->second);
         }
-        ++(shard_iter->second);
-
         [[maybe_unused]] auto [insert_iter, inserted] =
           primary_mapping.pg_to_core.emplace(pgid, std::make_pair(core_to_update, shard_index_update));
         assert(inserted);
+        std::cout<<"-----------primary-----------PGShardMapping: get_or_create_pg_mapping: "
+                  << "pgid=" << pgid
+                  << ", core_to_update=" << core_to_update
+                  << ", store_shard_index=" << shard_index_update
+                  << std::endl;
         DEBUG("mapping pg {} to core {} (primary): num_pgs {}, store_shard_index {}",
               pgid, core_to_update, count_iter->second, shard_index_update);
       }
@@ -111,9 +145,15 @@ seastar::future<std::pair<core_id_t, unsigned int>> PGShardMapping::get_or_creat
           [[maybe_unused]] auto [insert_iter, inserted] =
             other_mapping.pg_to_core.emplace(pgid, std::make_pair(core_to_update, shard_index_update));
           assert(inserted);
+          std::cout<<"-----------others-----------PGShardMapping: get_or_create_pg_mapping: "
+          << "pgid=" << pgid
+          << ", core_to_update=" << core_to_update
+          << ", store_shard_index=" << shard_index_update
+          << std::endl;
         } else {
           auto core_found = find_iter->second.first;
-          if (core_found != core_to_update) {
+          auto store_index_found = find_iter->second.second;
+          if (core_found != core_to_update ||store_index_found!= shard_index_update) {
             ERROR("the mapping is inconsistent for pg {} (others): core {}, expected {}, store_shard_index {}",
                   pgid, core_found, core_to_update, shard_index_update);
             ceph_abort("The pg mapping is inconsistent!");
@@ -122,7 +162,7 @@ seastar::future<std::pair<core_id_t, unsigned int>> PGShardMapping::get_or_creat
                 pgid, core_to_update);
         }
       });
-    }).then([this, pgid, core_expected, FNAME] {
+    }).then([this, pgid, core_expected, store_shard_index, FNAME] {
       auto find_iter = pg_to_core.find(pgid);
       if (find_iter == pg_to_core.end()) {
         ERROR("the mapping is inconsistent for pg {}: core not found, expected {}",
@@ -130,14 +170,26 @@ seastar::future<std::pair<core_id_t, unsigned int>> PGShardMapping::get_or_creat
         ceph_abort("The pg mapping is inconsistent!");
       }
       auto core_found = find_iter->second.first;
-      if (core_expected != NULL_CORE && core_found != core_expected) {
+      auto shard_index_found = find_iter->second.second;
+      if (seastar::smp::count <= store_shard_nums) {
+      if ((core_expected != NULL_CORE && core_found != core_expected) ||
+          (store_shard_index != NULL_STORE_INDEX && shard_index_found != store_shard_index)) {
         ERROR("the mapping is inconsistent for pg {}: core {}, expected {}",
               pgid, core_found, core_expected);
         ceph_abort("The pg mapping is inconsistent!");
       }
+      }
       DEBUG("returning pg {} mapping to core {} after broadcasted",
             pgid, core_found);
-      return seastar::make_ready_future<std::pair<core_id_t, unsigned int>>(find_iter->second);
+
+        std::cout<<"--------2--------------PGShardMapping: get_or_create_pg_mapping: "
+        << "shard_id=" << seastar::this_shard_id()
+        << ", pgid=" << pgid
+        << ", core_found=" << find_iter->second.first
+        << ", store_shard_index=" << find_iter->second.second
+        << std::endl;
+        return seastar::make_ready_future<std::pair<core_id_t, unsigned int>>(find_iter->second);
+ 
     });
   }
 }

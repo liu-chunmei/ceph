@@ -46,10 +46,12 @@ public:
   size_t get_num_pgs() const { return pg_to_core.size(); }
 
   /// Map to cores in [min_core_mapping, core_mapping_limit)
-  PGShardMapping(core_id_t min_core_mapping, core_id_t core_mapping_limit, unsigned int store_shard_nums) {
+  PGShardMapping(core_id_t min_core_mapping, core_id_t core_mapping_limit, unsigned int store_shard_nums)
+    : store_shard_nums(store_shard_nums) {
     ceph_assert_always(min_core_mapping < core_mapping_limit);
     auto max_core_mapping = std::min(min_core_mapping + store_shard_nums, core_mapping_limit);
     auto num_shard_services = (store_shard_nums + seastar::smp::count - 1 ) / seastar::smp::count;
+    auto num_alien_cores = (seastar::smp::count + store_shard_nums -1 ) / store_shard_nums;
     std::cout<< "----------------------PGShardMapping: min_core_mapping=" << min_core_mapping
               << ", max_core_mapping=" << max_core_mapping
               <<", store_shard_nums=" << store_shard_nums
@@ -59,6 +61,13 @@ public:
         core_shard_to_num_pgs[i].emplace(j, 0);
       }
       core_to_num_pgs.emplace(i, 0);
+      for (unsigned int j = 0; j < num_alien_cores; ++j) {
+        if (min_core_mapping + store_shard_nums * j + i < core_mapping_limit) {
+          core_alien_to_num_pgs[i].emplace(min_core_mapping + store_shard_nums * j + i, 0);
+          std::cout << "PGShardMapping: shard_id = " <<seastar::this_shard_id()<<" core_alien_to_num_pgs[" << i << "][" 
+                    << (min_core_mapping + store_shard_nums * j + i) << "] = 0" << std::endl;
+        }
+      }
     }
   }
 
@@ -70,11 +79,19 @@ public:
   }
 
 private:
+ 
+  unsigned int store_shard_nums;
   // only in shard 0
+  //<core_id, num_pgs>
   std::map<core_id_t, unsigned> core_to_num_pgs;
+  //<core_id, <shard_index, num_pgs>>  // when smp < store_shard_nums, each core more than one store shard
   std::map<core_id_t, std::map<unsigned, unsigned>> core_shard_to_num_pgs;
+  //<core_id, <alien_core_id, num_pgs>> // when smp > store_shard_nums, more than one core share store shard
+  std::map<core_id_t, std::map<core_id_t, unsigned>> core_alien_to_num_pgs;
   // per-shard, updated by shard 0
+  //<pg, <core_id, store_shard_index>>
   std::map<spg_t, std::pair<core_id_t, unsigned int>> pg_to_core;
+
 };
 
 /**

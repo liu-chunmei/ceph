@@ -51,7 +51,12 @@ PerShardState::PerShardState(
       static_cast<ceph_tid_t>(seastar::this_shard_id()) <<
       (std::numeric_limits<ceph_tid_t>::digits - 8)),
     startup_time(startup_time)
-{}
+{
+  std::cout <<"-----------------PerShardSate:: shad_id=" << seastar::this_shard_id()
+            << ", whoami=" << whoami
+            << ", startup_time=" << startup_time
+            << std::endl;
+}
 
 seastar::future<> PerShardState::dump_ops_in_flight(Formatter *f) const
 {
