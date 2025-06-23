@@ -74,7 +74,6 @@ seastar::future<> PeeringEvent<T>::with_pg(
     return complete_rctx_no_pg(shard_services);
   }
   DEBUGI("start");
-
   return interruptor::with_interruption([this, pg, &shard_services] {
     LOG_PREFIX(PeeringEvent<T>::with_pg);
     DEBUGI("{} {}: pg present", interruptor::get_interrupt_cond(), *this);

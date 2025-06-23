@@ -235,8 +235,9 @@ ReplicatedRecoveryBackend::on_local_recover_persist(
       soid, _recovery_info, is_delete, t
     ).then_interruptible([FNAME, this, &t] {
       DEBUGDPP("submitting transaction", pg);
-      return shard_services.call_store<&crimson::os::FuturizedStore::Shard::do_transaction>(
-        pg.store_index, coll, std::move(t));
+      return crimson::os::with_store_do_transaction(
+        shard_services.get_store(pg.store_index), 
+        coll, std::move(t));
     }).then_interruptible(
       [this, epoch_frozen, last_complete = pg.get_info().last_complete] {
       pg.get_recovery_handler()->_committed_pushed_object(epoch_frozen, last_complete);
@@ -263,8 +264,9 @@ ReplicatedRecoveryBackend::local_recover_delete(
         }).then_interruptible(
 	  [FNAME, this, &txn]() mutable {
 	  DEBUGDPP("submitting transaction", pg);
-	  return shard_services.call_store<&crimson::os::FuturizedStore::Shard::do_transaction>(
-      pg.store_index, coll,
+	  return crimson::os::with_store_do_transaction(
+      shard_services.get_store(pg.store_index), 
+      coll,
       std::move(txn));
 	});
       });
@@ -921,16 +923,18 @@ ReplicatedRecoveryBackend::_handle_pull_response(
     );
     DEBUGDPP("submitting transaction, complete", pg);
     co_await interruptor::make_interruptible(
-      shard_services.call_store<&crimson::os::FuturizedStore::Shard::do_transaction>(
-        pg.store_index, coll, std::move(t)));
+      crimson::os::with_store_do_transaction(
+        shard_services.get_store(pg.store_index), 
+        coll, std::move(t)));
   } else {
     response->soid = push_op.soid;
     response->recovery_info = pull_info.recovery_info;
     response->recovery_progress = pull_info.recovery_progress;
     DEBUGDPP("submitting transaction, incomplete", pg);
     co_await interruptor::make_interruptible(
-      shard_services.call_store<&crimson::os::FuturizedStore::Shard::do_transaction>(
-        pg.store_index, coll, std::move(t)));
+      crimson::os::with_store_do_transaction(
+        shard_services.get_store(pg.store_index), 
+        coll, std::move(t)));
   }
 
   co_return complete;
@@ -1048,16 +1052,17 @@ ReplicatedRecoveryBackend::handle_push(
       false, t);
 
     co_await interruptor::make_interruptible(
-      shard_services.call_store<&crimson::os::FuturizedStore::Shard::do_transaction>(
-        pg.store_index, coll, std::move(t)));
+      crimson::os::with_store_do_transaction(
+        shard_services.get_store(pg.store_index), 
+        coll, std::move(t)));
     replica_push_targets.erase(ptiter);
 
     pg.get_recovery_handler()->_committed_pushed_object(
       epoch_frozen, pg.get_info().last_complete);
   } else {
     co_await interruptor::make_interruptible(
-      shard_services.call_store<&crimson::os::FuturizedStore::Shard::do_transaction>(
-        pg.store_index, coll, std::move(t)));
+      crimson::os::with_store_do_transaction(
+        shard_services.get_store(pg.store_index), coll, std::move(t)));
   }
 
   auto reply = crimson::make_message<MOSDPGPushReply>();

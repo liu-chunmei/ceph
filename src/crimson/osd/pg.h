@@ -121,6 +121,9 @@ public:
     return pgid;
   }
 
+  const unsigned int get_store_index() {
+    return store_index;
+  }
   PGBackend& get_backend() {
     return *backend;
   }
@@ -339,6 +342,7 @@ public:
     PGPeeringEventRef on_commit) final {
     LOG_PREFIX(PG::schedule_event_on_commit);
     SUBDEBUGDPP(osd, "on_commit {}", *this, on_commit->get_desc());
+
     t.register_on_commit(
       make_lambda_context(
 	[this, on_commit=std::move(on_commit)](int) {

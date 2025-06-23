@@ -175,8 +175,9 @@ ReplicatedBackend::submit_transaction(
     false);
 
   auto all_completed = interruptor::make_interruptible(
-      shard_services.call_store<&crimson::os::FuturizedStore::Shard::do_transaction>(
-        pg.store_index, coll, std::move(txn))
+    crimson::os::with_store_do_transaction(
+      shard_services.get_store(pg.store_index),
+      coll, std::move(txn))
    ).then_interruptible([FNAME, this,
 			peers=pending_txn->second.weak_from_this()] {
     if (!peers) {

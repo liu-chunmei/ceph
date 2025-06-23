@@ -33,7 +33,7 @@ seastar::future<std::pair<core_id_t, unsigned int>> PGShardMapping::get_or_creat
                << ", pgid=" << pgid
                << ", core_found=" << find_iter->second.first
                << ", store_shard_index=" << find_iter->second.second
-               << std::endl; 
+               << std::endl;
       return seastar::make_ready_future<std::pair<core_id_t, unsigned int>>(find_iter->second);
  
   } else {

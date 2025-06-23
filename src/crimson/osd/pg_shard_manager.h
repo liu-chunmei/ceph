@@ -264,7 +264,7 @@ public:
       auto pg = target_shard_services.get_pg(opref.get_pgid());
       auto fut = ShardServices::wait_for_pg_ertr::make_ready_future<Ref<PG>>(pg);
       if (!pg) {
-	if (opref.requires_pg()) {
+ 	if (opref.requires_pg()) {
 	  auto osdmap = target_shard_services.get_map();
 	  if (!osdmap->is_up_acting_osd_shard(
 		opref.get_pgid(), target_shard_services.local_state.whoami)) {
@@ -370,7 +370,6 @@ public:
       std::forward<Args>(args)...);
     auto &logger = crimson::get_logger(ceph_subsys_osd);
     logger.debug("{}: starting {}", *op, __func__);
-
     auto &opref = *op;
     auto id = op->get_id();
     if constexpr (T::is_trackable) {
@@ -457,7 +456,6 @@ public:
 	opref, opref.get_pgid());
       return seastar::now();
     }
-
     return this->template with_remote_shard_state_and_op<T>(
       core, std::move(op),
       [FNAME](ShardServices &target_shard_services,
@@ -472,6 +470,7 @@ public:
 	    opref, opref.get_pgid());
 	  return seastar::now();
 	}
+  SUBDEBUG(osd, "{}: have_pg", opref);
 	return op->with_pg(
 	  target_shard_services, pg
 	).finally([op] {});

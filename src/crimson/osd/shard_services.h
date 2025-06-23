@@ -138,7 +138,7 @@ class PerShardState {
 
   template <typename T, typename... Args>
   auto start_operation(Args&&... args) {
-    assert_core();
+    //assert_core();
     if (__builtin_expect(stopping, false)) {
       throw crimson::common::system_shutdown_exception();
     }
@@ -497,24 +497,43 @@ template<auto MemberFunc, typename... Args>
 auto call_store(unsigned store_index, Args&&... args)
 ->decltype((std::declval<crimson::os::FuturizedStore::Shard>().*MemberFunc)(std::forward<Args>(args)...)) {
   assert(store_index < (store_shard_nums + seastar::smp::count - 1 ) / seastar::smp::count);
-  if (seastar::this_shard_id() < store_shard_nums) {  //local store
-    auto store = get_store(store_index);
-    return ((*store).*MemberFunc)(std::forward<Args>(args)...);
+  auto store = get_store(store_index);  
+  using raw_return_type = decltype((std::declval<crimson::os::FuturizedStore::Shard>().*MemberFunc)(std::forward<Args>(args)...));
+  constexpr bool is_errorator = is_errorated_future_v<raw_return_type>;
+  constexpr bool is_seastar_future = seastar::is_future<raw_return_type>::value && !is_errorator;
+  constexpr bool is_plain = !is_errorator && !is_seastar_future;
+  const auto original_core = seastar::this_shard_id();
+  static unsigned int index = 0;
+  index++;
+
+  if (store.get_owner_shard() == seastar::this_shard_id()) {  //local store
+    if constexpr (is_plain) {
+      return seastar::make_ready_future<raw_return_type>(
+        ((*store).*MemberFunc)(std::forward<Args>(args)...));
+    } else {
+      return ((*store).*MemberFunc)(std::forward<Args>(args)...);
+    }
   } else {  //remote store
-    auto target_core = seastar::this_shard_id() % store_shard_nums;
-    using return_type = decltype((std::declval<crimson::os::FuturizedStore::Shard>().*MemberFunc)(std::forward<Args>(args)...));
-    if constexpr (is_errorated_future_v<return_type>) {
-      auto ret = s_container->invoke_on(
+    auto target_core = store.get_owner_shard();
+
+    if constexpr (is_errorator) { 
+      auto fut = s_container->invoke_on(
         target_core,
         [store_index, args=std::make_tuple(std::forward<Args>(args)...)] (auto& remote_service) mutable {
         auto store = remote_service.get_store(store_index);
         return std::apply([store](auto&&... args) {
           return ((*store).*MemberFunc)(std::forward<decltype(args)>(args)...).to_base();
         }, std::move(args));
+      }).then([original_core] (auto&& result) {
+        return seastar::smp::submit_to(original_core,
+          [result = std::forward<decltype(result)>(result), original_core]() mutable {
+            return std::forward<decltype(result)>(result);
+        });
       });
-      return return_type(std::move(ret));
+      return raw_return_type(std::move(fut));
+ 
     } else {
-      return s_container->invoke_on(
+      auto fut = s_container->invoke_on(
         target_core,
         [store_index, args=std::make_tuple(std::forward<Args>(args)...)] (auto& remote_service) mutable {
         auto store = remote_service.get_store(store_index);
@@ -522,6 +541,20 @@ auto call_store(unsigned store_index, Args&&... args)
           return ((*store).*MemberFunc)(std::forward<decltype(args)>(args)...);
         }, std::move(args));
       });
+      if constexpr (std::is_same_v<raw_return_type, seastar::future<>>) {
+        return fut.then([original_core] {
+          return seastar::smp::submit_to(original_core, [original_core] {
+            return seastar::make_ready_future<>();
+          });
+        });
+      } else {
+        return fut.then([original_core](auto&& result) {
+          return seastar::smp::submit_to(original_core,
+            [result = std::forward<decltype(result)>(result), original_core]() mutable {
+            return std::forward<decltype(result)>(result);
+          });
+        });
+      }
     }
   }
 }

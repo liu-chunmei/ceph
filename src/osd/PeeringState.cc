@@ -2844,7 +2844,6 @@ void PeeringState::activate(
   // write pg info, log
   dirty_info = true;
   dirty_big_info = true; // maybe
-
   pl->schedule_event_on_commit(
     t,
     std::make_shared<PGPeeringEvent>(

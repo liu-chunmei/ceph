@@ -52,10 +52,6 @@ PerShardState::PerShardState(
       (std::numeric_limits<ceph_tid_t>::digits - 8)),
     startup_time(startup_time)
 {
-  std::cout <<"-----------------PerShardSate:: shad_id=" << seastar::this_shard_id()
-            << ", whoami=" << whoami
-            << ", startup_time=" << startup_time
-            << std::endl;
 }
 
 seastar::future<> PerShardState::dump_ops_in_flight(Formatter *f) const
@@ -778,7 +774,9 @@ seastar::future<> ShardServices::dispatch_context_transaction(
   LOG_PREFIX(OSDSingletonState::dispatch_context_transaction);
   if (ctx.transaction.empty()) {
     DEBUG("empty transaction");
-    co_await call_store<&crimson::os::FuturizedStore::Shard::flush>(store_index, col);
+    co_await crimson::os::with_store_do_transaction(
+      get_store(store_index),
+      col, ceph::os::Transaction{});
     Context* on_commit(
       ceph::os::Transaction::collect_all_contexts(ctx.transaction));
     if (on_commit) {
@@ -788,8 +786,8 @@ seastar::future<> ShardServices::dispatch_context_transaction(
   }
 
   DEBUG("do_transaction ...");
-  co_await call_store<&crimson::os::FuturizedStore::Shard::do_transaction>(
-    store_index,
+  co_await crimson::os::with_store_do_transaction(
+    get_store(store_index),
     col,
     ctx.transaction.claim_and_reset());
   co_return;
