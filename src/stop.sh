@@ -70,6 +70,7 @@ maybe_kill() {
             # kill and print if some left
             if pkill -0 -u $MYUID $p; then
                 echo "WARNING: $p did not orderly shutdown, killing it hard!" >&2
+                sleep 35
                 pkill -SIGKILL -u $MYUID $p
             fi
             ;;

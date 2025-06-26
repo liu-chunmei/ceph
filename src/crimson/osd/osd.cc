@@ -521,7 +521,6 @@ seastar::future<> OSD::start()
       });
       stats_timer.arm_periodic(std::chrono::seconds(stats_seconds));
     }
-
     return open_meta_coll();
   }).then([this] {
     return pg_shard_manager.get_meta_coll().load_superblock(

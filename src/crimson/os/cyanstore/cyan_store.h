@@ -131,7 +131,12 @@ public:
     using coll_core_t = FuturizedStore::coll_core_t;
     seastar::future<std::vector<coll_core_t>> list_collections();
 
-    uint64_t get_used_bytes() const { return used_bytes; }
+    uint64_t get_used_bytes() const { 
+      if (!shard_status) {
+        return 0;
+      }
+      return used_bytes; 
+    }
 
     unsigned int get_shard_index() const {
       return shard_index;
@@ -212,7 +217,9 @@ public:
 		  const std::string& value) final;
       
   FuturizedStore::StoreShardRef get_sharded_store(unsigned int shard_index = 0) final {
+    assert(!shard_stores.local().mshard_stores.empty());
     assert(shard_index < shard_stores.local().mshard_stores.size());
+    assert(shard_stores.local().mshard_stores[shard_index]->get_status() == true);
     return make_local_shared_foreign(
       seastar::make_foreign(seastar::static_pointer_cast<FuturizedStore::Shard>(
         shard_stores.local().mshard_stores[shard_index])));
