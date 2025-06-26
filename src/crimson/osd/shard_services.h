@@ -492,7 +492,7 @@ public:
       return seastar::now();
     }
   }
-
+/*
 template<auto MemberFunc, typename... Args>
 auto call_store(unsigned store_index, Args&&... args)
 ->decltype((std::declval<crimson::os::FuturizedStore::Shard>().*MemberFunc)(std::forward<Args>(args)...)) {
@@ -557,7 +557,7 @@ auto call_store(unsigned store_index, Args&&... args)
       }
     }
   }
-}
+}*/
 
   crimson::os::FuturizedStore::StoreShardRef get_store(unsigned int shard_index) {
     assert(shard_index < local_state.stores.size());

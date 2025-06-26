@@ -738,8 +738,8 @@ constexpr omap_func_ptr_type func_ptr =
     &crimson::os::FuturizedStore::Shard::omap_get_values
   );
   return seastar::repeat([&new_progress, &max_len, push_op, &oid, this] {
-    return shard_services.call_store<func_ptr>(
-      pg.store_index,
+    return crimson::os::with_store<func_ptr>(
+      shard_services.get_store(pg.store_index),
       coll, ghobject_t{oid}, nullopt_if_empty(new_progress.omap_recovered_to), 0
     ).safe_then([&new_progress, &max_len, push_op](const auto& ret) {
       const auto& [done, kvs] = ret;

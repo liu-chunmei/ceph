@@ -586,11 +586,11 @@ seastar::future<Ref<PG>> ShardServices::make_pg(
   auto get_collection = [pgid, do_create, store_index, this] {
     const coll_t cid{pgid};
     if (do_create) {
-      return call_store<&crimson::os::FuturizedStore::Shard::create_new_collection>(
-        store_index, cid);
+      return crimson::os::with_store<&crimson::os::FuturizedStore::Shard::create_new_collection>(
+        get_store(store_index), cid);
     } else {
-      return call_store<&crimson::os::FuturizedStore::Shard::open_collection>(
-        store_index, cid);
+      return crimson::os::with_store<&crimson::os::FuturizedStore::Shard::open_collection>(
+        get_store(store_index), cid);
     }
   };
   return seastar::when_all(
