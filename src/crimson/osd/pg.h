@@ -101,6 +101,7 @@ public:
 
   PG(spg_t pgid,
      pg_shard_t pg_shard,
+     unsigned int store_index,
      crimson::os::CollectionRef coll_ref,
      pg_pool_t&& pool,
      std::string&& name,
@@ -110,6 +111,8 @@ public:
 
   ~PG();
 
+  unsigned int store_index;
+
   const pg_shard_t& get_pg_whoami() const final {
     return pg_whoami;
   }
@@ -118,6 +121,9 @@ public:
     return pgid;
   }
 
+  const unsigned int get_store_index() {
+    return store_index;
+  }
   PGBackend& get_backend() {
     return *backend;
   }
@@ -198,6 +204,7 @@ public:
     std::swap(o, orderer);
     return seastar::when_all(
       shard_services.dispatch_context(
+        store_index,
 	get_collection_ref(),
 	std::move(rctx)),
       shard_services.run_orderer(std::move(o))
@@ -335,6 +342,7 @@ public:
     PGPeeringEventRef on_commit) final {
     LOG_PREFIX(PG::schedule_event_on_commit);
     SUBDEBUGDPP(osd, "on_commit {}", *this, on_commit->get_desc());
+
     t.register_on_commit(
       make_lambda_context(
 	[this, on_commit=std::move(on_commit)](int) {
@@ -590,7 +598,7 @@ public:
     const PastIntervals& pim,
     ceph::os::Transaction &t);
 
-  seastar::future<> read_state(crimson::os::FuturizedStore::Shard* store);
+  seastar::future<> read_state(crimson::os::FuturizedStore::StoreShardRef store);
 
   void do_peering_event(PGPeeringEvent& evt, PeeringCtx &rctx);
 
@@ -621,7 +629,8 @@ public:
       seed,
       target);
     init_pg_ondisk(t, child, pool);
-    return shard_services.get_store().do_transaction(
+    return crimson::os::with_store_do_transaction(
+      shard_services.get_store(store_index),
       coll_ref, std::move(t));
   }
 
