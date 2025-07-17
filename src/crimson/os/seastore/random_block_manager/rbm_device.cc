@@ -187,6 +187,22 @@ RBMDevice::mount_ret RBMDevice::do_shard_mount()
   );
 }
 
+read_ertr::future<unsigned int> RBMDevice::get_shard_nums()
+{
+  return open(get_device_path(),
+    seastar::open_flags::rw | seastar::open_flags::dsync
+  ).safe_then([this] {
+    return read_rbm_superblock(RBM_START_ADDRESS
+    ).safe_then([this](auto sb) {
+      return read_ertr::make_ready_future<unsigned int>(sb.shard_num);
+    });
+  }).handle_error(
+    crimson::ct_error::assert_all{
+      "Invalid error in RBMDevice::get_shard_nums"
+    }
+  );
+}
+
 EphemeralRBMDeviceRef create_test_ephemeral(uint64_t journal_size, uint64_t data_size) {
   return EphemeralRBMDeviceRef(
     new EphemeralRBMDevice(journal_size + data_size + 

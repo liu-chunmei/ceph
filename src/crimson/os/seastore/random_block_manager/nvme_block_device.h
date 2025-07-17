@@ -308,7 +308,7 @@ public:
     return device_path;
   }
 
-  seastar::future<> start() final {
+  seastar::future<> start(unsigned int shard_nums) final {
     return shard_devices.start(device_path);
   }
 
@@ -316,7 +316,7 @@ public:
     return shard_devices.stop();
   }
 
-  Device& get_sharded_device() final {
+  Device& get_sharded_device(unsigned int shard_index) final {
     return shard_devices.local();
   }
 

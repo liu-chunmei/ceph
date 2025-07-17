@@ -120,7 +120,7 @@ namespace crimson::os::seastore::segment_manager::zbd {
   class ZBDSegmentManager final : public SegmentManager{
   // interfaces used by Device
   public:
-    seastar::future<> start() {
+    seastar::future<> start(int shard_nums) final {
       return shard_devices.start(device_path);
     }
 
@@ -128,7 +128,7 @@ namespace crimson::os::seastore::segment_manager::zbd {
       return shard_devices.stop();
     }
 
-    Device& get_sharded_device() final {
+    Device& get_sharded_device(int shard_index) final {
       return shard_devices.local();
     }
 
@@ -150,6 +150,8 @@ namespace crimson::os::seastore::segment_manager::zbd {
       paddr_t addr, 
       size_t len, 
       ceph::bufferptr &out) final;
+
+    read_ertr::future<unsigned int> get_shard_nums() final;
 
     device_type_t get_device_type() const final {
       return device_type_t::ZBD;

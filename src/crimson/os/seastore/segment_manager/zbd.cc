@@ -399,6 +399,22 @@ read_metadata(seastar::file &device, seastar::stat_data sd)
     });
 }
 
+ZBDSegmentManager::read_ertr::future<unsigned int> ZBDSegmentManager::get_shard_nums()
+{
+  return open_device(
+    device_path, seastar::open_flags::rw
+  ).safe_then([this](auto p) {
+    device = std::move(p.first);
+    auto sd = p.second;
+    return read_metadata(device, sd);
+  }).safe_then([this](auto meta){
+    return read_ertr::make_ready_future<int>(meta.shard_num);
+  }).handle_error(
+    crimson::ct_error::assert_all{
+      "Invalid error in ZBDSegmentManager::get_shard_nums"
+  });
+}
+
 ZBDSegmentManager::mount_ret ZBDSegmentManager::mount()
 {
   return shard_devices.invoke_on_all([](auto &local_device) {
