@@ -18,7 +18,7 @@ options:
 - name: crimson_cpu_num
   type: uint
   level: advanced
-  default: 0
+  default: 3
   desc: The number of CPUs to use for serving seastar reactors per OSD without CPU pinning.
   long_desc: The number of CPUs to use for serving seastar reactors per OSD without CPU pinning.
              overridden if crimson_cpu_set is set.
@@ -272,5 +272,7 @@ options:
 - name: seastore_require_partition_count_match_reactor_count
   type: bool
   level: advanced
-  desc: enable osd shards changes upon restart.
+  desc: disable osd shards changes upon restart.
   default: true
+  flags:
+  - startup
