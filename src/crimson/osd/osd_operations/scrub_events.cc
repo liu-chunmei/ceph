@@ -86,6 +86,20 @@ typename ScrubAsyncOpT<T>::template ifut<> ScrubAsyncOpT<T>::start()
   return run(*pg);
 }
 
+/*StartScrub::ifut<> StartScrub::run(PG &pg)
+{
+  LOG_PREFIX(StartScrub::run);
+  epoch_t epoch_queued = pg.get_osdmap_epoch();
+  DEBUGDPP("queued at epoch: {}", pg, epoch_queued);
+  if (epoch_queued >= pg.get_same_interval_since()) {
+    bool deep = pg.state_test(PG_STATE_DEEP_SCRUB);
+    DEBUGDPP("can scrub now, deep: {}", pg, deep);
+    pg.scrubber.machine.process_event(scrub::events::start_scrub_t{deep});
+  }
+  return seastar::make_ready_future<>();
+}
+template class ScrubAsyncOpT<StartScrub>; */
+
 ScrubFindRange::ifut<> ScrubFindRange::run(PG &pg)
 {
   LOG_PREFIX(ScrubFindRange::run);

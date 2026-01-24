@@ -8,6 +8,7 @@
 #include "crimson/osd/scrub/pg_scrubber.h"
 #include "osd/osd_types.h"
 #include "peering_event.h"
+#include "crimson/osd/scrub/scrubber_common.h"
 
 namespace crimson::osd {
 
@@ -148,6 +149,32 @@ public:
 protected:
   virtual ifut<> run(PG &pg) = 0;
 };
+
+/*class StartScrub : public ScrubAsyncOpT<StartScrub> {
+  scrub::scrub_prio_t prio = scrub::scrub_prio_t::low_priority; //priority seems not used 
+public:
+  static constexpr OperationTypeCode type = OperationTypeCode::start_scrub;
+  template <typename... Args>
+  StartScrub(scrub::scrub_prio_t priority, Args&&... args)
+    : ScrubAsyncOpT(std::forward<Args>(args)...),
+      prio(priority) {}
+  void print(std::ostream &out) const final {
+    if (prio == scrub::scrub_prio_t::high_priority) {
+      out << "(prio=high)";
+    } else {
+      out << "(prio=low)";
+    }
+  }
+  void dump_detail(ceph::Formatter *f) const final {
+    if (prio == scrub::scrub_prio_t::high_priority) {
+      f->dump_stream("prio") << "high";
+    } else {
+      f->dump_stream("prio") << "low";
+    }
+  }
+protected:
+  ifut<> run(PG &pg) final;
+}; */
 
 class ScrubFindRange : public ScrubAsyncOpT<ScrubFindRange> {
   hobject_t begin;
@@ -299,6 +326,9 @@ template <> struct fmt::formatter<crimson::osd::ScrubMessage>
 template <typename T>
 struct fmt::formatter<crimson::osd::ScrubAsyncOpT<T>>
   : fmt::ostream_formatter {};
+
+/*template <> struct fmt::formatter<crimson::osd::StartScrub>
+  : fmt::ostream_formatter {};*/
 
 template <> struct fmt::formatter<crimson::osd::ScrubFindRange>
   : fmt::ostream_formatter {};
