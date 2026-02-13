@@ -15,7 +15,7 @@ SET_SUBSYS(seastore_journal);
 namespace crimson::os::seastore::journal {
 
 CircularBoundedJournal::CircularBoundedJournal(
-    unsigned int store_index,
+    uint32_t store_index,
     JournalTrimmer &trimmer,
     RBMDevice* device,
     const std::string &path)

@@ -80,11 +80,11 @@ public:
 protected:
   rbm_superblock_t super;
   rbm_shard_info_t shard_info;
-  unsigned int device_shard_nums = 0;
-  unsigned int store_index = 0;
+  uint32_t device_shard_nums = 0;
+  uint32_t store_index = 0;
   bool shard_status = true;
 public:
-  RBMDevice(unsigned int store_index = 0)
+  RBMDevice(uint32_t store_index = 0)
   : store_index(store_index) {}
   virtual ~RBMDevice() = default;
 

@@ -444,7 +444,7 @@ BlockSegmentManager::~BlockSegmentManager()
 {
 }
 
-seastar::future<> BlockSegmentManager::start(unsigned int shard_nums)
+seastar::future<> BlockSegmentManager::start(uint32_t shard_nums)
 {
   LOG_PREFIX(BlockSegmentManager::start);
   device_shard_nums = shard_nums;
@@ -459,13 +459,13 @@ seastar::future<> BlockSegmentManager::stop()
   return shard_devices.stop();
 }
 
-Device& BlockSegmentManager::get_sharded_device(unsigned int store_index)
+Device& BlockSegmentManager::get_sharded_device(uint32_t store_index)
 {
   assert(store_index < shard_devices.local().mshard_devices.size());
   return *shard_devices.local().mshard_devices[store_index];
 }
 
-SegmentManager::read_ertr::future<unsigned int> BlockSegmentManager::get_shard_nums()
+SegmentManager::read_ertr::future<uint32_t> BlockSegmentManager::get_shard_nums()
 {
   return open_device(
     device_path
@@ -739,7 +739,7 @@ SegmentManager::read_ertr::future<> BlockSegmentManager::read(
     out);
 }
 
-void BlockSegmentManager::register_metrics(unsigned int store_index)
+void BlockSegmentManager::register_metrics(uint32_t store_index)
 {
   LOG_PREFIX(BlockSegmentManager::register_metrics);
   if (!store_active) {

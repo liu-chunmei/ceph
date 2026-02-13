@@ -60,7 +60,7 @@ seastar::future<> PGShardMapping::dump_store_shards(Formatter *f) const {
 seastar::future<std::pair<core_id_t, unsigned int>> PGShardMapping::get_or_create_pg_mapping(
   spg_t pgid,
   core_id_t core_expected,
-  unsigned int store_shard_index)
+  uint32_t store_shard_index)
 {
   LOG_PREFIX(PGShardMapping::get_or_create_pg_mapping);
   auto find_iter = pg_to_core.find(pgid);

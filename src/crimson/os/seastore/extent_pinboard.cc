@@ -296,7 +296,7 @@ public:
     return lru.get_current_num_extents();
   }
 
-  void register_metrics(unsigned int store_index) final {
+  void register_metrics(uint32_t store_index) final {
     namespace sm = seastar::metrics;
     metrics.add_group(
       "cache",
@@ -509,7 +509,7 @@ public:
     return warm_in.get_current_num_extents() + hot.get_current_num_extents();
   }
 
-  void register_metrics(unsigned int store_index) final;
+  void register_metrics(uint32_t store_index) final;
 
   void get_stats(
     cache_stats_t &stats,
@@ -806,7 +806,7 @@ void ExtentPinboardTwoQ::get_stats(
   last_hits = overall_hits;
 }
 
-void ExtentPinboardTwoQ::register_metrics(unsigned int store_index) {
+void ExtentPinboardTwoQ::register_metrics(uint32_t store_index) {
   namespace sm = seastar::metrics;
   metrics.add_group(
     "cache",

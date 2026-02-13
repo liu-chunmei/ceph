@@ -112,11 +112,11 @@ public:
 class BlockSegmentManager final : public SegmentManager {
 // interfaces used by Device
 public:
-  seastar::future<> start(unsigned int shard_nums) final;
+  seastar::future<> start(uint32_t shard_nums) final;
 
   seastar::future<> stop() final;
 
-  Device& get_sharded_device(unsigned int store_index = 0) final;
+  Device& get_sharded_device(uint32_t store_index = 0) final;
 
   mount_ret mount() final;
 
@@ -128,7 +128,7 @@ public:
   BlockSegmentManager(
     const std::string &path,
     device_type_t dtype,
-    unsigned int store_index = 0)
+    uint32_t store_index = 0)
   : device_path(path),
     store_index(store_index) {
     ceph_assert(get_device_type() == device_type_t::NONE);
@@ -212,7 +212,7 @@ private:
     }
   } stats;
 
-  void register_metrics(unsigned int store_index);
+  void register_metrics(uint32_t store_index);
   seastar::metrics::metric_group metrics;
 
   std::string device_path;
@@ -255,8 +255,8 @@ private:
   // all shards mount
   mount_ret shard_mount();
 
-  unsigned int device_shard_nums = 0;
-  unsigned int store_index = 0;
+  uint32_t device_shard_nums = 0;
+  uint32_t store_index = 0;
   bool store_active = true;
   class MultiShardDevices {
     public:

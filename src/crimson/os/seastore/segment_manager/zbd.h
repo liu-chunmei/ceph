@@ -35,7 +35,7 @@ namespace crimson::os::seastore::segment_manager::zbd {
   };
 
   struct zbd_sm_metadata_t {
-    unsigned int shard_num = 0;
+    uint32_t shard_num = 0;
     size_t segment_size = 0;
     size_t segment_capacity = 0;
     size_t zones_per_segment = 0;
@@ -124,12 +124,12 @@ namespace crimson::os::seastore::segment_manager::zbd {
 
     seastar::future<> stop() final;
 
-    Device& get_sharded_device(unsigned int store_index = 0) final;
+    Device& get_sharded_device(uint32_t store_index = 0) final;
 
     mount_ret mount() final;
     mkfs_ret mkfs(device_config_t meta) final;
 
-    ZBDSegmentManager(const std::string &path, unsigned int store_index = 0)
+    ZBDSegmentManager(const std::string &path, uint32_t store_index = 0)
     : device_path(path),
       store_index(store_index) {}
 
@@ -211,7 +211,7 @@ namespace crimson::os::seastore::segment_manager::zbd {
       }
     } stats;
 
-    void register_metrics(unsigned int store_index);
+    void register_metrics(uint32_t store_index);
     seastar::metrics::metric_group metrics;
 
     Segment::close_ertr::future<> segment_close(
@@ -231,8 +231,8 @@ namespace crimson::os::seastore::segment_manager::zbd {
 
     mount_ret shard_mount();
 
-    unsigned int device_shard_nums = 0;
-    unsigned int store_index = 0;
+    uint32_t device_shard_nums = 0;
+    uint32_t store_index = 0;
     bool shard_status = true;
     class MultiShardDevices {
     public:

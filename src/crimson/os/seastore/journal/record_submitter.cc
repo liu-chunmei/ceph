@@ -389,7 +389,7 @@ RecordSubmitter::submit(
 }
 
 RecordSubmitter::open_ret
-RecordSubmitter::open(unsigned int store_index, bool is_mkfs)
+RecordSubmitter::open(uint32_t store_index, bool is_mkfs)
 {
   return journal_allocator.open(is_mkfs
   ).safe_then([this, store_index](journal_seq_t ret) {

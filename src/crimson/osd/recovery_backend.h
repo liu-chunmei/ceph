@@ -36,7 +36,7 @@ public:
   RecoveryBackend(crimson::osd::PG& pg,
 		  crimson::osd::ShardServices& shard_services,
 		  crimson::os::CollectionRef coll,
-      unsigned int store_index,
+      uint32_t store_index,
 		  PGBackend* backend)
     : pg{pg},
       shard_services{shard_services},
@@ -128,7 +128,7 @@ public:
 protected:
   crimson::osd::PG& pg;
   crimson::osd::ShardServices& shard_services;
-  crimson::os::FuturizedStore::StoreShardRef store;
+  crimson::os::BackendStore store;
   crimson::os::CollectionRef coll;
   PGBackend* backend;
 

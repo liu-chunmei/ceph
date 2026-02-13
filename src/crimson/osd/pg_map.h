@@ -35,10 +35,10 @@ public:
   }
 
   /// Returns mapping for pgid, creates new one if it doesn't already exist
-  seastar::future<std::pair<core_id_t, unsigned int>> get_or_create_pg_mapping(
+  seastar::future<std::pair<core_id_t, uint32_t>> get_or_create_pg_mapping(
     spg_t pgid,
     core_id_t core_expected = NULL_CORE,
-    unsigned int store_shard_index = NULL_STORE_INDEX);
+    uint32_t store_shard_index = NULL_STORE_INDEX);
 
   /// Remove pgid mapping
   seastar::future<> remove_pg_mapping(spg_t pgid);
@@ -48,7 +48,7 @@ public:
   seastar::future<> dump_store_shards(Formatter *f) const;
 
   /// Map to cores in [min_core_mapping, core_mapping_limit)
-  PGShardMapping(core_id_t min_core_mapping, core_id_t core_mapping_limit, unsigned int store_shard_nums)
+  PGShardMapping(core_id_t min_core_mapping, core_id_t core_mapping_limit, uint32_t store_shard_nums)
     : store_shard_nums(store_shard_nums) {
     ceph_assert_always(min_core_mapping < core_mapping_limit);
     auto max_core_mapping = std::min(min_core_mapping + store_shard_nums, core_mapping_limit);
@@ -79,7 +79,7 @@ public:
 
 private:
 
-  unsigned int store_shard_nums;
+  uint32_t store_shard_nums;
   // only in shard 0
   //<core_id, num_pgs>
   std::map<core_id_t, unsigned> core_to_num_pgs;

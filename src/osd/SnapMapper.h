@@ -37,19 +37,15 @@
 
 class OSDriver : public MapCacher::StoreDriver<std::string, ceph::buffer::list> {
 #ifdef WITH_CRIMSON
-  using ObjectStoreT = crimson::os::FuturizedStore::Shard;
-  using CollectionHandleT = ObjectStoreT::CollectionRef;
-
-  using ObjectStoreTLRef = seastar::shared_ptr<ObjectStoreT>;
-  using ObjectStoreTFRef = seastar::foreign_ptr<ObjectStoreTLRef>;
-  using ObjectStoreTRef = ::crimson::local_shared_foreign_ptr<ObjectStoreTLRef>;
+  using ObjectStoreT = crimson::os::BackendStore;
+  using CollectionHandleT = crimson::os::FuturizedStore::Shard::CollectionRef;
+  ObjectStoreT os;
 #else
   using ObjectStoreT = ObjectStore;
   using CollectionHandleT = ObjectStoreT::CollectionHandle;
-  using ObjectStoreTRef = ObjectStoreT*;
+  ObjectStoreT *os;
 #endif
 
-  ObjectStoreTRef os;
   CollectionHandleT ch;
   ghobject_t hoid;
 
@@ -85,13 +81,21 @@ public:
   }
 
 #ifndef WITH_CRIMSON
-  OSDriver(ObjectStoreTRef os, const coll_t& cid, const ghobject_t &hoid) :
+  OSDriver(ObjectStoreT *os, const coll_t& cid, const ghobject_t &hoid) :
     OSDriver(os, os->open_collection(cid), hoid) {}
 #endif
-  OSDriver(ObjectStoreTRef os, CollectionHandleT ch, const ghobject_t &hoid) :
+
+#ifdef WITH_CRIMSON
+  OSDriver(ObjectStoreT os, CollectionHandleT ch, const ghobject_t &hoid) :
     os(os),
     ch(ch),
     hoid(hoid) {}
+#else
+  OSDriver(ObjectStoreT *os, CollectionHandleT ch, const ghobject_t &hoid) :
+    os(os),
+    ch(ch),
+    hoid(hoid) {}
+#endif
 
   int get_keys(
     const std::set<std::string> &keys,

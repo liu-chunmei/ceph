@@ -12,7 +12,7 @@ SET_SUBSYS(seastore_epm);
 namespace crimson::os::seastore {
 
 SegmentedOolWriter::SegmentedOolWriter(
-  unsigned int store_index,
+  uint32_t store_index,
   data_category_t category,
   rewrite_gen_t gen,
   SegmentProvider& sp,
@@ -599,7 +599,7 @@ void ExtentPlacementManager::BackgroundProcess::log_state(const char *caller) co
   }
 }
 
-ExtentPlacementManager::mount_ret ExtentPlacementManager::BackgroundProcess::mount(unsigned int store_index) {
+ExtentPlacementManager::mount_ret ExtentPlacementManager::BackgroundProcess::mount(uint32_t store_index) {
   LOG_PREFIX(BackgroundProcess::mount);
   DEBUG("start");
   ceph_assert(state == state_t::STOP);
@@ -1008,7 +1008,7 @@ ExtentPlacementManager::BackgroundProcess::do_background_cycle()
   }
 }
 
-void ExtentPlacementManager::BackgroundProcess::register_metrics(unsigned int store_index)
+void ExtentPlacementManager::BackgroundProcess::register_metrics(uint32_t store_index)
 {
   namespace sm = seastar::metrics;
   metrics.add_group("background_process", {

@@ -14,7 +14,7 @@ using std::string_view;
 // easily skip them
 using crimson::os::FuturizedStore;
 
-PGMeta::PGMeta(FuturizedStore::StoreShardRef store, spg_t pgid)
+PGMeta::PGMeta(crimson::os::BackendStore store, spg_t pgid)
   : store{store},
     pgid{pgid}
 {}

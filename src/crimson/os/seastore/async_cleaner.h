@@ -537,7 +537,7 @@ public:
   };
 
   JournalTrimmerImpl(
-    unsigned int store_index,
+    uint32_t store_index,
     BackrefManager &backref_manager,
     config_t config,
     backend_type_t type,
@@ -626,7 +626,7 @@ public:
   seastar::future<> trim();
 
   static JournalTrimmerImplRef create(
-      unsigned int store_index,
+      uint32_t store_index,
       BackrefManager &backref_manager,
       config_t config,
       backend_type_t type,
@@ -696,7 +696,7 @@ private:
     return std::min(get_max_dirty_bytes_to_trim(),
 		    config.rewrite_dirty_bytes_per_cycle);
   }
-  void register_metrics(unsigned int store_index);
+  void register_metrics(uint32_t store_index);
 
   ExtentCallbackInterface *extent_callback = nullptr;
   BackgroundListener *background_callback = nullptr;
@@ -1307,7 +1307,7 @@ public:
   };
 
   SegmentCleaner(
-    unsigned int store_index,
+    uint32_t store_index,
     config_t config,
     SegmentManagerGroupRef&& sm_group,
     BackrefManager &backref_manager,
@@ -1321,7 +1321,7 @@ public:
   }
 
   static SegmentCleanerRef create(
-      unsigned int store_index,
+      uint32_t store_index,
       config_t config,
       SegmentManagerGroupRef&& sm_group,
       BackrefManager &backref_manager,
@@ -1648,7 +1648,7 @@ private:
     }
   }
 
-  unsigned int store_index;
+  uint32_t store_index;
   const bool detailed;
   const bool is_cold;
   const config_t config;
@@ -1716,14 +1716,14 @@ using RBMCleanerRef = std::unique_ptr<RBMCleaner>;
 class RBMCleaner : public AsyncCleaner {
 public:
   RBMCleaner(
-    unsigned int store_index,
+    uint32_t store_index,
     RBMDeviceGroupRef&& rb_group,
     BackrefManager &backref_manager,
     LBAManager &lba_manager,
     bool detailed);
 
   static RBMCleanerRef create(
-      unsigned int store_index,
+      uint32_t store_index,
       RBMDeviceGroupRef&& rb_group,
       BackrefManager &backref_manager,
       LBAManager &lba_manager,
@@ -1870,7 +1870,7 @@ public:
 private:
   bool equals(const RBMSpaceTracker &other) const;
 
-  unsigned int store_index;
+  uint32_t store_index;
   const bool detailed;
   RBMDeviceGroupRef rb_group;
   BackrefManager &backref_manager;

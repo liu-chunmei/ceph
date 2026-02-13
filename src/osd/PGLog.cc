@@ -1099,7 +1099,7 @@ void PGLog::rebuild_missing_set_with_deletes(
 
 namespace {
   struct FuturizedShardStoreLogReader {
-    crimson::os::FuturizedStore::StoreShardRef store;
+    crimson::os::BackendStore store;
     const pg_info_t &info;
     PGLog::IndexedLog &log;
     std::set<std::string>* log_keys_debug = NULL;
@@ -1207,7 +1207,7 @@ namespace {
 }
 
 seastar::future<> PGLog::read_log_and_missing_crimson(
-  crimson::os::FuturizedStore::StoreShardRef store,
+  crimson::os::BackendStore store,
   crimson::os::CollectionRef ch,
   const pg_info_t &info,
   IndexedLog &log,

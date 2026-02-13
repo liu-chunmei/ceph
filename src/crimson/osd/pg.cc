@@ -95,7 +95,7 @@ public:
 PG::PG(
   spg_t pgid,
   pg_shard_t pg_shard,
-  unsigned int store_index,
+  uint32_t store_index,
   crimson::os::CollectionRef coll_ref,
   pg_pool_t&& pool,
   std::string&& name,
@@ -812,7 +812,7 @@ seastar::future<> PG::init(
 );
 }
 
-seastar::future<> PG::read_state(crimson::os::FuturizedStore::StoreShardRef store)
+seastar::future<> PG::read_state(crimson::os::BackendStore store)
 {
   if (__builtin_expect(stopping, false)) {
     return seastar::make_exception_future<>(

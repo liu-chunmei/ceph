@@ -74,7 +74,7 @@ PGBackend::create(pg_t pgid,
 PGBackend::PGBackend(shard_id_t shard,
                      CollectionRef coll,
                      crimson::osd::ShardServices &shard_services,
-                     unsigned int store_index,
+                     uint32_t store_index,
 		     DoutPrefixProvider &dpp)
   : shard{shard},
     coll{coll},
@@ -1319,7 +1319,7 @@ static
 get_omap_iertr::future<
   crimson::os::FuturizedStore::Shard::omap_values_t>
 maybe_get_omap_vals_by_keys(
-  crimson::os::FuturizedStore::StoreShardRef store,
+  crimson::os::BackendStore store,
   const crimson::os::CollectionRef& coll,
   const object_info_t& oi,
   const std::set<std::string>& keys_to_get)
@@ -1339,7 +1339,7 @@ using omap_iterate_cb_t = crimson::os::FuturizedStore::Shard::omap_iterate_cb_t;
 static
 get_omap_iterate_ertr::future<ObjectStore::omap_iter_ret_t>
 maybe_do_omap_iterate(
-  crimson::os::FuturizedStore::StoreShardRef store,
+  crimson::os::BackendStore store,
   const crimson::os::CollectionRef& coll,
   const object_info_t& oi,
   ObjectStore::omap_iter_seek_t start_from,

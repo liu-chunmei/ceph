@@ -19,7 +19,7 @@ SET_SUBSYS(seastore_device);
 
 namespace crimson::os::seastore::random_block_device::nvme {
 
-seastar::future<> NVMeBlockDevice::start(unsigned int shard_nums)
+seastar::future<> NVMeBlockDevice::start(uint32_t shard_nums)
 {
   device_shard_nums = shard_nums;
   auto num_shard_services = (device_shard_nums + seastar::smp::count - 1 ) / seastar::smp::count;
@@ -34,7 +34,7 @@ seastar::future<> NVMeBlockDevice::stop()
   return shard_devices.stop();
 }
 
-Device& NVMeBlockDevice::get_sharded_device(unsigned int store_index)
+Device& NVMeBlockDevice::get_sharded_device(uint32_t store_index)
 {
   assert(store_index < shard_devices.local().mshard_devices.size());
   return *shard_devices.local().mshard_devices[store_index];

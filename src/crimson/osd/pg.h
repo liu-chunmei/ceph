@@ -88,7 +88,7 @@ class PG : public boost::intrusive_ref_counter<
   spg_t pgid;
   pg_shard_t pg_whoami;
   crimson::os::CollectionRef coll_ref;
-  unsigned int store_index;
+  uint32_t store_index;
   ghobject_t pgmeta_oid;
 
   seastar::timer<seastar::lowres_clock> check_readable_timer;
@@ -102,7 +102,7 @@ public:
 
   PG(spg_t pgid,
      pg_shard_t pg_shard,
-     unsigned int store_index,
+     uint32_t store_index,
      crimson::os::CollectionRef coll_ref,
      pg_pool_t&& pool,
      std::string&& name,
@@ -601,7 +601,7 @@ public:
     const PastIntervals& pim,
     ceph::os::Transaction &t);
 
-  seastar::future<> read_state(crimson::os::FuturizedStore::StoreShardRef store);
+  seastar::future<> read_state(crimson::os::BackendStore store);
 
   void do_peering_event(PGPeeringEvent& evt, PeeringCtx &rctx);
 

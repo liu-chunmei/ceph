@@ -8,7 +8,7 @@
 namespace crimson::os::seastore::journal {
 
 JournalRef make_segmented(
-  unsigned int store_index,
+  uint32_t store_index,
   SegmentProvider &provider,
   JournalTrimmer &trimmer)
 {
@@ -16,7 +16,7 @@ JournalRef make_segmented(
 }
 
 JournalRef make_circularbounded(
-  unsigned int store_index,
+  uint32_t store_index,
   JournalTrimmer &trimmer,
   crimson::os::seastore::random_block_device::RBMDevice* device,
   std::string path)

@@ -224,7 +224,7 @@ public:
   seastar::future<> run_with_pg_maybe_create(
     typename T::IRef op,
     ShardServices &target_shard_services,
-    unsigned int store_index
+    uint32_t store_index
   ) {
     static_assert(T::can_create());
     auto &logger = crimson::get_logger(ceph_subsys_osd);

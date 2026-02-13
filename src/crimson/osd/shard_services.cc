@@ -40,7 +40,7 @@ PerShardState::PerShardState(
   crimson::os::FuturizedStore &store,
   OSDState &osd_state)
   : whoami(whoami),
-    stores(store.get_sharded_stores()),
+    b_store(store.get_backend_store()),
     osd_state(osd_state),
     osdmap_gate("PerShardState::osdmap_gate"),
     perf(perf), recoverystate_perf(recoverystate_perf),
@@ -615,7 +615,7 @@ seastar::future<Ref<PG>> ShardServices::make_pg(
 }
 
 seastar::future<Ref<PG>> ShardServices::handle_pg_create_info(
-  unsigned int store_index,
+  uint32_t store_index,
   std::unique_ptr<PGCreateInfo> info) {
   return seastar::do_with(
     std::move(info),
@@ -721,7 +721,7 @@ ShardServices::get_or_create_pg_ret
 ShardServices::get_or_create_pg(
   PGMap::PGCreationBlockingEvent::TriggerI&& trigger,
   spg_t pgid,
-  unsigned int store_index,
+  uint32_t store_index,
   std::unique_ptr<PGCreateInfo> info)
 {
   if (info) {
@@ -761,7 +761,7 @@ ShardServices::create_split_pg(
   return std::move(fut);
 }
 
-seastar::future<Ref<PG>> ShardServices::load_pg(spg_t pgid, unsigned int store_index)
+seastar::future<Ref<PG>> ShardServices::load_pg(spg_t pgid, uint32_t store_index)
 {
   LOG_PREFIX(OSDSingletonState::load_pg);
   DEBUG("{}", pgid);
@@ -784,7 +784,7 @@ seastar::future<Ref<PG>> ShardServices::load_pg(spg_t pgid, unsigned int store_i
 }
 
 seastar::future<> ShardServices::dispatch_context_transaction(
-  crimson::os::CollectionRef col, PeeringCtx &ctx, unsigned int store_index) {
+  crimson::os::CollectionRef col, PeeringCtx &ctx, uint32_t store_index) {
   LOG_PREFIX(OSDSingletonState::dispatch_context_transaction);
   if (ctx.transaction.empty()) {
     DEBUG("empty transaction");
@@ -830,7 +830,7 @@ seastar::future<> ShardServices::dispatch_context_messages(
 }
 
 seastar::future<> ShardServices::dispatch_context(
-  unsigned int store_index,
+  uint32_t store_index,
   crimson::os::CollectionRef col,
   PeeringCtx &&pctx)
 {

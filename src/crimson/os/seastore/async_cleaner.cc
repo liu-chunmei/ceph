@@ -410,7 +410,7 @@ JournalTrimmerImpl::config_t::get_test(
 }
 
 JournalTrimmerImpl::JournalTrimmerImpl(
-  unsigned int store_index,
+  uint32_t store_index,
   BackrefManager &backref_manager,
   config_t config,
   backend_type_t type,
@@ -735,7 +735,7 @@ JournalTrimmerImpl::trim_dirty()
   });
 }
 
-void JournalTrimmerImpl::register_metrics(unsigned int store_index)
+void JournalTrimmerImpl::register_metrics(uint32_t store_index)
 {
   namespace sm = seastar::metrics;
   metrics.add_group("journal_trimmer", {
@@ -912,7 +912,7 @@ std::ostream &operator<<(
 }
 
 SegmentCleaner::SegmentCleaner(
-  unsigned int store_index,
+  uint32_t store_index,
   config_t config,
   SegmentManagerGroupRef&& sm_group,
   BackrefManager &backref_manager,
@@ -1807,7 +1807,7 @@ void SegmentCleaner::print(std::ostream &os, bool is_detailed) const
 }
 
 RBMCleaner::RBMCleaner(
-  unsigned int store_index,
+  uint32_t store_index,
   RBMDeviceGroupRef&& rb_group,
   BackrefManager &backref_manager,
   LBAManager &lba_manager,

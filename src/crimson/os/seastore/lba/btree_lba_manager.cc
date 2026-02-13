@@ -1038,7 +1038,7 @@ BtreeLBAManager::complete_indirect_lba_mapping(
   });
 }
 
-void BtreeLBAManager::register_metrics(unsigned int store_index)
+void BtreeLBAManager::register_metrics(uint32_t store_index)
 {
   LOG_PREFIX(BtreeLBAManager::register_metrics);
   DEBUG("start");

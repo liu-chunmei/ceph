@@ -27,7 +27,7 @@ SET_SUBSYS(seastore_journal);
 namespace crimson::os::seastore::journal {
 
 SegmentedJournal::SegmentedJournal(
-  unsigned int store_index,
+  uint32_t store_index,
   SegmentProvider &segment_provider,
   JournalTrimmer &trimmer)
   : store_index(store_index),

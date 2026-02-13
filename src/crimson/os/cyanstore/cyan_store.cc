@@ -191,8 +191,8 @@ CyanStore::mkfs_ertr::future<> CyanStore::mkfs(uuid_d new_osd_fsid)
 
 CyanStore::Shard::Shard(
   std::string path,
-  unsigned int store_shard_nums,
-  unsigned int store_index)
+  uint32_t store_shard_nums,
+  uint32_t store_index)
   : path(path),
     store_index(store_index)
 {

@@ -30,7 +30,7 @@ namespace crimson::os::seastore {
 
 Cache::Cache(
   ExtentPlacementManager &epm,
-  unsigned int store_index)
+  uint32_t store_index)
   : epm(epm),
     pinboard(create_extent_pinboard(
       crimson::common::get_conf<Option::size_t>(
@@ -131,7 +131,7 @@ void Cache::dump_contents()
   DEBUG("exit");
 }
 
-void Cache::register_metrics(unsigned int store_index)
+void Cache::register_metrics(uint32_t store_index)
 {
   LOG_PREFIX(Cache::register_metrics);
   DEBUG("");

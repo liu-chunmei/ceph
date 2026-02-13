@@ -45,7 +45,7 @@ template <> struct fmt::formatter<z_op>: fmt::formatter<std::string_view> {
 
 namespace crimson::os::seastore::segment_manager::zbd {
 
-seastar::future<> ZBDSegmentManager::start(unsigned int shard_nums)
+seastar::future<> ZBDSegmentManager::start(uint32_t shard_nums)
 {
   LOG_PREFIX(ZBDSegmentManager::start);
   device_shard_nums = shard_nums;
@@ -60,7 +60,7 @@ seastar::future<> ZBDSegmentManager::stop()
   return shard_devices.stop();
 }
 
-Device& ZBDSegmentManager::get_sharded_device(unsigned int store_index)
+Device& ZBDSegmentManager::get_sharded_device(uint32_t store_index)
 {
   assert(store_index < shard_devices.local().mshard_devices.size());
   return *shard_devices.local().mshard_devices[store_index];

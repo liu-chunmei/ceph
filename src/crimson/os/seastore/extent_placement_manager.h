@@ -69,7 +69,7 @@ using ExtentOolWriterRef = std::unique_ptr<ExtentOolWriter>;
  */
 class SegmentedOolWriter : public ExtentOolWriter {
 public:
-  SegmentedOolWriter(unsigned int store_index,
+  SegmentedOolWriter(uint32_t store_index,
                      data_category_t category,
                      rewrite_gen_t gen,
                      SegmentProvider &sp,
@@ -123,7 +123,7 @@ private:
     std::list<LogicalCachedExtentRef> &&extents,
     bool with_atomic_roll_segment=false);
 
-  unsigned int store_index;
+  uint32_t store_index;
   journal::SegmentAllocator segment_allocator;
   journal::RecordSubmitter record_submitter;
   seastar::gate write_guard;
@@ -272,7 +272,7 @@ public:
   ExtentPlacementManager(
     rewrite_gen_t hot_tier_generations,
     rewrite_gen_t cold_tier_generations,
-    unsigned int store_index)
+    uint32_t store_index)
     : hot_tier_generations(hot_tier_generations),
       cold_tier_generations(cold_tier_generations),
       dynamic_max_rewrite_generation(cold_tier_generations),
@@ -775,7 +775,7 @@ private:
       return stat;
     }
 
-    ExtentPlacementManager::mount_ret mount(unsigned int store_index);
+    ExtentPlacementManager::mount_ret mount(uint32_t store_index);
 
     void start_scan_space() {
       ceph_assert(state == state_t::MOUNT);
@@ -1084,7 +1084,7 @@ private:
 
     seastar::future<> do_background_cycle();
 
-    void register_metrics(unsigned int store_index);
+    void register_metrics(uint32_t store_index);
 
     struct {
       uint64_t io_blocking_num = 0;
@@ -1132,7 +1132,7 @@ private:
   const rewrite_gen_t cold_tier_generations = NULL_GENERATION;
   rewrite_gen_t dynamic_max_rewrite_generation = NULL_GENERATION;
   BackgroundProcess background_process;
-  unsigned int store_index = 0;
+  uint32_t store_index = 0;
   // TODO: drop once paddr->journal_seq_t is introduced
   SegmentSeqAllocatorRef ool_segment_seq_allocator;
   extent_len_t max_data_allocation_size = 0;

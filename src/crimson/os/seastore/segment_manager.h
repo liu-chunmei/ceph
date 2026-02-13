@@ -38,7 +38,7 @@ struct block_shard_info_t {
 };
 
 struct block_sm_superblock_t {
-  unsigned int shard_num = 0;
+  uint32_t shard_num = 0;
   size_t segment_size = 0;
   size_t block_size = 0;
 

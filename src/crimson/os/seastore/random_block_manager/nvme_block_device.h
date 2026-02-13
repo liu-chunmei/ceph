@@ -212,7 +212,7 @@ public:
    * atomic_write_unit does not require fsync().
    */
 
-  NVMeBlockDevice(std::string device_path, unsigned int store_index = 0)
+  NVMeBlockDevice(std::string device_path, uint32_t store_index = 0)
     : RBMDevice(store_index),
       device_path(device_path) {}
   ~NVMeBlockDevice() = default;
@@ -284,11 +284,11 @@ public:
     return device_path;
   }
 
-  seastar::future<> start(unsigned int shard_nums) final;
+  seastar::future<> start(uint32_t shard_nums) final;
 
   seastar::future<> stop() final;
 
-  Device& get_sharded_device(unsigned int store_index = 0) final;
+  Device& get_sharded_device(uint32_t store_index = 0) final;
 
   uint64_t get_preffered_write_granularity() const { return write_granularity; }
   uint64_t get_preffered_write_alignment() const { return write_alignment; }

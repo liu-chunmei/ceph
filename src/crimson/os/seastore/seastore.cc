@@ -128,8 +128,8 @@ SeaStore::Shard::Shard(
   std::string root,
   Device* dev,
   bool is_test,
-  unsigned int store_shard_nums,
-  unsigned int store_index)
+  uint32_t store_shard_nums,
+  uint32_t store_index)
   :root(root),
    max_object_size(
      get_conf<uint64_t>("seastore_default_max_object_size")),
@@ -159,7 +159,7 @@ SeaStore::SeaStore(
 
 SeaStore::~SeaStore() = default;
 
-void SeaStore::Shard::register_metrics(unsigned int store_index)
+void SeaStore::Shard::register_metrics(uint32_t store_index)
 {
   if(!store_active) {
     return;
