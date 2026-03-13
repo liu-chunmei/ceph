@@ -7,7 +7,7 @@
 
 #include "crimson/common/operation.h"
 #include "msg/Message.h"
-#include "scrubber_common.h"
+#include "osd/scrubber_common.h"
 #include "scrub_machine.h"
 #include "scrub_job.h"
 #include "scrub_queue.h"

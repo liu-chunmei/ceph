@@ -8,7 +8,7 @@
 #include "crimson/osd/scrub/pg_scrubber.h"
 #include "osd/osd_types.h"
 #include "peering_event.h"
-#include "crimson/osd/scrub/scrubber_common.h"
+#include "osd/scrubber_common.h"
 
 namespace crimson::osd {
 

@@ -5,7 +5,7 @@
 
 #include "pg_scrubber.h"
 #include "crimson/common/log.h"
-#include "scrubber_common.h"
+#include "osd/scrubber_common.h"
 
 SET_SUBSYS(osd);
 

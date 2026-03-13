@@ -8,7 +8,7 @@
 
 #include "include/utime.h"
 #include "osd/osd_types.h"
-#include "scrubber_common.h"
+#include "osd/scrubber_common.h"
 
 namespace crimson::osd::scrub {
 

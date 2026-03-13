@@ -16,7 +16,7 @@
 #include "include/utime_fmt.h"
 #include "osd/osd_types.h"
 #include "osd/osd_types_fmt.h"
-#include "scrubber_common.h"
+#include "osd/scrubber_common.h"
 #include "scrub_queue_entry.h"
 
 namespace crimson::osd::scrub {

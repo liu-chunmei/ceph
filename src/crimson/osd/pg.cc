@@ -48,7 +48,7 @@
 #include "crimson/osd/pg_recovery.h"
 #include "crimson/osd/replicated_recovery_backend.h"
 #include "crimson/osd/watch.h"
-#include "crimson/osd/scrub/scrubber_common.h"
+#include "osd/scrubber_common.h"
 
 using std::ostream;
 using std::set;

@@ -4,7 +4,7 @@
 #include <string_view>
 #include <algorithm>
 
-#include "scrubber_common.h"
+#include "osd/scrubber_common.h"
 #include "scrub_queue.h"
 #include "crimson/common/log.h"
 
