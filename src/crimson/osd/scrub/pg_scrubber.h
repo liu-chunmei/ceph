@@ -9,7 +9,7 @@
 #include "msg/Message.h"
 #include "osd/scrubber_common.h"
 #include "scrub_machine.h"
-#include "scrub_job.h"
+#include "osd/scrubber/scrub_job.h"
 #include "scrub_queue.h"
 #include "scrub_resources.h"
 
@@ -117,7 +117,7 @@ public:
     }
     return false;
   }
-
+  static utime_t scrub_must_stamp() { return utime_t(1, 1); }
   PGScrubber(PG &pg);
   virtual ~PGScrubber();
 

@@ -39,7 +39,7 @@ add_executable(crimson-osd
   scrub/scrub_machine.cc
   scrub/scrub_validator.cc
   scrub/pg_scrubber.cc
-  scrub/scrub_job.cc
+  ${PROJECT_SOURCE_DIR}/src/osd/scrubber/scrub_job.cc
   scrub/scrub_queue.cc
   scrub/scrub_scheduler.cc
   scrub/scrub_resources.cc

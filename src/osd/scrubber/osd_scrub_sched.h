@@ -225,7 +225,7 @@ class ScrubQueue {
   Scrub::ScrubSchedListener& osd_service;
 
 #ifdef WITH_CRIMSON
-  auto& conf() const { return local_conf(); }
+  auto& conf() const { return crimson::common::local_conf(); }
 #else
   auto& conf() const { return cct->_conf; }
 #endif

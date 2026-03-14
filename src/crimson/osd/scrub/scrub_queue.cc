@@ -7,6 +7,7 @@
 #include "osd/scrubber_common.h"
 #include "scrub_queue.h"
 #include "crimson/common/log.h"
+#include "crimson/osd/scrub/pg_scrubber.h"
 
 SET_SUBSYS(osd);
 
@@ -126,7 +127,7 @@ void ScrubQueue::dump_scrubs(ceph::Formatter* f) const
 	f->dump_stream("orig_sched_time") << e.schedule.scheduled_at;
 	f->dump_bool(
 	    "forced",
-	    e.schedule.scheduled_at == scrub_must_stamp());
+	    e.schedule.scheduled_at == PGScrubber::scrub_must_stamp());
 
         f->dump_stream("level") << (e.level == scrub_level_t::shallow
                                        ? "shallow"

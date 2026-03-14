@@ -206,7 +206,6 @@ struct formatter<Scrub::scrub_schedule_t> {
 }  // namespace fmt
 #ifdef WITH_CRIMSON
 namespace crimson::osd::scrub {
-inline utime_t scrub_must_stamp() { return utime_t(1, 1); }
 #else
 namespace Scrub {
 #endif

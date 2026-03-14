@@ -115,8 +115,8 @@ ScrubQueue interfaces (main functions):
 #include "common/not_before_queue.h"
 
 #include "utime.h"
-#include "scrub_job.h"
-#include "scrub_queue_entry.h"
+#include "osd/scrubber/scrub_job.h"
+#include "osd/scrubber/scrub_queue_entry.h"
 #include "scrub_resources.h"
 
 #include "osd/osd_types.h"
