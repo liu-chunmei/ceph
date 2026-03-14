@@ -117,7 +117,7 @@ ScrubQueue interfaces (main functions):
 #include "utime.h"
 #include "osd/scrubber/scrub_job.h"
 #include "osd/scrubber/scrub_queue_entry.h"
-#include "scrub_resources.h"
+#include "osd/scrubber/scrub_resources.h"
 
 #include "osd/osd_types.h"
 #include "crimson/common/config_proxy.h"

@@ -5,7 +5,7 @@
 
 #include "osd/osd_types.h"
 
-#include "scrub_resources.h"
+#include "osd/scrubber/scrub_resources.h"
 #include "scrub_queue.h"
 
 namespace crimson::osd {
@@ -16,7 +16,7 @@ static constexpr int SCRUB_TICK_INTERVAL = 5; // seconds between scrub scheduler
 class ScrubScheduler {
   ShardServices &shard_services;
   /// resource reservation management
-  scrub::ShardScrubResources m_resource_bookkeeper;
+  scrub::ScrubResources m_resource_bookkeeper;
   /// the queue of PGs waiting to be scrubbed
   scrub::ScrubQueue m_queue;
 

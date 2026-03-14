@@ -11,7 +11,7 @@
 #include "scrub_machine.h"
 #include "osd/scrubber/scrub_job.h"
 #include "scrub_queue.h"
-#include "scrub_resources.h"
+#include "osd/scrubber/scrub_resources.h"
 
 namespace crimson::osd {
 class PG;
