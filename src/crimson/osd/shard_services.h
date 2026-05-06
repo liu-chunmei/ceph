@@ -389,6 +389,14 @@ class ShardServices : public OSDMapService {
   uint32_t store_shard_nums = 0;
   seastar::timer<seastar::lowres_clock> scrub_timer;
   ScrubScheduler scrub_scheduler;
+  seastar::sharded<ShardServices>* _container{nullptr};
+  seastar::sharded<ShardServices>& container() {
+    return *_container;
+  }
+  const seastar::sharded<ShardServices>& container() const {
+    return *_container;
+  }
+  void set_container(seastar::sharded<ShardServices>* c) { _container = c; }
 
   template <typename F, typename... Args>
   auto with_singleton(F &&f, Args&&... args) {
@@ -521,7 +529,15 @@ public:
   ScrubScheduler &get_scrub_scheduler() {
     return scrub_scheduler;
   }       
-
+  seastar::future<int> get_scrubs_total() const {
+    return container().map_reduce0(
+      [] (auto &s) {
+        return s.scrub_scheduler.get_scrubs_local();
+      },
+      0,
+      [](auto a, auto b) { return a + b; }
+    );
+  }
   FORWARD_TO_OSD_SINGLETON(send_to_osd)
 
   crimson::os::BackendStore get_store(store_index_t store_index) {

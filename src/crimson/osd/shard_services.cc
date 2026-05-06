@@ -568,7 +568,7 @@ seastar::future<> ShardServices::prepare_scrub()
   }
   auto active = co_await scrub_scheduler.is_recovery_active();
   DEBUG("is recovery active? {}", active);
-  co_return scrub_scheduler.initiate_scrub(active);
+  co_return co_await scrub_scheduler.initiate_scrub(active);
 }
 
 seastar::future<Ref<PG>> ShardServices::make_pg(

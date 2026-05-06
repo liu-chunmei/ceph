@@ -970,7 +970,7 @@ public:
 
   scrub::PGScrubber scrubber;
 
-  scrub::schedule_result_t start_scrubbing(
+  seastar::future<scrub::schedule_result_t> start_scrubbing(
     const scrub::SchedEntry& candidate,
     scrub::OSDRestrictions osd_restrictions);
   void scrub_requested(scrub_level_t scrub_level, scrub_type_t scrub_type) final;

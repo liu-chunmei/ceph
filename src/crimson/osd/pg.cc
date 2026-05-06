@@ -746,7 +746,7 @@ PG::interruptible_future<bool> PG::do_recover_missing(
   }
 }
 
-scrub::schedule_result_t PG::start_scrubbing(
+seastar::future<scrub::schedule_result_t> PG::start_scrubbing(
     const scrub::SchedEntry& candidate,
     scrub::OSDRestrictions osd_restrictions)
 {

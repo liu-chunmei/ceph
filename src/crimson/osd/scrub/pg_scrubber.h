@@ -137,7 +137,7 @@ public:
   /// notify machine that PG has committed up to versino v
   void on_log_update(eversion_t v);
 
-  schedule_result_t start_scrub(
+  seastar::future<schedule_result_t> start_scrub(
     scrub_level_t s_or_d,
     OSDRestrictions osd_restrictions,
     ScrubPGPreconds pg_cond);
@@ -174,7 +174,7 @@ private:
       delay_both_targets_t delay_both,
       delay_cause_t cause,
       utime_t scrub_clock_now);
-  bool reserve_local(const SchedTarget& trgt);
+  seastar::future<bool> reserve_local(const SchedTarget& trgt);
 
   const std::set<pg_shard_t> &get_ids_to_scrub() const final;
 

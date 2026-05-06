@@ -87,7 +87,7 @@ bool ScrubScheduler::scrub_random_backoff() const
   return false;
 }
 
-scrub::OSDRestrictions ScrubScheduler::restrictions_on_scrubbing(
+seastar::future<scrub::OSDRestrictions> ScrubScheduler::restrictions_on_scrubbing(
     bool is_recovery_active,
     utime_t scrub_clock_now) const
 {
@@ -98,7 +98,9 @@ scrub::OSDRestrictions ScrubScheduler::restrictions_on_scrubbing(
   // some "environmental conditions" prevent all but specific types
   // (urgency levels) of scrubs
 
-  if (!m_resource_bookkeeper.can_inc_scrubs()) {
+  auto max_scrubs = crimson::common::local_conf().get_val<int64_t>("osd_max_scrubs");
+  auto scrubs_total = co_await shard_services.get_scrubs_total();
+  if (scrubs_total >= max_scrubs) {
     // our local shard is already running too many scrubs
     DEBUG("max concurrency reached, cannot start new scrubs");
     env_conditions.max_concurrency_reached = true;
@@ -119,19 +121,19 @@ scrub::OSDRestrictions ScrubScheduler::restrictions_on_scrubbing(
   env_conditions.restricted_time = !scrub_time_permit(scrub_clock_now);
   env_conditions.cpu_overloaded = !scrub_load_below_threshold();
 
-  return env_conditions;
+  co_return env_conditions;
 }
 
-scrub::schedule_result_t ScrubScheduler::initiate_a_scrub(
+seastar::future<scrub::schedule_result_t> ScrubScheduler::initiate_a_scrub(
     const scrub::SchedEntry& candidate,
     scrub::OSDRestrictions restrictions)
 {
   // TODO check if pg can do scrub, classic use try lock pg
   auto pg = shard_services.get_pg(candidate.pgid);
   if (!pg) {
-    return scrub::schedule_result_t::target_specific_failure;
+    co_return scrub::schedule_result_t::target_specific_failure;
   }
-  return pg->start_scrubbing(candidate, restrictions);
+  co_return co_await pg->start_scrubbing(candidate, restrictions);
 }
 bool ScrubScheduler::is_sched_target_eligible(
     const scrub::SchedEntry& e,
@@ -174,25 +176,26 @@ bool ScrubScheduler::is_sched_target_eligible(
   }
   return true;
 }
-void ScrubScheduler::initiate_scrub(bool is_recovery_active)
+seastar::future<> ScrubScheduler::initiate_scrub(bool is_recovery_active)
 {
   LOG_PREFIX(ScrubScheduler::initiate_scrub);
   // to do check pg blocked ref: Chunkisbusy ScrubFindRange 
   DEBUG("checking for scrub candidates...");
   const utime_t scrub_time = ceph_clock_now();
   const auto env_restrictions =
-    restrictions_on_scrubbing(is_recovery_active, scrub_time);
+    co_await restrictions_on_scrubbing(is_recovery_active, scrub_time);
 
   auto candidate = m_queue.pop_ready_entry(
       is_sched_target_eligible, env_restrictions, scrub_time);
   if (!candidate) {
     DEBUG("no eligible scrub candidate found");
-    return;
+    co_return;
   }
   DEBUG("found scrub candidate: pg {}, urgency {}, scheduled at {}, not before {}",
         candidate->pgid, candidate->urgency, candidate->schedule.scheduled_at,
         candidate->schedule.not_before);
-  switch (initiate_a_scrub(*candidate, env_restrictions)) {
+  auto result = co_await initiate_a_scrub(*candidate, env_restrictions);
+  switch (result) {
     case scrub::schedule_result_t::target_specific_failure:
       DEBUG("scrub initiation failed for {}, reason is target_specific_failure", *candidate);
       break;
@@ -204,6 +207,7 @@ void ScrubScheduler::initiate_scrub(bool is_recovery_active)
       DEBUG("scrub initiated for {}", *candidate);
       break;
   }
+  co_return;
 }
 
 std::unique_ptr<scrub::LocalResourceWrapper> ScrubScheduler::inc_scrubs_local(
@@ -215,5 +219,8 @@ std::unique_ptr<scrub::LocalResourceWrapper> ScrubScheduler::inc_scrubs_local(
 void ScrubScheduler::dec_scrubs_local()
 {
   m_resource_bookkeeper.dec_scrubs_local();
+}
+int ScrubScheduler::get_scrubs_local() const {
+  return m_resource_bookkeeper.get_scrubs_local();
 }
 } // namespace crimson::osd

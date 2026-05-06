@@ -20,10 +20,10 @@ class ScrubScheduler {
   /// the queue of PGs waiting to be scrubbed
   scrub::ScrubQueue m_queue;
 
-  scrub::OSDRestrictions restrictions_on_scrubbing(
+  seastar::future<scrub::OSDRestrictions> restrictions_on_scrubbing(
     bool is_recovery_active,
     utime_t scrub_clock_now) const;
-  scrub::schedule_result_t initiate_a_scrub(
+  seastar::future<scrub::schedule_result_t> initiate_a_scrub(
     const scrub::SchedEntry& candidate,
     scrub::OSDRestrictions restrictions);
   bool scrub_random_backoff() const;
@@ -38,7 +38,7 @@ public:
 
   seastar::future<bool> is_recovery_active();
 
-  void initiate_scrub(bool is_recovery_active);
+  seastar::future<> initiate_scrub(bool is_recovery_active);
   void enqueue_scrub_job(const scrub::ScrubJob& sjob);
   void enqueue_target(const scrub::SchedTarget& trgt);
   void dequeue_target(spg_t pgid, scrub_level_t s_or_d);
@@ -52,7 +52,8 @@ public:
   std::unique_ptr<scrub::LocalResourceWrapper> inc_scrubs_local(
       bool is_high_priority);
   void dec_scrubs_local();
-    
+  int get_scrubs_local() const;
+
   scrub::ScrubQueue& get_queue() {
     return m_queue;
   }

@@ -198,19 +198,22 @@ void PGScrubber::requeue_penalized(
   }
 }
 
-bool PGScrubber::reserve_local(const SchedTarget& trgt)
+seastar::future<bool> PGScrubber::reserve_local(const SchedTarget& trgt)
 {
   LOG_PREFIX(PGScrubber::reserve_local);
   const bool is_hp = !ScrubJob::observes_max_concurrency(trgt.urgency());
 
-  m_local_osd_resource = pg.shard_services.get_scrub_scheduler().inc_scrubs_local(is_hp);
-  if (m_local_osd_resource) {
-    DEBUGDPP("reserved local scrub resource", pg);
-    return true;
+  auto scrubs_total = co_await pg.shard_services.get_scrubs_total();
+  if (scrubs_total < crimson::common::local_conf().get_val<int64_t>("osd_max_scrubs")) {
+    m_local_osd_resource = pg.shard_services.get_scrub_scheduler().inc_scrubs_local(is_hp);
+    if (m_local_osd_resource) {
+      DEBUGDPP("reserved local scrub resource", pg);
+      co_return true;
+    }
   }
 
   DEBUGDPP("failed to reserve local scrub resource", pg);
-  return false;
+  co_return false;
 }
 
 void PGScrubber::set_op_parameters(ScrubPGPreconds pg_cond)
@@ -273,7 +276,7 @@ void PGScrubber::set_op_parameters(ScrubPGPreconds pg_cond)
   pg.publish_stats_to_osd();
 }
 
-schedule_result_t PGScrubber::start_scrub(
+seastar::future<schedule_result_t> PGScrubber::start_scrub(
     scrub_level_t s_or_d,
     OSDRestrictions osd_restrictions,
     ScrubPGPreconds pg_cond)
@@ -291,7 +294,7 @@ schedule_result_t PGScrubber::start_scrub(
   if (is_queued_or_active()) {
     DEBUGDPP("already queued or active", pg);
     // no need to requeue
-    return schedule_result_t::target_specific_failure;
+    co_return schedule_result_t::target_specific_failure;
   }
 
   // a few checks. If failing - the 'not-before' is modified, and the target
@@ -303,7 +306,7 @@ schedule_result_t PGScrubber::start_scrub(
     // not attempt to queue it.
     DEBUGDPP("{}: cannot scrub (not primary/active). Registered?{:c}", pg,
       m_scrub_job->is_registered() ? 'Y' : 'n');
-    return schedule_result_t::target_specific_failure;
+    co_return schedule_result_t::target_specific_failure;
   }
 
   // for all other failures - we must reinstate our entry in the Scrub Queue.
@@ -313,7 +316,7 @@ schedule_result_t PGScrubber::start_scrub(
       m_scrub_job->is_registered() ? 'Y' : 'n');
     requeue_penalized(
 	    s_or_d, delay_both_targets_t::yes, delay_cause_t::pg_state, clock_now);
-    return schedule_result_t::target_specific_failure;
+    co_return schedule_result_t::target_specific_failure;
   }
 
   if (pg.state_test(PG_STATE_SNAPTRIM) || pg.state_test(PG_STATE_SNAPTRIM_WAIT)) {
@@ -323,7 +326,7 @@ schedule_result_t PGScrubber::start_scrub(
     DEBUGDPP("{}: cannot scrub (snap trimming)", pg);
     requeue_penalized(
 	    s_or_d, delay_both_targets_t::yes, delay_cause_t::snap_trimming, clock_now);
-    return schedule_result_t::target_specific_failure;
+    co_return schedule_result_t::target_specific_failure;
   }
 
    // is there a 'no-scrub' flag set for the initiated scrub level? note:
@@ -335,25 +338,26 @@ schedule_result_t PGScrubber::start_scrub(
         DEBUGDPP("{}: shallow not allowed", pg);
         requeue_penalized(
 	        s_or_d, delay_both_targets_t::no, delay_cause_t::flags, clock_now);
-	      return schedule_result_t::target_specific_failure;
+	      co_return schedule_result_t::target_specific_failure;
       }
     } else if (!pg_cond.allow_deep) {
       // can't scrub at all
       DEBUGDPP("{}: deep not allowed", pg);
       requeue_penalized(
 	      s_or_d, delay_both_targets_t::no, delay_cause_t::flags, clock_now);
-      return schedule_result_t::target_specific_failure;
+      co_return schedule_result_t::target_specific_failure;
     }
   }
 
   // try to reserve the local OSD resources. If failing: no harm. We will
   // be retried by the OSD later on.
-  if (!reserve_local(trgt)) {
+  bool reserved = co_await reserve_local(trgt);
+  if (!reserved) {
     DEBUGDPP("{}: failed to reserve locally", pg);
     requeue_penalized(
 	    s_or_d, delay_both_targets_t::yes, delay_cause_t::local_resources,
 	    clock_now);
-    return schedule_result_t::osd_wide_failure;
+    co_return schedule_result_t::osd_wide_failure;
   }
 
   // can commit now to the specific scrub details, as nothing will
@@ -378,13 +382,13 @@ schedule_result_t PGScrubber::start_scrub(
     bool deep = pg.state_test(PG_STATE_DEEP_SCRUB);
     DEBUGDPP("can scrub now, deep: {}", pg, deep);
     Ref<PG> pgref = &pg;
-    std::ignore = PG::interruptor::with_interruption([this, pgref, deep] {
+    co_await PG::interruptor::with_interruption([this, pgref, deep] {
       handle_scrub_requested(deep);
       return PG::interruptor::now();
     }, [FNAME, this](std::exception_ptr ep) {
       DEBUGDPP("interrupted with {}", pg, ep);
     }, pgref, pgref->get_osdmap_epoch());
-    return schedule_result_t::scrub_initiated;
+    co_return schedule_result_t::scrub_initiated;
   } else {
     DEBUGDPP("cannot scrub now, will be scheduled by OSD later. epoch_queued: {}, same_interval_since: {}",
       pg, epoch_queued, pg.get_same_interval_since());
@@ -392,7 +396,7 @@ schedule_result_t PGScrubber::start_scrub(
     // registered yet. We need to register it, so it will be properly
     // scheduled by the OSD.
     schedule_scrub_with_osd();
-    return schedule_result_t::target_specific_failure;
+    co_return schedule_result_t::target_specific_failure;
   }
 }
 
