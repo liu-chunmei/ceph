@@ -656,6 +656,10 @@ public:
     // not needed yet: replace with not a stub (needs to be wired up to monc)
     return OstreamTemp(CLOG_DEBUG, nullptr);
   }
+  OstreamTemp get_clog_warn() {
+    // not needed yet: replace with not a stub (needs to be wired up to monc)
+    return OstreamTemp(CLOG_WARN, nullptr);
+  }
   OstreamTemp get_clog_error() final {
     // not needed yet: replace with not a stub (needs to be wired up to monc)
     return OstreamTemp(CLOG_ERROR, nullptr);
