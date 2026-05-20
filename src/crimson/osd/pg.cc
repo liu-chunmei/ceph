@@ -779,6 +779,17 @@ void PG::scrub_requested(scrub_level_t scrub_level, scrub_type_t scrub_type)
   ceph_assert(0 == "impossible in crimson");
 }
 
+void PG::on_scrub_schedule_input_change()
+{
+  LOG_PREFIX(PG::on_scrub_schedule_input_change);
+  if (is_primary() && !scrubber.is_queued_or_active()) {
+    DEBUGDPP("active/primary and not scrubbing, updating scrub job", *this);
+    scrubber.update_scrub_job();
+  } else {
+    DEBUGDPP("inactive, non-primary, or already scrubbing - skipping update", *this);
+  }
+}
+
 void PG::log_state_enter(const char *state) {
   logger().info("Entering state: {}", state);
 }
@@ -918,12 +929,16 @@ void PG::do_peering_event(
 void PG::handle_advance_map(
   cached_map_t next_map, PeeringCtx &rctx)
 {
+  LOG_PREFIX(PG::handle_advance_map);
   vector<int> newup, newacting;
   int up_primary, acting_primary;
   next_map->pg_to_up_acting_osds(
     pgid.pgid,
     &newup, &up_primary,
     &newacting, &acting_primary);
+  
+  epoch_t range_starts_at = peering_state.get_osdmap()->get_epoch();
+  
   peering_state.advance_map(
     next_map,
     peering_state.get_osdmap(),
@@ -933,6 +948,16 @@ void PG::handle_advance_map(
     acting_primary,
     rctx);
   osdmap_gate.got_map(next_map->get_epoch());
+  
+  // If pool.info changed during this map update, invoke
+  // on_scrub_schedule_input_change() as pool.info contains scrub scheduling
+  // parameters.
+  const auto& pool = get_pgpool();
+  if (pool.info.last_change >= range_starts_at) {
+    DEBUGDPP("pool info changed (last_change={} >= range_starts_at={}), updating scrub schedule",
+             *this, pool.info.last_change, range_starts_at);
+    on_scrub_schedule_input_change();
+  }
 }
 
 void PG::handle_activate_map(PeeringCtx &rctx)
@@ -972,7 +997,12 @@ void PG::dump_primary(Formatter* f)
   f->close_section();
 
   // TODO: snap_trimq
-  // TODO: scrubber state
+  
+  // Dump scrubber state
+  if (is_primary() && is_active()) {
+    scrubber.dump_scrub_metrics(f);
+  }
+  
   // TODO: agent state
 }
 

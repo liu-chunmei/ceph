@@ -218,4 +218,47 @@ void ScrubScheduler::dec_scrubs_local()
 int ScrubScheduler::get_scrubs_local() const {
   return m_resource_bookkeeper.get_scrubs_local();
 }
+
+ScrubScheduler::ScrubScheduler(ShardServices &shard_services)
+    : shard_services(shard_services),
+      m_resource_bookkeeper()
+{
+}
+
+ScrubScheduler::~ScrubScheduler()
+{
+}
+
+void ScrubScheduler::on_config_change()
+{
+  LOG_PREFIX(ScrubScheduler::on_config_change);
+  DEBUG("handling config change for scrub scheduling");
+  
+  // Get all PGs that have scrub jobs in the queue
+  auto to_notify = m_queue.get_pgs(
+      [](const scrub::SchedEntry& sj, bool) -> bool { return true; });
+
+  for (const auto& pgid : to_notify) {
+    DEBUG("rescheduling pg[{}] scrubs", pgid);
+    auto pg = shard_services.get_pg(pgid);
+    if (!pg) {
+      DEBUG("pg[{}] not found, skipping", pgid);
+      continue;
+    }
+
+    DEBUG("updating scrub schedule on {}", pg->get_pgid());
+    pg->on_scrub_schedule_input_change();
+  }
+}
+
+void ScrubScheduler::dump_scrub_reservations(ceph::Formatter* f) const
+{
+  // Dump local resource bookkeeper info
+  m_resource_bookkeeper.dump_scrub_reservations(f);
+  
+  // Note: Crimson doesn't have remote scrub reservations like classic OSD
+  // Classic OSD also dumps m_osd_svc.get_scrub_reserver().dump(f) for remote reservations
+  // but Crimson's architecture is different and doesn't have a separate remote reserver
+}
+
 } // namespace crimson::osd

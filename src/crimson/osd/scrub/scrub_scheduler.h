@@ -8,6 +8,12 @@
 #include "osd/scrubber/scrub_resources.h"
 #include "scrub_queue.h"
 
+#include <map>
+
+namespace crimson::common {
+class CephContext;
+}
+
 namespace crimson::osd {
 class ShardServices;
 
@@ -31,10 +37,8 @@ class ScrubScheduler {
   bool scrub_load_below_threshold() const;
 
 public:
-  ScrubScheduler(ShardServices &shard_services)
-    : shard_services(shard_services),
-      m_resource_bookkeeper() {}
-  ~ScrubScheduler() = default;
+  ScrubScheduler(ShardServices &shard_services);
+  ~ScrubScheduler();
 
   seastar::future<> initiate_scrub(bool is_recovery_active);
   void enqueue_scrub_job(const scrub::ScrubJob& sjob);
@@ -55,5 +59,11 @@ public:
   scrub::ScrubQueue& get_queue() {
     return m_queue;
   }
+
+  /// Dump scrub reservations for debugging
+  void dump_scrub_reservations(ceph::Formatter* f) const;
+
+  /// Handle configuration changes that affect scrub scheduling
+  void on_config_change();
 };
 } // namespace crimson::osd

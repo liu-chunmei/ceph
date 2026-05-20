@@ -969,6 +969,7 @@ public:
   friend class ScrubScan;
   friend class ScrubFindRange;
   friend class ScrubReserveRange;
+  friend class ScrubSleep;
   friend class scrub::PGScrubber;
   template <typename T> friend class RemoteScrubEventBaseT;
 
@@ -978,6 +979,7 @@ public:
     const scrub::SchedEntry& candidate,
     scrub::OSDRestrictions osd_restrictions);
   void scrub_requested(scrub_level_t scrub_level, scrub_type_t scrub_type) final;
+  void on_scrub_schedule_input_change();
 
   ObjectContextRegistry obc_registry;
   ObjectContextLoader obc_loader;

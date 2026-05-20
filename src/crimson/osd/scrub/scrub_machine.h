@@ -26,6 +26,7 @@
 #include "osd/scrubber_common.h"
 #include "osd/scrubber/scrub_reservations.h"
 #include "scrub_validator.h"
+#include "scrub_metrics.h"
 
 namespace crimson::osd {
   class PG;
@@ -162,6 +163,7 @@ struct ScrubContext {
   virtual void schedule_scrub_with_osd() = 0;
   virtual void update_scrub_job() = 0;
   virtual void rm_from_osd_scrubbing() = 0;
+  virtual void clear_pgscrub_state() = 0;
 
   /// return struct defining chunk validation rules
   virtual chunk_validation_policy_t get_policy() const = 0;
@@ -170,7 +172,7 @@ struct ScrubContext {
   virtual void notify_scrub_start(bool deep) = 0;
 
   /// notifies implementation of scrub end
-  virtual void notify_scrub_end(bool deep) = 0;
+  //virtual void notify_scrub_end(bool deep) = 0;
 
   /// requests range to scrub starting at start
   struct request_range_result_t {
@@ -253,6 +255,12 @@ struct Inactive;
 namespace events {
 /// reset ScrubMachine
 SIMPLE_EVENT(reset_t);
+
+/// abort scrub and return to AwaitScrub (stays in PrimaryActive)
+SIMPLE_EVENT(abort_t);
+
+/// internal event to schedule next chunk after sleep
+SIMPLE_EVENT(internal_sched_scrub_t);
 
 /// start (deep) scrub
 struct start_scrub_event_t {
@@ -453,6 +461,8 @@ struct PrimaryActive : ScrubState<PrimaryActive, ScrubMachine, AwaitScrub> {
     get_scrub_context().schedule_scrub_with_osd();
   }
   ~PrimaryActive() {
+    // Match classic OSD behavior: clear scrub state before removing from OSD queue
+    get_scrub_context().clear_pgscrub_state();
     get_scrub_context().rm_from_osd_scrubbing();
   }
   bool local_reservation_held = false;
@@ -461,14 +471,10 @@ struct PrimaryActive : ScrubState<PrimaryActive, ScrubMachine, AwaitScrub> {
 
   using reactions = boost::mpl::list<
     sc::transition<events::reset_t, Inactive>,
-    sc::custom_reaction<events::start_scrub_t>,
+    sc::transition<events::abort_t, AwaitScrub>,
     sc::custom_reaction<events::op_stats_t>,
     sc::transition< boost::statechart::event_base, Crash >
     >;
-
-  sc::result react(const events::start_scrub_t &event) {
-    return discard_event();
-  }
 
   sc::result react(const events::op_stats_t &) {
     return discard_event();
@@ -495,10 +501,10 @@ struct AwaitScrub : ScrubState<AwaitScrub, PrimaryActive> {
 };
 
 struct ReservingReplicas;
+struct ChunkState;
 struct Scrubbing : ScrubState<Scrubbing, PrimaryActive, ReservingReplicas> {
   static constexpr std::string_view state_name = "Scrubbing";
-  explicit Scrubbing(my_context ctx)
-    : ScrubState(ctx), policy(get_scrub_context().get_policy()) {}
+  explicit Scrubbing(my_context ctx);
 
   using reactions = boost::mpl::list<
     sc::custom_reaction<internal_events::set_deep_t>,
@@ -507,7 +513,6 @@ struct Scrubbing : ScrubState<Scrubbing, PrimaryActive, ReservingReplicas> {
 
   chunk_validation_policy_t policy;
   std::optional<ReplicaReservations> m_reservations{std::nullopt};
-  const Scrub::ScrubCounterSet* m_counters_idx{nullptr};
 
   /// hobjects < current have been scrubbed
   hobject_t current;
@@ -518,9 +523,15 @@ struct Scrubbing : ScrubState<Scrubbing, PrimaryActive, ReservingReplicas> {
   /// stats for objects < current, maintained via events::op_stats_t
   object_stat_sum_t stats;
 
+  /// timestamp when scrubbing started, for elapsed time calculation (using ScrubClock)
+  ScrubTimePoint scrub_start_time;
+
   void advance_current(const hobject_t &next) {
     current = next;
   }
+
+  // Access metrics for dumping - returns pointer from PGScrubber
+  ScrubMetrics* get_metrics();
 
   sc::result react(const internal_events::set_deep_t &event) {
     deep = event.value;
@@ -529,7 +540,8 @@ struct Scrubbing : ScrubState<Scrubbing, PrimaryActive, ReservingReplicas> {
   }
 
   void exit() {
-    get_scrub_context().notify_scrub_end(deep);
+    // Note: notify_scrub_end is called when scrub actually completes,
+    // not when exiting this intermediate Scrubbing state
   }
 
   sc::result react(const events::op_stats_t &event) {
@@ -554,7 +566,8 @@ struct ReservingReplicas : ScrubState<ReservingReplicas, Scrubbing> {
   using reactions = boost::mpl::list<
     sc::custom_reaction<events::replica_grant_t>,
     sc::custom_reaction<events::replica_reject_t>,
-    sc::custom_reaction<events::remotes_reserved_t>
+    sc::custom_reaction<events::remotes_reserved_t>,
+    sc::transition<events::abort_t, AwaitScrub>
     >;
 
   sc::result react(const events::replica_grant_t &);
@@ -562,6 +575,7 @@ struct ReservingReplicas : ScrubState<ReservingReplicas, Scrubbing> {
   sc::result react(const events::remotes_reserved_t &);
 };
 
+struct PendingTimer;
 struct GetRange;
 struct ChunkState : ScrubState<ChunkState, Scrubbing, GetRange> {
   static constexpr std::string_view state_name = "ChunkState";
@@ -581,6 +595,16 @@ struct ChunkState : ScrubState<ChunkState, Scrubbing, GetRange> {
       get_scrub_context().release_range();
     }
   }
+};
+
+/// State between chunks - sleeps for osd_scrub_sleep duration before next chunk
+struct PendingTimer : ScrubState<PendingTimer, Scrubbing> {
+  static constexpr std::string_view state_name = "PendingTimer";
+  explicit PendingTimer(my_context ctx);
+
+  using reactions = boost::mpl::list<
+    sc::transition<events::internal_sched_scrub_t, ChunkState>
+    >;
 };
 
 struct WaitUpdate;
@@ -609,10 +633,7 @@ struct WaitUpdate : ScrubState<WaitUpdate, ChunkState> {
     sc::custom_reaction<ScrubContext::reserve_range_complete_t>
     >;
 
-  sc::result react(const ScrubContext::reserve_range_complete_t &e) {
-    context<ChunkState>().version = e.value;
-    return transit<ScanRange>();
-  }
+  sc::result react(const ScrubContext::reserve_range_complete_t &e);
 };
 
 struct ScanRange : ScrubState<ScanRange, ChunkState> {

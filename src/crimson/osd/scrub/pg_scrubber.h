@@ -20,9 +20,12 @@ class PG;
 class ScrubScan;
 class ScrubFindRange;
 class ScrubReserveRange;
+class ScrubSleep;
 }
 
 namespace crimson::osd::scrub {
+
+class ScrubMetrics;
 
 struct blocked_range_t {
   hobject_t begin;
@@ -58,6 +61,7 @@ class PGScrubber : public crimson::BlockerT<PGScrubber>, ScrubContext {
   friend class ::crimson::osd::ScrubScan;
   friend class ::crimson::osd::ScrubFindRange;
   friend class ::crimson::osd::ScrubReserveRange;
+  friend class ::crimson::osd::ScrubSleep;
 
   using interruptor = ::crimson::interruptible::interruptor<
     ::crimson::osd::IOInterruptCondition>;
@@ -89,6 +93,7 @@ class PGScrubber : public crimson::BlockerT<PGScrubber>, ScrubContext {
   bool m_queued_or_active{false};
   std::optional<SchedTarget> m_active_target;
   epoch_t m_epoch_start{0};  ///< the actual epoch when scrubbing started
+  epoch_t m_last_aborted{0}; ///< epoch of last abort to avoid duplicate resets
   scrub_flags_t m_flags;
   bool m_is_deep{false};
   bool m_is_repair{false};
@@ -145,8 +150,14 @@ public:
     OSDRestrictions osd_restrictions,
     ScrubPGPreconds pg_cond);
 
-  /// handle scrub request
+  /// handle scrub request (called by start_scrub when scheduler picks up a job)
   void handle_scrub_requested(bool deep);
+
+  /// enqueue a manually requested scrub (called by admin command)
+  void enqueue_scrub_requested(bool deep);
+
+  /// handle schedule-scrub command (test/debug only)
+  void handle_schedule_scrub(bool deep, int64_t offset);
 
   /// is this scrub's urgency high enough, or must it reserve its replicas?
   [[nodiscard]] bool is_reservation_required() const;
@@ -171,15 +182,69 @@ public:
     PGScrubber::BlockingEvent::TriggerI&& trigger,
     const hobject_t &hoid);
 
+  /// Update scrub job scheduling (called when config changes or pool info changes)
+  void update_scrub_job();
+
+  /// Check if scrub is queued or actively running
+  bool is_queued_or_active() const {
+    return m_queued_or_active;
+  }
+
+  /// Check if scrub is currently reserving replicas
+  bool is_reserving_replicas() const;
+
+  /// Dump scrub metrics (if scrubbing is active)
+  void dump_scrub_metrics(ceph::Formatter* f);
+  
+  /// Access to metrics for scrub machine states
+  ScrubMetrics* get_scrub_metrics() {
+    return m_last_scrub_metrics.get();
+  }
+  
+  /// Get scrub sleep time in milliseconds (like classic OSD)
+  std::chrono::milliseconds get_scrub_sleep_time() const;
+  
+  /// Check if scrub should abort due to noscrub/nodeep-scrub flags
+  bool should_abort() const;
+  
+  /// Verify if scrub should continue or abort, handling epoch tracking
+  bool verify_against_abort(epoch_t epoch_to_verify);
+  
+  /// Handle mid-scrub abort by re-enqueuing the job
+  void on_mid_scrub_abort(delay_cause_t issue);
+  
+  /// Metrics for the last or current scrub session
+  /// Persists across state transitions so it can be queried after scrub completes
+  std::unique_ptr<ScrubMetrics> m_last_scrub_metrics;
+  
+  /// Track scrub start time to calculate duration
+  std::optional<ScrubTimePoint> m_scrub_start_time;
+
+  /// Track the total number of objects scrubbed across all chunks
+  int64_t m_objects_scrubbed_in_chunk{0};
+  
+  /// Start sleep operation between chunks
+  void start_chunk_sleep();
+
+  void set_queued_or_active() {
+    m_queued_or_active = true;
+  }
+  void clear_queued_or_active()
+  {
+    if (m_queued_or_active) {
+      m_queued_or_active = false;
+    }
+  }
+
 private:
   DoutPrefixProvider &get_dpp() final { return dpp; }
 
   void schedule_scrub_with_osd() final;
-  void update_scrub_job() final;
   void rm_from_osd_scrubbing() final;
+  void clear_pgscrub_state() final;
 
   void notify_scrub_start(bool deep) final;
-  void notify_scrub_end(bool deep) final;
+  //void notify_scrub_end(bool deep) final;
 
   void requeue_penalized(
       scrub_level_t s_or_d,
@@ -215,25 +280,25 @@ private:
 
   sched_conf_t populate_config_params() const;
   void update_targets(utime_t scrub_clock_now);
-  bool is_queued_or_active() const  {
-    return m_queued_or_active;
-  };
   void set_op_parameters(ScrubPGPreconds pg_cond);
-  void set_queued_or_active() {
-    m_queued_or_active = true;
-  }
-  void clear_queued_or_active()
-  {
-    if (m_queued_or_active) {
-      m_queued_or_active = false;
-    }
-  }
   void cleanup_on_finish();
-  void clear_pgscrub_state();
   void reset_internal_state();
   std::string_view registration_state() const;
   bool should_drop_message(Message &m) const;
   void handle_scrub_reserve_msgs(Message &m);
+
+  /**
+   * a text description of the current scrub mode (repair/deep-scrub/scrub)
+   *
+   * Note: based on PG_STATE_REPAIR, and not on m_is_repair. I.e. for
+   * auto_repair will show as "deep-scrub" and not as "repair" (until the first
+   * error is detected).
+   */
+  std::string_view m_mode_desc;
+
+  void update_op_mode_text();
+
+  std::string_view get_op_mode_text() const;
 
 };
 
