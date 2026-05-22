@@ -8,6 +8,13 @@
 #include "osd/scrubber/scrub_resources.h"
 #include "scrub_queue.h"
 
+#include <map>
+
+namespace crimson::common {
+class CephContext;
+class PerfCounters;
+}
+
 namespace crimson::osd {
 class ShardServices;
 
@@ -20,6 +27,13 @@ class ScrubScheduler {
   /// the queue of PGs waiting to be scrubbed
   scrub::ScrubQueue m_queue;
 
+  // Performance counters infrastructure (matching classic OSD)
+  using pc_index_t = std::pair<scrub_level_t, int /*pool type*/>;
+  std::map<pc_index_t, crimson::common::PerfCounters*> m_perf_counters;
+
+  void create_scrub_perf_counters();
+  void destroy_scrub_perf_counters();
+
   seastar::future<scrub::OSDRestrictions> restrictions_on_scrubbing(
     bool is_recovery_active,
     utime_t scrub_clock_now) const;
@@ -31,10 +45,8 @@ class ScrubScheduler {
   bool scrub_load_below_threshold() const;
 
 public:
-  ScrubScheduler(ShardServices &shard_services)
-    : shard_services(shard_services),
-      m_resource_bookkeeper() {}
-  ~ScrubScheduler() = default;
+  ScrubScheduler(ShardServices &shard_services);
+  ~ScrubScheduler();
 
   seastar::future<> initiate_scrub(bool is_recovery_active);
   void enqueue_scrub_job(const scrub::ScrubJob& sjob);
@@ -55,5 +67,9 @@ public:
   scrub::ScrubQueue& get_queue() {
     return m_queue;
   }
+
+  /// Get performance counters for a specific pool type and scrub level
+  /// Matches the classic OSD OsdScrub::get_perf_counters interface
+  crimson::common::PerfCounters* get_perf_counters(int pool_type, scrub_level_t level);
 };
 } // namespace crimson::osd

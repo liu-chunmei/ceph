@@ -171,6 +171,10 @@ public:
     PGScrubber::BlockingEvent::TriggerI&& trigger,
     const hobject_t &hoid);
 
+  PerfCounters* get_osd_perf_counters() const;
+  const ScrubCounterSet& get_unlabeled_counters() const;
+  PerfCounters* get_labeled_counters() const;
+
 private:
   DoutPrefixProvider &get_dpp() final { return dpp; }
 

@@ -497,8 +497,7 @@ struct AwaitScrub : ScrubState<AwaitScrub, PrimaryActive> {
 struct ReservingReplicas;
 struct Scrubbing : ScrubState<Scrubbing, PrimaryActive, ReservingReplicas> {
   static constexpr std::string_view state_name = "Scrubbing";
-  explicit Scrubbing(my_context ctx)
-    : ScrubState(ctx), policy(get_scrub_context().get_policy()) {}
+  explicit Scrubbing(my_context ctx);
 
   using reactions = boost::mpl::list<
     sc::custom_reaction<internal_events::set_deep_t>,
@@ -507,7 +506,16 @@ struct Scrubbing : ScrubState<Scrubbing, PrimaryActive, ReservingReplicas> {
 
   chunk_validation_policy_t policy;
   std::optional<ReplicaReservations> m_reservations{std::nullopt};
-  const Scrub::ScrubCounterSet* m_counters_idx{nullptr};
+    /// the relevant set of labeled performance counters for this session
+  /// (relevant, i.e. for this pool type X scrub level)
+  PerfCounters* m_perf_set{nullptr};
+
+  /// the OSD's unlabeled performance counters access point
+  PerfCounters* m_osd_counters{nullptr};
+
+  /// the set of performance counters for this session (relevant, i.e. for
+  /// this pool type)
+  const ScrubCounterSet* m_counters_idx{nullptr};
 
   /// hobjects < current have been scrubbed
   hobject_t current;

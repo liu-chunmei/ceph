@@ -81,6 +81,18 @@ sc::result ScanRange::react(const ScrubContext::scan_range_complete_t &event)
   }
 }
 
+Scrubbing::Scrubbing(my_context ctx)
+  : ScrubState(ctx), policy(get_scrub_context().get_policy())
+{
+  DECLARE_LOCALS;
+  
+  // Initialize performance counter pointers
+  m_perf_set = m_scrbr->get_labeled_counters();
+  m_osd_counters = m_scrbr->get_osd_perf_counters();
+  m_counters_idx = &m_scrbr->get_unlabeled_counters();
+  m_osd_counters->inc(m_counters_idx->started_cnt);
+}
+
 ReservingReplicas::ReservingReplicas(my_context ctx) : ScrubState(ctx)
 {
   LOG_PREFIX(ReservingReplicas::ReservingReplicas);

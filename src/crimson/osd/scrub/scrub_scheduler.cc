@@ -7,6 +7,8 @@
 #include "crimson/common/config_proxy.h"
 #include "crimson/common/log.h"
 #include "crimson/osd/pg.h"
+#include "common/perf_counters_key.h"
+#include "osd/osd_perf_counters.h"
 SET_SUBSYS(osd);
 namespace crimson::osd {
 
@@ -218,4 +220,70 @@ void ScrubScheduler::dec_scrubs_local()
 int ScrubScheduler::get_scrubs_local() const {
   return m_resource_bookkeeper.get_scrubs_local();
 }
+
+// Performance counters implementation (matching classic OSD)
+
+// Labels matrix: <shallow/deep> X <replicated/EC>
+static inline std::vector<std::string> perf_labels = {
+    ceph::perf_counters::key_create(
+        "osd_scrub_sh_repl",
+        {{"level", "shallow"}, {"pooltype", "replicated"}}),
+    ceph::perf_counters::key_create(
+        "osd_scrub_dp_repl",
+        {{"level", "deep"}, {"pooltype", "replicated"}}),
+    ceph::perf_counters::key_create(
+        "osd_scrub_sh_ec",
+        {{"level", "shallow"}, {"pooltype", "ec"}}),
+    ceph::perf_counters::key_create(
+        "osd_scrub_dp_ec",
+        {{"level", "deep"}, {"pooltype", "ec"}})};
+
+// Easy way to loop over the counter sets. Order must match the perf_labels vector
+static inline std::array<std::pair<scrub_level_t, int>, 4> perf_counters_indices = {
+    std::make_pair(scrub_level_t::shallow, pg_pool_t::TYPE_REPLICATED),
+    std::make_pair(scrub_level_t::deep, pg_pool_t::TYPE_REPLICATED),
+    std::make_pair(scrub_level_t::shallow, pg_pool_t::TYPE_ERASURE),
+    std::make_pair(scrub_level_t::deep, pg_pool_t::TYPE_ERASURE)};
+
+ScrubScheduler::ScrubScheduler(ShardServices &shard_services)
+    : shard_services(shard_services),
+      m_resource_bookkeeper()
+{
+  create_scrub_perf_counters();
+}
+
+ScrubScheduler::~ScrubScheduler()
+{
+  destroy_scrub_perf_counters();
+}
+
+void ScrubScheduler::create_scrub_perf_counters()
+{
+  auto* cct = shard_services.get_cct();
+  auto idx = perf_counters_indices.begin();
+  // create a separate set for each pool type & scrub level
+  for (const auto& label : perf_labels) {
+    crimson::common::PerfCounters* counters = build_scrub_labeled_perf(cct, label);
+    ceph_assert(counters);
+    cct->get_perfcounters_collection()->add(counters);
+    m_perf_counters[*(idx++)] = counters;
+  }
+}
+
+void ScrubScheduler::destroy_scrub_perf_counters()
+{
+  auto* cct = shard_services.get_cct();
+  for (const auto& [label, counters] : m_perf_counters) {
+    std::ignore = label;
+    cct->get_perfcounters_collection()->remove(counters);
+    delete counters;
+  }
+  m_perf_counters.clear();
+}
+
+crimson::common::PerfCounters* ScrubScheduler::get_perf_counters(int pool_type, scrub_level_t level)
+{
+  return m_perf_counters[pc_index_t{level, pool_type}];
+}
+
 } // namespace crimson::osd
