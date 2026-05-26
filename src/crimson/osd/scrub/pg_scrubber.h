@@ -175,11 +175,18 @@ public:
   const ScrubCounterSet& get_unlabeled_counters() const;
   PerfCounters* get_labeled_counters() const;
 
+  /// Update scrub job scheduling (called when config changes or pool info changes)
+  void update_scrub_job();
+
+  /// Check if scrub is queued or actively running
+  bool is_queued_or_active() const {
+    return m_queued_or_active;
+  }
+
 private:
   DoutPrefixProvider &get_dpp() final { return dpp; }
 
   void schedule_scrub_with_osd() final;
-  void update_scrub_job() final;
   void rm_from_osd_scrubbing() final;
 
   void notify_scrub_start(bool deep) final;
@@ -219,9 +226,6 @@ private:
 
   sched_conf_t populate_config_params() const;
   void update_targets(utime_t scrub_clock_now);
-  bool is_queued_or_active() const  {
-    return m_queued_or_active;
-  };
   void set_op_parameters(ScrubPGPreconds pg_cond);
   void set_queued_or_active() {
     m_queued_or_active = true;

@@ -139,7 +139,7 @@ function MANUAL_peering_check() {
     return 0
 }
 
-function MANUAL_scrub_test() {
+function TEST_scrub_test() {
     local dir=$1
     local poolname=test
     local OSDS=3

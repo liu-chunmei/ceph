@@ -286,4 +286,26 @@ crimson::common::PerfCounters* ScrubScheduler::get_perf_counters(int pool_type, 
   return m_perf_counters[pc_index_t{level, pool_type}];
 }
 
+void ScrubScheduler::on_config_change()
+{
+  LOG_PREFIX(ScrubScheduler::on_config_change);
+  DEBUG("handling config change for scrub scheduling");
+  
+  // Get all PGs that have scrub jobs in the queue
+  auto to_notify = m_queue.get_pgs(
+      [](const scrub::SchedEntry& sj, bool) -> bool { return true; });
+
+  for (const auto& pgid : to_notify) {
+    DEBUG("rescheduling pg[{}] scrubs", pgid);
+    auto pg = shard_services.get_pg(pgid);
+    if (!pg) {
+      DEBUG("pg[{}] not found, skipping", pgid);
+      continue;
+    }
+
+    DEBUG("updating scrub schedule on {}", pg->get_pgid());
+    pg->on_scrub_schedule_input_change();
+  }
+}
+
 } // namespace crimson::osd

@@ -71,5 +71,8 @@ public:
   /// Get performance counters for a specific pool type and scrub level
   /// Matches the classic OSD OsdScrub::get_perf_counters interface
   crimson::common::PerfCounters* get_perf_counters(int pool_type, scrub_level_t level);
+
+  /// Handle configuration changes that affect scrub scheduling
+  void on_config_change();
 };
 } // namespace crimson::osd

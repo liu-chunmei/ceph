@@ -201,7 +201,7 @@ void PGScrubber::schedule_scrub_with_osd()
 void PGScrubber::update_scrub_job()
 {
   LOG_PREFIX(PGScrubber::update_scrub_job);
-   DEBUGDPP("update job: {}", pg, *m_scrub_job);
+  DEBUGDPP("update job: {}", pg, *m_scrub_job);
   if (!m_scrub_job->is_registered())
     return;
   if (m_scrub_job->is_queued()) {
