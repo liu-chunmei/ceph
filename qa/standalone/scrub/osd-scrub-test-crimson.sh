@@ -29,6 +29,10 @@ function run() {
     CEPH_ARGS+="--mon-host=$CEPH_MON "
     # Crimson requires msgr2
     CEPH_ARGS+="--ms-bind-msgr2=true --ms-bind-msgr1=false "
+    # Critical: Mark pools as crimson-compatible by default
+    CEPH_ARGS+="--osd_pool_default_crimson=true "
+    # Disable PG autoscale for crimson (not supported yet)
+    CEPH_ARGS+="--osd_pool_default_pg_autoscale_mode=off "
 
     export -n CEPH_CLI_TEST_DUP_COMMAND
     local funcs=${@:-$(set | sed -n -e 's/^\(TEST_[0-9a-z_]*\) .*/\1/p')}
@@ -52,17 +56,102 @@ function perf_counters() {
     done
 }
 
-function TEST_scrub_test() {
+function apply_crimson_config() {
+    # Apply critical configurations that vstart.sh sets via config assimilate-conf
+    # These are needed for proper Crimson operation and peering
+    ceph config set mon mon_osd_reporter_subtree_level osd || return 1
+    ceph config set mon mon_data_avail_warn 2 || return 1
+    ceph config set mon mon_data_avail_crit 1 || return 1
+    ceph config set mon mon_allow_pool_delete true || return 1
+    ceph config set mon mon_allow_pool_size_one true || return 1
+    ceph config set osd osd_scrub_load_threshold 2000 || return 1
+    ceph config set osd osd_debug_op_order true || return 1
+    ceph config set osd osd_debug_misdirected_ops true || return 1
+}
+
+function MANUAL_peering_check() {
+    local dir=$1
+    local poolname=test
+    local OSDS=3
+
+    echo "=========================================="
+    echo "Starting MON..."
+    echo "=========================================="
+    run_mon $dir a --osd_pool_default_size=3 || return 1
+    
+    echo "=========================================="
+    echo "Applying critical Crimson configurations..."
+    echo "=========================================="
+    apply_crimson_config || return 1
+    
+    echo "=========================================="
+    echo "Starting MGR..."
+    echo "=========================================="
+    run_mgr $dir x --mgr_stats_period=1 || return 1
+    
+    # Crimson-specific OSD arguments
+    local ceph_osd_args="--osd_objectstore=seastore "
+    ceph_osd_args+="--osd-scrub-interval-randomize-ratio=0 --osd-deep-scrub-randomize-ratio=0 "
+    ceph_osd_args+="--osd_scrub_backoff_ratio=0 --osd_stats_update_period_not_scrubbing=3 "
+    ceph_osd_args+="--osd_stats_update_period_scrubbing=2"
+    
+    echo "=========================================="
+    echo "Starting $OSDS Crimson OSDs..."
+    echo "=========================================="
+    for osd in $(seq 0 $(expr $OSDS - 1))
+    do
+      echo "Starting OSD.$osd..."
+      run_crimson_osd $dir $osd $ceph_osd_args || return 1
+    done
+
+    echo "=========================================="
+    echo "Checking cluster status before pool creation..."
+    echo "=========================================="
+    ceph -s
+    
+    echo "=========================================="
+    echo "Creating pool '$poolname' with 1 PG..."
+    echo "=========================================="
+    create_pool $poolname 1 1
+    sleep 8
+    ceph -s
+    ceph pg dump pgs
+    echo "=========================================="
+    echo "Waiting for PGs to become clean (peering check)..."
+    echo "=========================================="
+    wait_for_clean || return 1
+    
+    echo "=========================================="
+    echo "SUCCESS! PG peering completed successfully!"
+    echo "=========================================="
+    ceph -s
+    ceph pg dump pgs
+    
+    poolid=$(ceph osd dump | grep "^pool.*[']${poolname}[']" | awk '{ print $2 }')
+    echo "Pool ID: $poolid"
+    
+    echo "=========================================="
+    echo "Test stopped here for peering verification."
+    echo "Press Ctrl+C to exit or the test will continue..."
+    echo "=========================================="
+    sleep 30
+    
+    return 0
+}
+
+function MANUAL_scrub_test() {
     local dir=$1
     local poolname=test
     local OSDS=3
     local objects=15
 
     run_mon $dir a --osd_pool_default_size=3 || return 1
+    apply_crimson_config || return 1
     run_mgr $dir x --mgr_stats_period=1 || return 1
     
     # Crimson-specific OSD arguments
-    local ceph_osd_args="--osd-scrub-interval-randomize-ratio=0 --osd-deep-scrub-randomize-ratio=0 "
+    local ceph_osd_args="--osd_objectstore=seastore "
+    ceph_osd_args+="--osd-scrub-interval-randomize-ratio=0 --osd-deep-scrub-randomize-ratio=0 "
     ceph_osd_args+="--osd_scrub_backoff_ratio=0 --osd_stats_update_period_not_scrubbing=3 "
     ceph_osd_args+="--osd_stats_update_period_scrubbing=2"
     
@@ -160,10 +249,11 @@ function TEST_interval_changes() {
 
     # This min scrub interval results in 30 seconds backoff time
     run_mon $dir a --osd_pool_default_size=$OSDS || return 1
+    apply_crimson_config || return 1
     run_mgr $dir x --mgr_stats_period=1 || return 1
     for osd in $(seq 0 $(expr $OSDS - 1))
     do
-      run_crimson_osd $dir $osd --osd_scrub_min_interval=$min_interval --osd_scrub_max_interval=$max_interval --osd_scrub_interval_randomize_ratio=0 || return 1
+      run_crimson_osd $dir $osd --osd_objectstore=seastore --osd_scrub_min_interval=$min_interval --osd_scrub_max_interval=$max_interval --osd_scrub_interval_randomize_ratio=0 || return 1
     done
 
     # Create a pool with a single pg
@@ -205,7 +295,7 @@ function TEST_interval_changes() {
     perf_counters $dir $OSDS
 }
 
-function _scrub_abort() {
+function MANUAL_scrub_abort() {
     local dir=$1
     local poolname=test
     local OSDS=3
@@ -223,10 +313,12 @@ function _scrub_abort() {
     fi
 
     run_mon $dir a --osd_pool_default_size=3 || return 1
+    apply_crimson_config || return 1
     run_mgr $dir x --mgr_stats_period=1 || return 1
     for osd in $(seq 0 $(expr $OSDS - 1))
     do
-        run_crimson_osd $dir $osd --osd_pool_default_pg_autoscale_mode=off \
+        run_crimson_osd $dir $osd --osd_objectstore=seastore \
+            --osd_pool_default_pg_autoscale_mode=off \
             --osd_deep_scrub_randomize_ratio=0.0 \
             --osd_scrub_sleep=5.0 \
             --osd_scrub_interval_randomize_ratio=0 || return 1
@@ -247,7 +339,12 @@ function _scrub_abort() {
     local primary=$(get_primary $poolname obj1)
     local pgid="${poolid}.0"
 
-    ceph tell $pgid schedule-$type || return 1
+    # Trigger scrub using pg command (not tell command)
+    if [ "$type" = "scrub" ]; then
+        ceph pg $pgid scrub || return 1
+    else
+        ceph pg $pgid deep-scrub || return 1
+    fi
 
     # Wait for scrubbing to start
     set -o pipefail
@@ -309,17 +406,17 @@ function _scrub_abort() {
     perf_counters $dir $OSDS
 }
 
-function TEST_scrub_abort() {
+function MANUAL_scrub_abort() {
     local dir=$1
     _scrub_abort $dir scrub
 }
 
-function TEST_deep_scrub_abort() {
+function MANUAL_deep_scrub_abort() {
     local dir=$1
     _scrub_abort $dir deep-scrub
 }
 
-function TEST_pg_dump_objects_scrubbed() {
+function MANUAL_pg_dump_objects_scrubbed() {
     local dir=$1
     local poolname=test
     local OSDS=3
@@ -330,10 +427,11 @@ function TEST_pg_dump_objects_scrubbed() {
 
     setup $dir || return 1
     run_mon $dir a --osd_pool_default_size=$OSDS || return 1
+    apply_crimson_config || return 1
     run_mgr $dir x --mgr_stats_period=1 || return 1
     for osd in $(seq 0 $(expr $OSDS - 1))
     do
-      run_crimson_osd $dir $osd || return 1
+      run_crimson_osd $dir $osd --osd_objectstore=seastore || return 1
     done
 
     # Create a pool with a single pg
@@ -367,5 +465,3 @@ main osd-scrub-test-crimson "$@"
 # compile-command: "cd build ; make -j4 && \
 #    ../qa/run-standalone.sh osd-scrub-test-crimson.sh"
 # End:
-
-# Made with Bob

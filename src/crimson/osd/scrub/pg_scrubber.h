@@ -239,6 +239,19 @@ private:
   bool should_drop_message(Message &m) const;
   void handle_scrub_reserve_msgs(Message &m);
 
+  /**
+   * a text description of the current scrub mode (repair/deep-scrub/scrub)
+   *
+   * Note: based on PG_STATE_REPAIR, and not on m_is_repair. I.e. for
+   * auto_repair will show as "deep-scrub" and not as "repair" (until the first
+   * error is detected).
+   */
+  std::string_view m_mode_desc;
+
+  void update_op_mode_text();
+
+  std::string_view get_op_mode_text() const;
+
 };
 
 } // namespace crimson::osd::scrub

@@ -77,7 +77,7 @@ spg_t PGScrubber::get_pg_id() const
   return pg.get_pgid();
 }
 
-PGScrubber::PGScrubber(PG &pg) : pg(pg), dpp(pg), machine(*this, this)
+PGScrubber::PGScrubber(PG &pg) : pg(pg), dpp(pg), machine(*this, this), m_mode_desc("inactive")
 {
   m_scrub_job.emplace(pg.pgid, pg.pg_whoami.osd);
 }
@@ -320,10 +320,11 @@ void PGScrubber::set_op_parameters(ScrubPGPreconds pg_cond)
   // the PG status as appearing in the logs), and would not be turned on for
   // 'on the go' - only after errors to be repair are found.
   m_is_repair = m_flags.auto_repair ||
-		ScrubJob::is_repair_implied(m_active_target->urgency());
+  ScrubJob::is_repair_implied(m_active_target->urgency());
   ceph_assert(!m_is_repair || m_is_deep);  // repair implies deep-scrub
   if (ScrubJob::is_repair_implied(m_active_target->urgency())) {
     pg.state_set(PG_STATE_REPAIR);
+    update_op_mode_text();
   }
 
   // 'deep-on-error' is set for periodic shallow scrubs, if allowed
@@ -472,6 +473,18 @@ void PGScrubber::handle_scrub_requested(bool deep)
 {
   LOG_PREFIX(PGScrubber::handle_scrub_requested);
   DEBUGDPP("deep: {}", pg, deep);
+  
+  // If m_active_target is not set, this is being called from an external
+  // scrub request (e.g., admin command) rather than from start_scrub().
+  // Set m_active_target to match the requested scrub level, similar to
+  // how classic OSD's scrub_requested() updates the target.
+  if (!m_active_target) {
+    auto scrub_level = deep ? scrub_level_t::deep : scrub_level_t::shallow;
+    m_active_target = SchedTarget(pg.get_pgid(), scrub_level);
+    // Set urgency to operator_requested since this is an explicit request
+    m_active_target->sched_info.urgency = urgency_t::operator_requested;
+  }
+  
   handle_event(events::start_scrub_t{deep});
 }
 
@@ -828,4 +841,21 @@ PerfCounters* PGScrubber::get_labeled_counters() const
                                              : pg_pool_t::TYPE_ERASURE),
       (m_is_deep ? scrub_level_t::deep : scrub_level_t::shallow));
 }
+
+void PGScrubber::update_op_mode_text()
+{
+  LOG_PREFIX(PGScrubber::update_op_mode_text);
+  auto visible_repair = pg.state_test(PG_STATE_REPAIR);
+  m_mode_desc =
+    (visible_repair ? "repair" : (m_is_deep ? "deep-scrub" : "scrub"));
+
+  DEBUGDPP("repair: visible: {}, internal: {}. Displayed: {}",
+    pg, visible_repair, m_is_repair, m_mode_desc);
+}
+
+std::string_view PGScrubber::get_op_mode_text() const
+{
+  return m_mode_desc;
+}
+
 }

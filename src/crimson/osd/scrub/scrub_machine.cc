@@ -171,7 +171,6 @@ sc::result ReservingReplicas::react(const events::remotes_reserved_t &)
 
 ReplicaActive::~ReplicaActive()
 {
-  clear_remote_reservation(false);
 }
 sc::result ReplicaActive::react(const events::replica_reserve_request_t &event)
 {
