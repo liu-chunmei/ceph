@@ -193,6 +193,9 @@ public:
   /// Persists across state transitions so it can be queried after scrub completes
   std::unique_ptr<ScrubMetrics> m_last_scrub_metrics;
 
+  /// Track the total number of objects scrubbed across all chunks
+  int64_t m_objects_scrubbed_in_chunk{0};
+
 private:
   DoutPrefixProvider &get_dpp() final { return dpp; }
 

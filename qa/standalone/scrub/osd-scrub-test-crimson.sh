@@ -419,7 +419,7 @@ function MANUAL_deep_scrub_abort() {
     _scrub_abort $dir deep-scrub
 }
 
-function MANUAL_pg_dump_objects_scrubbed() {
+function TEST_pg_dump_objects_scrubbed() {
     local dir=$1
     local poolname=test
     local OSDS=3
@@ -434,7 +434,7 @@ function MANUAL_pg_dump_objects_scrubbed() {
     run_mgr $dir x --mgr_stats_period=1 || return 1
     for osd in $(seq 0 $(expr $OSDS - 1))
     do
-      run_crimson_osd $dir $osd --osd_objectstore=seastore || return 1
+      run_crimson_osd $dir $osd --osd_objectstore=seastore --debug || return 1
     done
 
     # Create a pool with a single pg

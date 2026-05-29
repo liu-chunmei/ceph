@@ -685,6 +685,10 @@ void PGScrubber::emit_chunk_result(
   } else {
     DEBUGDPP("Chunk complete. range: {}", pg, range);
   }
+  
+  // Track the number of objects scrubbed in this chunk
+  // result.stats.num_objects contains the count of objects in this chunk
+  m_objects_scrubbed_in_chunk += result.stats.num_objects;
 }
 
 void PGScrubber::emit_scrub_result(
@@ -692,7 +696,7 @@ void PGScrubber::emit_scrub_result(
   object_stat_sum_t in_stats)
 {
   LOG_PREFIX(PGScrubber::emit_scrub_result);
-  DEBUGDPP("", pg);
+  DEBUGDPP("objects_scrubbed: {}", pg, m_objects_scrubbed_in_chunk);
   pg.peering_state.update_stats(
     [this, FNAME, deep, &in_stats](auto &history, auto &pg_stats) {
       // Handle invalid stats, in case of split/merge
@@ -720,7 +724,11 @@ void PGScrubber::emit_scrub_result(
 	    ++pg_stats.stats.sum.num_shallow_scrub_errors;
 	  }
 	});
-      history.last_scrub = pg.peering_state.get_info().last_update;
+	     
+	     // Update objects_scrubbed with the total count from all chunks
+	     pg_stats.objects_scrubbed = m_objects_scrubbed_in_chunk;
+	     
+	     history.last_scrub = pg.peering_state.get_info().last_update;
       auto now = ceph_clock_now();
       history.last_scrub_stamp = now;
       if (deep) {
@@ -764,6 +772,7 @@ void PGScrubber::clear_pgscrub_state()
 void PGScrubber::reset_internal_state()
 {
   clear_queued_or_active();
+  m_objects_scrubbed_in_chunk = 0;
 }
 
 void PGScrubber::dump_scrub_metrics(ceph::Formatter* f)
