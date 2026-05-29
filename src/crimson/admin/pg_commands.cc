@@ -124,9 +124,9 @@ public:
   explicit PGOldFormCommand(crimson::osd::OSD&) :
     AdminSocketHook{"pg",
                     "name=pgid,type=CephPgid "
-                    "name=cmd,type=CephChoices,strings=query|log|scrub|deep-scrub|list_unfound|mark_unfound_lost "
+                    "name=cmd,type=CephChoices,strings=query|log|scrub|deep-scrub|list_unfound|mark_unfound_lost|scrub_metrics "
                     "name=arg,type=CephString,req=false",
-                    "old-form wrapper for pg subcommands (query, log, scrub, deep-scrub, list_unfound, mark_unfound_lost)"}
+                    "old-form wrapper for pg subcommands (query, log, scrub, deep-scrub, list_unfound, mark_unfound_lost, scrub_metrics)"}
   {}
 
   seastar::future<tell_result_t> call(const cmdmap_t&,
@@ -322,6 +322,45 @@ public:
   }
 };
 
+class ScrubMetricsCommand final : public PGCommand {
+public:
+  explicit ScrubMetricsCommand(crimson::osd::OSD& osd) :
+    PGCommand{osd,
+              "scrub_metrics",
+              "name=pgid,type=CephPgid",
+              "dump scrub metrics for a specific pg"}
+  {}
+private:
+  seastar::future<tell_result_t>
+  do_command(Ref<PG> pg,
+             const cmdmap_t&,
+             std::string_view format,
+             ceph::bufferlist&&) const final
+  {
+    LOG_PREFIX(ScrubMetricsCommand::do_command);
+    DEBUGDPP("dumping scrub metrics for pg {}", *pg, pg->get_pgid());
+    
+    std::unique_ptr<Formatter> f{Formatter::create(format,
+                                                   "json-pretty",
+                                                   "json-pretty")};
+    f->open_object_section("scrub_metrics");
+    f->dump_stream("pgid") << pg->get_pgid();
+    
+    // Get scrub metrics from the PG's scrubber
+    if (auto* metrics = pg->scrubber.get_scrub_metrics()) {
+      DEBUGDPP("scrub metrics found, dumping data", *pg);
+      metrics->dump(f.get());
+    } else {
+      DEBUGDPP("no scrub metrics available for pg {}", *pg, pg->get_pgid());
+      f->dump_string("status", "no scrub metrics available");
+    }
+    
+    f->close_section();
+    DEBUGDPP("scrub metrics dump complete", *pg);
+    return seastar::make_ready_future<tell_result_t>(std::move(f));
+  }
+};
+
 } // namespace crimson::admin::pg
 
 namespace crimson::admin {
@@ -355,5 +394,8 @@ template std::unique_ptr<AdminSocketHook>
 make_asok_hook<crimson::admin::pg::ScrubCommand<false>,
                crimson::osd::OSD&, std::string_view>(crimson::osd::OSD& osd,
                                                     std::string_view&& name);
+
+template std::unique_ptr<AdminSocketHook>
+make_asok_hook<crimson::admin::pg::ScrubMetricsCommand>(crimson::osd::OSD& osd);
 
 } // namespace crimson::admin

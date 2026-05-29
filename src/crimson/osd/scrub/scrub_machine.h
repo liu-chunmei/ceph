@@ -26,6 +26,7 @@
 #include "osd/scrubber_common.h"
 #include "osd/scrubber/scrub_reservations.h"
 #include "scrub_validator.h"
+#include "scrub_metrics.h"
 
 namespace crimson::osd {
   class PG;
@@ -506,16 +507,6 @@ struct Scrubbing : ScrubState<Scrubbing, PrimaryActive, ReservingReplicas> {
 
   chunk_validation_policy_t policy;
   std::optional<ReplicaReservations> m_reservations{std::nullopt};
-    /// the relevant set of labeled performance counters for this session
-  /// (relevant, i.e. for this pool type X scrub level)
-  PerfCounters* m_perf_set{nullptr};
-
-  /// the OSD's unlabeled performance counters access point
-  PerfCounters* m_osd_counters{nullptr};
-
-  /// the set of performance counters for this session (relevant, i.e. for
-  /// this pool type)
-  const ScrubCounterSet* m_counters_idx{nullptr};
 
   /// hobjects < current have been scrubbed
   hobject_t current;
@@ -526,9 +517,15 @@ struct Scrubbing : ScrubState<Scrubbing, PrimaryActive, ReservingReplicas> {
   /// stats for objects < current, maintained via events::op_stats_t
   object_stat_sum_t stats;
 
+  /// timestamp when scrubbing started, for elapsed time calculation (using ScrubClock)
+  ScrubTimePoint scrub_start_time;
+
   void advance_current(const hobject_t &next) {
     current = next;
   }
+
+  // Access metrics for dumping - returns pointer from PGScrubber
+  ScrubMetrics* get_metrics();
 
   sc::result react(const internal_events::set_deep_t &event) {
     deep = event.value;

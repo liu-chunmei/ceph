@@ -47,13 +47,16 @@ function run() {
     done
 }
 
-function perf_counters() {
+function dump_scrub_metrics() {
     local dir=$1
-    local OSDS=$2
-    for osd in $(seq 0 $(expr $OSDS - 1))
-    do
-      ceph tell osd.$osd counter dump | jq 'with_entries(select(.key | startswith("osd_scrub")))'
-    done
+    local poolname=$2
+    local poolid=$(ceph osd dump | grep "^pool.*[']${poolname}[']" | awk '{ print $2 }')
+    local pgid="${poolid}.0"
+    
+    echo "=========================================="
+    echo "Dumping scrub metrics for PG $pgid"
+    echo "=========================================="
+    ceph pg $pgid scrub_metrics || echo "Failed to dump scrub metrics for $pgid"
 }
 
 function apply_crimson_config() {
@@ -217,7 +220,7 @@ function TEST_scrub_test() {
     test "$(ceph pg $pgid query | jq '.peer_info[0].stats.stat_sum.num_scrub_errors')" = "0" || return 1
     test "$(ceph pg $pgid query | jq '.peer_info[1].stats.stat_sum.num_scrub_errors')" = "0" || return 1
     ceph pg dump pgs | grep ^${pgid} | grep -vq -- +inconsistent || return 1
-    perf_counters $dir $OSDS
+    dump_scrub_metrics $dir $poolname
 }
 
 # Grab year-month-day
@@ -292,7 +295,7 @@ function TEST_interval_changes() {
     ceph osd pool set $poolname scrub_max_interval $(expr $week \* 3)
     sleep $WAIT_FOR_UPDATE
     check_dump_scrubs $primary "3 days" || return 1
-    perf_counters $dir $OSDS
+    dump_scrub_metrics $dir $poolname
 }
 
 function MANUAL_scrub_abort() {
@@ -403,7 +406,7 @@ function MANUAL_scrub_abort() {
     fi
     TIMEOUT=$(($objects / 2))
     wait_for_scrub $pgid "$last_scrub" || return 1
-    perf_counters $dir $OSDS
+    dump_scrub_metrics $dir $poolname
 }
 
 function MANUAL_scrub_abort() {
@@ -450,7 +453,7 @@ function MANUAL_pg_dump_objects_scrubbed() {
     #Trigger a scrub on a PG
     pg_scrub $pgid || return 1
     test "$(ceph pg $pgid query | jq '.info.stats.objects_scrubbed')" '=' $objects || return 1
-    perf_counters $dir $OSDS
+    dump_scrub_metrics $dir $poolname
 
     teardown $dir || return 1
 }

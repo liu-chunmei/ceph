@@ -8,65 +8,11 @@
 #include "crimson/osd/osd_operations/scrub_events.h"
 #include "messages/MOSDRepScrub.h"
 #include "messages/MOSDRepScrubMap.h"
-#include "osd/osd_perf_counters.h"
 #include "pg_scrubber.h"
 
 SET_SUBSYS(osd);
 
 namespace crimson::osd::scrub {
-
-// Counter sets for replicated and EC pools (matching classic OSD)
-static inline constexpr ScrubCounterSet io_counters_replicated{
-  .getattr_cnt = l_osd_scrub_rppool_getattr_cnt,
-  .stats_cnt = l_osd_scrub_rppool_stats_cnt,
-  .read_cnt = l_osd_scrub_rppool_read_cnt,
-  .read_bytes = l_osd_scrub_rppool_read_bytes,
-  .omapgetheader_cnt = l_osd_scrub_omapgetheader_cnt,
-  .omapgetheader_bytes = l_osd_scrub_omapgetheader_bytes,
-  .omapget_cnt = l_osd_scrub_omapget_cnt,
-  .omapget_bytes = l_osd_scrub_omapget_bytes,
-  .started_cnt = l_osd_scrub_rppool_started,
-  .active_started_cnt = l_osd_scrub_rppool_active_started,
-  .successful_cnt = l_osd_scrub_rppool_successful,
-  .successful_elapsed = l_osd_scrub_rppool_successful_elapsed,
-  .failed_cnt = l_osd_scrub_rppool_failed,
-  .failed_elapsed = l_osd_scrub_rppool_failed_elapsed,
-  .write_intersects = l_osd_scrub_rppool_write_intersects,
-  .write_blocked = l_osd_scrub_rppool_write_blocked,
-  .rsv_successful_cnt = l_osd_scrub_rppool_reserv_success,
-  .rsv_successful_elapsed = l_osd_scrub_rppool_reserv_successful_elapsed,
-  .rsv_aborted_cnt = l_osd_scrub_rppool_reserv_aborted,
-  .rsv_rejected_cnt = l_osd_scrub_rppool_reserv_rejected,
-  .rsv_skipped_cnt = l_osd_scrub_rppool_reserv_skipped,
-  .rsv_failed_elapsed = l_osd_scrub_rppool_reserv_failed_elapsed,
-  .rsv_secondaries_num = l_osd_scrub_rppool_reserv_secondaries_num
-};
-
-static inline constexpr ScrubCounterSet io_counters_ec{
-  .getattr_cnt = l_osd_scrub_ec_getattr_cnt,
-  .stats_cnt = l_osd_scrub_ec_stats_cnt,
-  .read_cnt = l_osd_scrub_ec_read_cnt,
-  .read_bytes = l_osd_scrub_ec_read_bytes,
-  .omapgetheader_cnt = l_osd_scrub_omapgetheader_cnt,
-  .omapgetheader_bytes = l_osd_scrub_omapgetheader_bytes,
-  .omapget_cnt = l_osd_scrub_omapget_cnt,
-  .omapget_bytes = l_osd_scrub_omapget_bytes,
-  .started_cnt = l_osd_scrub_ec_started,
-  .active_started_cnt = l_osd_scrub_ec_active_started,
-  .successful_cnt = l_osd_scrub_ec_successful,
-  .successful_elapsed = l_osd_scrub_ec_successful_elapsed,
-  .failed_cnt = l_osd_scrub_ec_failed,
-  .failed_elapsed = l_osd_scrub_ec_failed_elapsed,
-  .write_intersects = l_osd_scrub_ec_write_intersects,
-  .write_blocked = l_osd_scrub_ec_write_blocked,
-  .rsv_successful_cnt = l_osd_scrub_ec_reserv_success,
-  .rsv_successful_elapsed = l_osd_scrub_ec_reserv_successful_elapsed,
-  .rsv_aborted_cnt = l_osd_scrub_ec_reserv_aborted,
-  .rsv_rejected_cnt = l_osd_scrub_ec_reserv_rejected,
-  .rsv_skipped_cnt = l_osd_scrub_ec_reserv_skipped,
-  .rsv_failed_elapsed = l_osd_scrub_ec_reserv_failed_elapsed,
-  .rsv_secondaries_num = l_osd_scrub_ec_reserv_secondaries_num
-};
 
 void PGScrubber::dump_detail(Formatter *f) const
 {
@@ -819,27 +765,24 @@ void PGScrubber::reset_internal_state()
 {
   clear_queued_or_active();
 }
-PerfCounters* PGScrubber::get_osd_perf_counters() const
-{
-  return &pg.shard_services.get_perf_logger();
-}
 
-const ScrubCounterSet& PGScrubber::get_unlabeled_counters() const
+void PGScrubber::dump_scrub_metrics(ceph::Formatter* f)
 {
-  // For crimson, we use the same counter sets as classic OSD
-  // TODO: Crimson may need its own counter definitions in the future
-  return pg.get_pgpool().info.is_replicated() ? io_counters_replicated
-                                               : io_counters_ec;
-}
-
-PerfCounters* PGScrubber::get_labeled_counters() const
-{
-  // Get labeled counters from the scrub scheduler
-  // This matches the classic OSD pattern where OsdScrub provides labeled counters
-  return pg.shard_services.get_scrub_scheduler().get_perf_counters(
-      (pg.get_pgpool().info.is_replicated() ? pg_pool_t::TYPE_REPLICATED
-                                             : pg_pool_t::TYPE_ERASURE),
-      (m_is_deep ? scrub_level_t::deep : scrub_level_t::shallow));
+  LOG_PREFIX(PGScrubber::dump_scrub_metrics);
+  DEBUGDPP("dump scrub pgid = {}", pg, pg.get_pgid());
+  f->open_object_section("pg_scrubber");
+  f->dump_stream("pgid") << pg.get_pgid();
+  f->dump_bool("is_queued_or_active", m_queued_or_active);
+  f->dump_string("mode", m_mode_desc);
+  
+  // Dump metrics from the last or current scrub session
+  if (m_last_scrub_metrics) {
+    m_last_scrub_metrics->dump(f);
+  } else {
+    f->dump_string("metrics_status", "no scrub metrics available");
+  }
+  
+  f->close_section();
 }
 
 void PGScrubber::update_op_mode_text()

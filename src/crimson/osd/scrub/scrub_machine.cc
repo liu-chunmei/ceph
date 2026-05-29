@@ -69,9 +69,18 @@ sc::result ScanRange::react(const ScrubContext::scan_range_complete_t &event)
 	std::move(results));
     }
     if (context<ChunkState>().range->end.is_max()) {
+      auto& scrubbing = context<Scrubbing>();
       get_scrub_context().emit_scrub_result(
-	context<Scrubbing>().deep,
-	context<Scrubbing>().stats);
+ scrubbing.deep,
+ scrubbing.stats);
+      // Update metrics for successful scrub completion
+      if (auto* metrics = scrubbing.get_metrics()) {
+        // Calculate elapsed time in milliseconds, similar to classic scrub_machine
+        auto duration = ScrubClock::now() - scrubbing.scrub_start_time;
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+          duration).count();
+        metrics->inc_successful(elapsed_ms);
+      }
       return transit<PrimaryActive>();
     } else {
       context<Scrubbing>().advance_current(
@@ -86,11 +95,25 @@ Scrubbing::Scrubbing(my_context ctx)
 {
   DECLARE_LOCALS;
   
-  // Initialize performance counter pointers
-  m_perf_set = m_scrbr->get_labeled_counters();
-  m_osd_counters = m_scrbr->get_osd_perf_counters();
-  m_counters_idx = &m_scrbr->get_unlabeled_counters();
-  m_osd_counters->inc(m_counters_idx->started_cnt);
+  // Record scrub start time for elapsed time calculation (using ScrubClock like classic)
+  scrub_start_time = ScrubClock::now();
+  
+  // Initialize Seastar metrics in PGScrubber
+  m_scrbr->m_last_scrub_metrics = std::make_unique<ScrubMetrics>();
+  
+  // Determine pool type and scrub level for metrics labels
+  std::string pool_type = pg.get_pgpool().info.is_replicated() ?
+    "replicated" : "erasure_coded";
+  std::string scrub_level = "unknown"; // Will be set when deep flag is known
+  
+  m_scrbr->m_last_scrub_metrics->register_metrics(pool_type, scrub_level);
+  m_scrbr->m_last_scrub_metrics->inc_started();
+}
+
+ScrubMetrics* Scrubbing::get_metrics()
+{
+  DECLARE_LOCALS;
+  return m_scrbr->get_scrub_metrics();
 }
 
 ReservingReplicas::ReservingReplicas(my_context ctx) : ScrubState(ctx)
@@ -101,8 +124,7 @@ ReservingReplicas::ReservingReplicas(my_context ctx) : ScrubState(ctx)
   auto &scrubbing = context<Scrubbing>();
 
   scrubbing.m_reservations.emplace(
-      *m_scrbr, context<PrimaryActive>().last_request_sent_nonce,
-      *scrubbing.m_counters_idx);
+      *m_scrbr, context<PrimaryActive>().last_request_sent_nonce, *scrubbing.get_metrics());
 
   if (!scrubbing.m_reservations->get_last_sent()) {
     // no replicas to reserve
@@ -123,6 +145,15 @@ sc::result ReservingReplicas::react(const events::replica_grant_t &event)
   ceph_assert(scrubbing.m_reservations);
   if (scrubbing.m_reservations->handle_reserve_grant(m, event.m_from)) {
     // we are done with the reservation process
+    // Note: elapsed time tracking is handled by ReplicaReservations::log_success_and_duration()
+    if (auto* metrics = scrubbing.get_metrics()) {
+      // Count the number of secondaries (replicas) we reserved
+      // This is the size of the acting set minus the primary
+      auto num_secondaries = get_scrub_context().get_ids_to_scrub().size() - 1;
+      metrics->set_rsv_secondaries_num(num_secondaries);
+      // Now that reservations are complete, scrubbing is "active"
+      metrics->inc_active_started();
+    }
     return transit<ChunkState>();
   }
   return discard_event();
@@ -154,6 +185,10 @@ sc::result ReservingReplicas::react(const events::replica_reject_t &event)
   // Set 'reservation failure' as the scrub termination cause (affecting
   // the rescheduling of this PG)
   m_scrbr->flag_reservations_failure();
+
+  if (auto* metrics = scrubbing.get_metrics()) {
+    metrics->inc_rsv_rejected();
+  }
 
   return transit<AwaitScrub>();
 }

@@ -24,6 +24,8 @@ class ScrubReserveRange;
 
 namespace crimson::osd::scrub {
 
+class ScrubMetrics;
+
 struct blocked_range_t {
   hobject_t begin;
   hobject_t end;
@@ -171,10 +173,6 @@ public:
     PGScrubber::BlockingEvent::TriggerI&& trigger,
     const hobject_t &hoid);
 
-  PerfCounters* get_osd_perf_counters() const;
-  const ScrubCounterSet& get_unlabeled_counters() const;
-  PerfCounters* get_labeled_counters() const;
-
   /// Update scrub job scheduling (called when config changes or pool info changes)
   void update_scrub_job();
 
@@ -182,6 +180,18 @@ public:
   bool is_queued_or_active() const {
     return m_queued_or_active;
   }
+
+  /// Dump scrub metrics (if scrubbing is active)
+  void dump_scrub_metrics(ceph::Formatter* f);
+  
+  /// Access to metrics for scrub machine states
+  ScrubMetrics* get_scrub_metrics() {
+    return m_last_scrub_metrics.get();
+  }
+  
+  /// Metrics for the last or current scrub session
+  /// Persists across state transitions so it can be queried after scrub completes
+  std::unique_ptr<ScrubMetrics> m_last_scrub_metrics;
 
 private:
   DoutPrefixProvider &get_dpp() final { return dpp; }

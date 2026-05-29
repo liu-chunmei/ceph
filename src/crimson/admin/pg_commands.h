@@ -12,5 +12,6 @@ class ListUnfoundCommand;
 class MarkUnfoundLostCommand;
 template <bool deep>
 class ScrubCommand;
+class ScrubMetricsCommand;
 
 }  // namespace crimson::admin::pg
