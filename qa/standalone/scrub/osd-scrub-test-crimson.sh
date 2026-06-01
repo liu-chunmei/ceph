@@ -298,7 +298,7 @@ function TEST_interval_changes() {
     dump_scrub_metrics $dir $poolname
 }
 
-function MANUAL_scrub_abort() {
+function _scrub_abort() {
     local dir=$1
     local poolname=test
     local OSDS=3
@@ -324,7 +324,8 @@ function MANUAL_scrub_abort() {
             --osd_pool_default_pg_autoscale_mode=off \
             --osd_deep_scrub_randomize_ratio=0.0 \
             --osd_scrub_sleep=5.0 \
-            --osd_scrub_interval_randomize_ratio=0 || return 1
+            --osd_scrub_interval_randomize_ratio=0 \
+            --debug|| return 1
     done
 
     # Create a pool with a single pg
@@ -404,12 +405,24 @@ function MANUAL_scrub_abort() {
     then
       ceph osd unset noscrub
     fi
+    
+    # Wait a bit for reservation cleanup to complete before triggering new scrub
+    sleep 2
+    
+    # Trigger a new scrub after unsetting noscrub, it is different with classic, need check if support classic auto scrub
+    if [ "$type" = "deep-scrub" ];
+    then
+        ceph pg $pgid deep-scrub || return 1
+    else
+        ceph pg $pgid scrub || return 1
+    fi
+    
     TIMEOUT=$(($objects / 2))
     wait_for_scrub $pgid "$last_scrub" || return 1
     dump_scrub_metrics $dir $poolname
 }
 
-function MANUAL_scrub_abort() {
+function TEST_scrub_abort() {
     local dir=$1
     _scrub_abort $dir scrub
 }

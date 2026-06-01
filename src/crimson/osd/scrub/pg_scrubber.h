@@ -91,6 +91,7 @@ class PGScrubber : public crimson::BlockerT<PGScrubber>, ScrubContext {
   bool m_queued_or_active{false};
   std::optional<SchedTarget> m_active_target;
   epoch_t m_epoch_start{0};  ///< the actual epoch when scrubbing started
+  epoch_t m_last_aborted{0}; ///< epoch of last abort to avoid duplicate resets
   scrub_flags_t m_flags;
   bool m_is_deep{false};
   bool m_is_repair{false};
@@ -188,6 +189,12 @@ public:
   ScrubMetrics* get_scrub_metrics() {
     return m_last_scrub_metrics.get();
   }
+  
+  /// Check if scrub should abort due to noscrub/nodeep-scrub flags
+  bool should_abort() const;
+  
+  /// Verify if scrub should continue or abort, handling epoch tracking
+  bool verify_against_abort(epoch_t epoch_to_verify);
   
   /// Metrics for the last or current scrub session
   /// Persists across state transitions so it can be queried after scrub completes

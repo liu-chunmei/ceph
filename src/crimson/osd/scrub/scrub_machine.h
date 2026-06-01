@@ -614,10 +614,7 @@ struct WaitUpdate : ScrubState<WaitUpdate, ChunkState> {
     sc::custom_reaction<ScrubContext::reserve_range_complete_t>
     >;
 
-  sc::result react(const ScrubContext::reserve_range_complete_t &e) {
-    context<ChunkState>().version = e.value;
-    return transit<ScanRange>();
-  }
+  sc::result react(const ScrubContext::reserve_range_complete_t &e);
 };
 
 struct ScanRange : ScrubState<ScanRange, ChunkState> {

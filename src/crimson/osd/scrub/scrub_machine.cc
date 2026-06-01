@@ -26,14 +26,46 @@ void ReplicaActive::RtReservationCB::finish(int)
 
 WaitUpdate::WaitUpdate(my_context ctx) : ScrubState(ctx)
 {
+  DECLARE_LOCALS;
+  
+  // Check if scrub should abort before reserving range
+  if (!m_scrbr->verify_against_abort(pg.get_osdmap_epoch())) {
+    // Abort detected, transition to AwaitScrub
+    post_event(events::reset_t{});
+    return;
+  }
+  
   auto &cs = context<ChunkState>();
   cs.range_reserved = true;
   assert(cs.range);
   get_scrub_context().reserve_range(cs.range->start, cs.range->end);
 }
 
+sc::result WaitUpdate::react(const ScrubContext::reserve_range_complete_t &e)
+{
+  DECLARE_LOCALS;
+  
+  // Check if scrub should abort before transitioning to ScanRange
+  if (!m_scrbr->verify_against_abort(pg.get_osdmap_epoch())) {
+    // Abort detected, transition to AwaitScrub
+    return transit<AwaitScrub>();
+  }
+  
+  context<ChunkState>().version = e.value;
+  return transit<ScanRange>();
+}
+
 ScanRange::ScanRange(my_context ctx) : ScrubState(ctx)
 {
+  DECLARE_LOCALS;
+  
+  // Check if scrub should abort before starting to scan
+  if (!m_scrbr->verify_against_abort(pg.get_osdmap_epoch())) {
+    // Abort detected, transition to AwaitScrub
+    post_event(events::reset_t{});
+    return;
+  }
+  
   ceph_assert(context<ChunkState>().range);
   const auto &cs = context<ChunkState>();
   const auto &range = cs.range.value();
@@ -49,6 +81,8 @@ ScanRange::ScanRange(my_context ctx) : ScrubState(ctx)
 
 sc::result ScanRange::react(const ScrubContext::scan_range_complete_t &event)
 {
+  DECLARE_LOCALS;
+  
   auto [_, inserted] = maps.insert(event.value.to_pair());
   ceph_assert(inserted);
   ceph_assert(waiting_on > 0);
@@ -57,6 +91,12 @@ sc::result ScanRange::react(const ScrubContext::scan_range_complete_t &event)
   if (waiting_on > 0) {
     return discard_event();
   } else {
+    // Check if scrub should abort after completing a chunk
+    if (!m_scrbr->verify_against_abort(pg.get_osdmap_epoch())) {
+      // Abort detected, transition to AwaitScrub
+      return transit<AwaitScrub>();
+    }
+    
     ceph_assert(context<ChunkState>().range);
     {
       auto results = validate_chunk(

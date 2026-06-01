@@ -427,8 +427,9 @@ void PGScrubber::handle_scrub_requested(bool deep)
   if (!m_active_target) {
     auto scrub_level = deep ? scrub_level_t::deep : scrub_level_t::shallow;
     m_active_target = SchedTarget(pg.get_pgid(), scrub_level);
-    // Set urgency to operator_requested since this is an explicit request
-    m_active_target->sched_info.urgency = urgency_t::operator_requested;
+    // Use periodic_regular urgency so it observes noscrub flags
+    // (operator_requested would bypass the flags)
+    m_active_target->sched_info.urgency = urgency_t::periodic_regular;
   }
   
   handle_event(events::start_scrub_t{deep});
@@ -808,6 +809,62 @@ void PGScrubber::update_op_mode_text()
 std::string_view PGScrubber::get_op_mode_text() const
 {
   return m_mode_desc;
+}
+
+bool PGScrubber::should_abort() const
+{
+  LOG_PREFIX(PGScrubber::should_abort);
+  DEBUGDPP("checking abort conditions, m_is_deep={}", pg, m_is_deep);
+  
+  // Check if this scrub type observes noscrub flags
+  // High-priority scrubs (operator-requested, after-repair, etc.) don't abort
+  if (m_active_target &&
+      !ScrubJob::observes_noscrub_flags(m_active_target->urgency())) {
+    DEBUGDPP("high-priority scrub, not aborting", pg);
+    return false;
+  }
+  
+  // Check for deep scrub abort conditions
+  // Note: deep scrubs are allowed even if 'noscrub' is set (but not 'nodeep-scrub')
+  if (m_is_deep) {
+    if (pg.get_osdmap()->test_flag(CEPH_OSDMAP_NODEEP_SCRUB) ||
+        pg.get_pgpool().info.has_flag(pg_pool_t::FLAG_NODEEP_SCRUB)) {
+      DEBUGDPP("nodeep_scrub set, aborting", pg);
+      return true;
+    }
+  } else if (pg.get_osdmap()->test_flag(CEPH_OSDMAP_NOSCRUB) ||
+             pg.get_pgpool().info.has_flag(pg_pool_t::FLAG_NOSCRUB)) {
+    DEBUGDPP("noscrub set, aborting", pg);
+    return true;
+  }
+  
+  DEBUGDPP("no abort conditions met", pg);
+  return false;
+}
+
+bool PGScrubber::verify_against_abort(epoch_t epoch_to_verify)
+{
+  LOG_PREFIX(PGScrubber::verify_against_abort);
+  DEBUGDPP("check if have to abort!", pg);
+  
+  if (!should_abort()) {
+    return true;
+  }
+  
+  DEBUGDPP("aborting. incoming epoch: {} vs last-aborted: {}",
+           pg, epoch_to_verify, m_last_aborted);
+  
+  // If we were not aware of the abort before - trigger the abort
+  // The caller will handle the transition
+  if (epoch_to_verify >= m_last_aborted) {
+    m_last_aborted = std::max(epoch_to_verify, m_epoch_start);
+    // Return false to indicate abort should happen
+    return false;
+  }
+  
+  // We already aborted for this or a later epoch, don't abort again
+  DEBUGDPP("already aborted at epoch {}, not aborting again", pg, m_last_aborted);
+  return true;
 }
 
 }
