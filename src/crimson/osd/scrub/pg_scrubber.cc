@@ -537,6 +537,7 @@ void PGScrubber::notify_scrub_start(bool deep)
 {
   LOG_PREFIX(PGScrubber::notify_scrub_start);
   DEBUGDPP("deep: {}", pg, deep);
+  m_is_deep = deep;
   pg.peering_state.state_set(PG_STATE_SCRUBBING);
   if (deep) {
     pg.peering_state.state_set(PG_STATE_DEEP_SCRUB);

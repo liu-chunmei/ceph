@@ -427,7 +427,7 @@ function TEST_scrub_abort() {
     _scrub_abort $dir scrub
 }
 
-function MANUAL_deep_scrub_abort() {
+function TEST_deep_scrub_abort() {
     local dir=$1
     _scrub_abort $dir deep-scrub
 }
