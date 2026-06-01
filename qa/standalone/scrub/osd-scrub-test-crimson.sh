@@ -432,6 +432,53 @@ function TEST_deep_scrub_abort() {
     _scrub_abort $dir deep-scrub
 }
 
+function TEST_scrub_permit_time() {
+    local dir=$1
+    local poolname=test
+    local OSDS=3
+    local objects=15
+
+    TESTDATA="testdata.$$"
+
+    run_mon $dir a --osd_pool_default_size=3 || return 1
+    apply_crimson_config || return 1
+    run_mgr $dir x --mgr_stats_period=1 || return 1
+    local scrub_begin_hour=$(date -d '2 hour ago' +"%H" | sed 's/^0//')
+    local scrub_end_hour=$(date -d '1 hour ago' +"%H" | sed 's/^0//')
+    for osd in $(seq 0 $(expr $OSDS - 1))
+    do
+      run_crimson_osd $dir $osd --osd_objectstore=seastore \
+	                --osd_deep_scrub_randomize_ratio=0.0 \
+	                --osd_scrub_interval_randomize_ratio=0 \
+                        --osd_scrub_begin_hour=$scrub_begin_hour \
+                        --osd_scrub_end_hour=$scrub_end_hour || return 1
+    done
+
+    # Create a pool with a single pg
+    create_pool $poolname 1 1
+    wait_for_clean || return 1
+
+    # Trigger a scrub on a PG
+    local pgid=$(get_pg $poolname SOMETHING)
+    local primary=$(get_primary $poolname SOMETHING)
+    local last_scrub=$(get_last_scrub_stamp $pgid)
+    # If we don't specify an amount of time to subtract from
+    # current time to set last_scrub_stamp, it sets the deadline
+    # back by osd_max_interval which would cause the time permit checking
+    # to be skipped.  Set back 1 day, the default scrub_min_interval.
+    # Note: Crimson uses 'ceph pg' command instead of 'ceph tell' for scrub scheduling
+    ceph pg $pgid schedule-scrub $(( 24 * 60 * 60 )) || return 1
+
+    # Scrub should not run
+    for ((i=0; i < 30; i++)); do
+        if test "$(get_last_scrub_stamp $pgid)" '>' "$last_scrub" ; then
+            return 1
+        fi
+        sleep 1
+    done
+    dump_scrub_metrics $dir $poolname
+}
+
 function TEST_pg_dump_objects_scrubbed() {
     local dir=$1
     local poolname=test

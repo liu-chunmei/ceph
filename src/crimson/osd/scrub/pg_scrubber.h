@@ -151,6 +151,9 @@ public:
   /// handle scrub request
   void handle_scrub_requested(bool deep);
 
+  /// handle schedule-scrub command (test/debug only)
+  void handle_schedule_scrub(bool deep, int64_t offset);
+
   /// is this scrub's urgency high enough, or must it reserve its replicas?
   [[nodiscard]] bool is_reservation_required() const;
 

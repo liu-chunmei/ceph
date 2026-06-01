@@ -435,6 +435,51 @@ void PGScrubber::handle_scrub_requested(bool deep)
   handle_event(events::start_scrub_t{deep});
 }
 
+void PGScrubber::handle_schedule_scrub(bool deep, int64_t offset)
+{
+  LOG_PREFIX(PGScrubber::handle_schedule_scrub);
+  DEBUGDPP("deep: {}, offset: {}", pg, deep, offset);
+  
+  // This is a test/debug command that schedules a scrub by faking the
+  // last scrub timestamps, similar to the classic OSD implementation.
+  // This makes the PG appear as if it hasn't been scrubbed recently,
+  // causing it to be scheduled for scrubbing.
+  
+  // Calculate the timestamp to set
+  utime_t stamp = ceph_clock_now();
+  if (offset != 0) {
+    stamp -= offset;
+  } else {
+    // If no offset specified, use a large value to guarantee scheduling
+    // Use 30 days as a safe default that will trigger scrubbing
+    stamp -= (30 * 24 * 60 * 60);
+  }
+  
+  DEBUGDPP("setting scrub stamp to: {}", pg, stamp);
+  
+  // Get mutable reference to pg_info through the peering state
+  auto& info = const_cast<pg_info_t&>(pg.get_info());
+  
+  if (deep) {
+    // For deep scrub, save the shallow stamp and set both stamps
+    const auto saved_shallow_stamp = info.history.last_scrub_stamp;
+    info.history.last_deep_scrub_stamp = stamp;
+    // Restore shallow stamp to avoid scheduling shallow before deep
+    info.history.last_scrub_stamp = saved_shallow_stamp;
+  } else {
+    // For shallow scrub, just set the shallow stamp
+    info.history.last_scrub_stamp = stamp;
+  }
+  
+  // Mark the info as dirty so it gets persisted
+  pg.get_peering_state().update_stats([](auto& history, auto& stats) {
+    // Stats update callback - the history modification above will be persisted
+    return true;
+  });
+  
+  DEBUGDPP("scrub timestamp updated, PG should be scheduled for scrubbing", pg);
+}
+
 void PGScrubber::handle_scrub_message(Message &_m)
 {
   LOG_PREFIX(PGScrubber::handle_scrub_requested);

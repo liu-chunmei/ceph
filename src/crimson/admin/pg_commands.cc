@@ -22,6 +22,7 @@ using crimson::osd::OSD;
 using crimson::osd::PG;
 using namespace crimson::common;
 using ceph::common::cmd_getval;
+using ceph::common::cmd_getval_or;
 
 namespace crimson::admin::pg {
 
@@ -124,9 +125,9 @@ public:
   explicit PGOldFormCommand(crimson::osd::OSD&) :
     AdminSocketHook{"pg",
                     "name=pgid,type=CephPgid "
-                    "name=cmd,type=CephChoices,strings=query|log|scrub|deep-scrub|list_unfound|mark_unfound_lost|scrub_metrics "
+                    "name=cmd,type=CephChoices,strings=query|log|scrub|deep-scrub|schedule-scrub|schedule-deep-scrub|list_unfound|mark_unfound_lost|scrub_metrics "
                     "name=arg,type=CephString,req=false",
-                    "old-form wrapper for pg subcommands (query, log, scrub, deep-scrub, list_unfound, mark_unfound_lost, scrub_metrics)"}
+                    "old-form wrapper for pg subcommands (query, log, scrub, deep-scrub, schedule-scrub, schedule-deep-scrub, list_unfound, mark_unfound_lost, scrub_metrics)"}
   {}
 
   seastar::future<tell_result_t> call(const cmdmap_t&,
@@ -322,6 +323,56 @@ public:
   }
 };
 
+template <bool deep>
+class ScheduleScrubCommand : public PGCommand {
+public:
+  explicit ScheduleScrubCommand(crimson::osd::OSD& osd,
+                                std::string_view name) :
+    PGCommand{
+      osd,
+      name,
+      "name=pgid,type=CephPgid "
+      "name=time,type=CephInt,req=false",
+      deep ? "Schedule a deep scrub by faking the scrub timestamps"
+           : "Schedule a scrub by faking the scrub timestamps"}
+  {}
+
+  seastar::future<tell_result_t>
+  do_command(Ref<PG> pg,
+	     const cmdmap_t& cmdmap,
+	     std::string_view format,
+	     ceph::bufferlist&&) const final
+  {
+    LOG_PREFIX(ScheduleScrubCommand::do_command);
+    DEBUGDPP("schedule-scrub: deep: {}", *pg, deep);
+    
+    // Get the time offset parameter (optional)
+    const int64_t offset = cmd_getval_or<int64_t>(cmdmap, "time", 0);
+    constexpr bool is_deep = deep;
+    
+    return PG::interruptor::with_interruption([pg, offset] {
+      pg->scrubber.handle_schedule_scrub(deep, offset);
+      return PG::interruptor::now();
+    }, [FNAME, pg](std::exception_ptr ep) {
+      DEBUGDPP("interrupted with {}", *pg, ep);
+    }, pg, pg->get_osdmap_epoch()).then([format, is_deep, offset] {
+      std::unique_ptr<Formatter> f{
+ Formatter::create(format, "json-pretty", "json-pretty")
+      };
+      f->open_object_section("schedule_scrub");
+      f->dump_bool("deep", is_deep);
+      f->dump_bool("must", true);
+      utime_t stamp = ceph_clock_now();
+      if (offset != 0) {
+        stamp -= offset;
+      }
+      f->dump_stream("stamp") << stamp;
+      f->close_section();
+      return seastar::make_ready_future<tell_result_t>(std::move(f));
+    });
+  }
+};
+
 class ScrubMetricsCommand final : public PGCommand {
 public:
   explicit ScrubMetricsCommand(crimson::osd::OSD& osd) :
@@ -392,6 +443,15 @@ make_asok_hook<crimson::admin::pg::ScrubCommand<true>,
                                                     std::string_view&& name);
 template std::unique_ptr<AdminSocketHook>
 make_asok_hook<crimson::admin::pg::ScrubCommand<false>,
+               crimson::osd::OSD&, std::string_view>(crimson::osd::OSD& osd,
+                                                    std::string_view&& name);
+
+template std::unique_ptr<AdminSocketHook>
+make_asok_hook<crimson::admin::pg::ScheduleScrubCommand<true>,
+               crimson::osd::OSD&, std::string_view>(crimson::osd::OSD& osd,
+                                                    std::string_view&& name);
+template std::unique_ptr<AdminSocketHook>
+make_asok_hook<crimson::admin::pg::ScheduleScrubCommand<false>,
                crimson::osd::OSD&, std::string_view>(crimson::osd::OSD& osd,
                                                     std::string_view&& name);
 
