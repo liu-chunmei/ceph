@@ -202,6 +202,9 @@ public:
   /// Metrics for the last or current scrub session
   /// Persists across state transitions so it can be queried after scrub completes
   std::unique_ptr<ScrubMetrics> m_last_scrub_metrics;
+  
+  /// Track scrub start time to calculate duration
+  std::optional<ceph::coarse_real_clock::time_point> m_scrub_start_time;
 
   /// Track the total number of objects scrubbed across all chunks
   int64_t m_objects_scrubbed_in_chunk{0};

@@ -477,7 +477,11 @@ void PGScrubber::handle_schedule_scrub(bool deep, int64_t offset)
     return true;
   });
   
-  DEBUGDPP("scrub timestamp updated, PG should be scheduled for scrubbing", pg);
+  DEBUGDPP("scrub timestamp updated, triggering scrub schedule update", pg);
+  
+  // Trigger an update to the scrub schedule so the PG gets queued
+  // This ensures the scrub is picked up by the scheduler
+  pg.on_scrub_schedule_input_change();
 }
 
 void PGScrubber::handle_scrub_message(Message &_m)
@@ -583,6 +587,10 @@ void PGScrubber::notify_scrub_start(bool deep)
   LOG_PREFIX(PGScrubber::notify_scrub_start);
   DEBUGDPP("deep: {}", pg, deep);
   m_is_deep = deep;
+  
+  // Record scrub start time for duration calculation
+  m_scrub_start_time = ceph::coarse_real_clock::now();
+  
   pg.peering_state.state_set(PG_STATE_SCRUBBING);
   if (deep) {
     pg.peering_state.state_set(PG_STATE_DEEP_SCRUB);
@@ -594,6 +602,26 @@ void PGScrubber::notify_scrub_end(bool deep)
 {
   LOG_PREFIX(PGScrubber::notify_scrub_end);
   DEBUGDPP("deep: {}", pg, deep);
+  
+  // Calculate and set scrub duration
+  if (m_scrub_start_time) {
+    auto end_time = ceph::coarse_real_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+      end_time - *m_scrub_start_time);
+    double dur_ms = static_cast<double>(duration.count());
+    
+    DEBUGDPP("scrub duration: {} ms ({} seconds)", pg, dur_ms, dur_ms / 1000.0);
+    
+    // Update pg stats with scrub duration
+    pg.get_peering_state().update_stats([dur_ms](auto& history, auto& stats) {
+      stats.last_scrub_duration = std::ceil(dur_ms / 1000.0);
+      stats.scrub_duration = dur_ms;
+      return true;
+    });
+    
+    m_scrub_start_time.reset();
+  }
+  
   pg.state_clear(PG_STATE_SCRUBBING);
   if (deep) {
     pg.state_clear(PG_STATE_DEEP_SCRUB);

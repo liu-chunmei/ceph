@@ -517,6 +517,101 @@ function TEST_pg_dump_objects_scrubbed() {
 
     teardown $dir || return 1
 }
+# Test that deep scrubs can be scheduled even when noscrub is set
+# but nodeep-scrub is not set. This verifies that the scrubber
+# correctly distinguishes between regular scrubs and deep scrubs.
+# Fixed by PR#43521
+function TEST_just_deep_scrubs() {
+    local dir=$1
+    local poolname=test
+    local OSDS=3
+    local pg_num=4
+    local objects=90
+
+    TESTDATA="testdata.$$"
+
+    # Setup cluster
+    run_mon $dir a --osd_pool_default_size=$OSDS || return 1
+    apply_crimson_config || return 1
+    run_mgr $dir x --mgr_stats_period=1 || return 1
+
+    # Start Crimson OSDs with scrub configuration
+    for osd in $(seq 0 $(expr $OSDS - 1))
+    do
+        run_crimson_osd $dir $osd --osd_objectstore=seastore \
+            --osd_deep_scrub_randomize_ratio=0 \
+            --osd_scrub_interval_randomize_ratio=0 \
+            --osd_scrub_backoff_ratio=0.0 \
+            --osd_pg_stat_report_interval_max_seconds=1 \
+            --osd_pg_stat_report_interval_max_epochs=1 \
+            --osd_stats_update_period_not_scrubbing=3 \
+            --osd_stats_update_period_scrubbing=1 \
+            --osd_scrub_retry_after_noscrub=2 \
+            --osd_scrub_retry_pg_state=5 \
+            --osd_scrub_retry_delay=3 || return 1
+    done
+
+    # Create pool and populate with objects
+    create_pool $poolname $pg_num $pg_num || return 1
+    wait_for_clean || return 1
+
+    local poolid=$(ceph osd dump | awk '/^pool.*'$poolname'/ { gsub(/'"'"'/," ",$3); print $2}')
+    echo "Pool: $poolname : $poolid"
+
+    dd if=/dev/urandom of=$TESTDATA bs=1032 count=1
+    for i in `seq 1 $objects`
+    do
+        rados -p $poolname put obj${i} $TESTDATA
+    done
+    rm -f $TESTDATA
+
+    # Set both 'no scrub' & 'no deep-scrub', then request a deep-scrub.
+    # We do not expect to see the scrub scheduled.
+    ceph osd set noscrub || return 1
+    ceph osd set nodeep-scrub || return 1
+    sleep 6 # the 'noscrub' command takes a long time to reach the OSDs
+    
+    local now_is=`date -I"ns"`
+    declare -A sched_data
+    local pgid="${poolid}.2"
+
+    # Turn on the publishing of test data in the 'scrubber' section of 'pg query' output
+    set_query_debug $pgid
+
+    extract_published_sch $pgid $now_is $now_is sched_data
+    local saved_last_stamp=${sched_data['query_last_stamp']}
+    local dbg_counter_at_start=${sched_data['query_scrub_seq']}
+    echo "test counter @ start: $dbg_counter_at_start"
+
+    # Schedule a deep scrub using the pg command format for Crimson
+    ceph pg $pgid schedule-deep-scrub
+
+    sleep 5 # 5s is the 'pg dump' interval
+
+    ceph pg dump pgs --format=json-pretty | jq -r '.pg_stats[] | "\(.pgid) \(.stat_sum.num_objects)"'
+    echo "Objects # in pg $pgid: " $(ceph pg $pgid query --format=json-pretty | jq -r '.info.stats.stat_sum.num_objects')
+
+    declare -A sc_data_2
+    extract_published_sch $pgid $now_is $now_is sc_data_2
+    echo "test counter @ should show no change: " ${sc_data_2['query_scrub_seq']}
+    (( ${sc_data_2['dmp_last_duration']} == 0)) || return 1
+    (( ${sc_data_2['query_scrub_seq']} == $dbg_counter_at_start)) || return 1
+
+    # Unset the 'no deep-scrub'. Deep scrubbing should start now.
+    ceph osd unset nodeep-scrub || return 1
+    sleep 8
+    
+    declare -A expct_qry_duration=( ['query_last_duration']="0" ['query_last_duration_neg']="not0" )
+    sc_data_2=()
+    extract_published_sch $pgid $now_is $now_is sc_data_2
+    echo "test counter @ should be higher than before the unset: " ${sc_data_2['query_scrub_seq']}
+
+    sc_data_2=()
+    wait_any_cond $pgid 10 $saved_last_stamp expct_qry_duration "WaitingAfterScrub " sc_data_2 || return 1
+    
+    dump_scrub_metrics $dir $poolname
+}
+
 
 # Note: Some tests from the original osd-scrub-test.sh may not be fully compatible
 # with Crimson yet. Tests that rely on features not yet implemented in Crimson
