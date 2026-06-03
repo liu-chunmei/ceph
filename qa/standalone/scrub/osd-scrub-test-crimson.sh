@@ -322,9 +322,14 @@ function _scrub_abort() {
     do
         run_crimson_osd $dir $osd --osd_objectstore=seastore \
             --osd_pool_default_pg_autoscale_mode=off \
-            --osd_deep_scrub_randomize_ratio=0.0 \
-            --osd_scrub_sleep=5.0 \
+            --osd_deep_scrub_randomize_ratio=0 \
             --osd_scrub_interval_randomize_ratio=0 \
+            --osd_scrub_backoff_ratio=0.0 \
+            --osd_op_queue=wpq \
+            --osd_scrub_retry_after_noscrub=1 \
+            --osd_scrub_retry_pg_state=2 \
+            --osd_scrub_retry_delay=2 \
+            --osd_scrub_sleep=0.2 \
             --debug|| return 1
     done
 
@@ -343,11 +348,12 @@ function _scrub_abort() {
     local primary=$(get_primary $poolname obj1)
     local pgid="${poolid}.0"
 
-    # Trigger scrub using pg command (not tell command)
+    # Trigger scrub using schedule command (test-only command that creates periodic scrub)
+    # This is needed to test abort functionality since operator-requested scrubs ignore noscrub flags
     if [ "$type" = "scrub" ]; then
-        ceph pg $pgid scrub || return 1
+        ceph pg $pgid schedule-scrub || return 1
     else
-        ceph pg $pgid deep-scrub || return 1
+        ceph pg $pgid schedule-deep-scrub || return 1
     fi
 
     # Wait for scrubbing to start
@@ -406,16 +412,9 @@ function _scrub_abort() {
       ceph osd unset noscrub
     fi
     
-    # Wait a bit for reservation cleanup to complete before triggering new scrub
-    sleep 2
-    
-    # Trigger a new scrub after unsetting noscrub, it is different with classic, need check if support classic auto scrub
-    if [ "$type" = "deep-scrub" ];
-    then
-        ceph pg $pgid deep-scrub || return 1
-    else
-        ceph pg $pgid scrub || return 1
-    fi
+    # Crimson now supports automatic retry of blocked scrubs (like classic OSD)
+    # The scrub will automatically retry after osd_scrub_retry_after_noscrub seconds
+    # No need to manually trigger a new scrub
     
     TIMEOUT=$(($objects / 2))
     wait_for_scrub $pgid "$last_scrub" || return 1

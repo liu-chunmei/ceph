@@ -104,6 +104,7 @@ sched_conf_t PGScrubber::populate_config_params() const
     crimson::common::local_conf().get_val<double>("osd_scrub_interval_randomize_ratio");
   configs.deep_randomize_ratio =
       crimson::common::local_conf().get_val<double>("osd_deep_scrub_interval_cv");
+  
   configs.mandatory_on_invalid =
     crimson::common::local_conf().get_val<bool>("osd_scrub_invalid_stats");
   DEBUGDPP(
@@ -420,19 +421,43 @@ void PGScrubber::handle_scrub_requested(bool deep)
   LOG_PREFIX(PGScrubber::handle_scrub_requested);
   DEBUGDPP("deep: {}", pg, deep);
   
-  // If m_active_target is not set, this is being called from an external
-  // scrub request (e.g., admin command) rather than from start_scrub().
-  // Set m_active_target to match the requested scrub level, similar to
-  // how classic OSD's scrub_requested() updates the target.
-  if (!m_active_target) {
-    auto scrub_level = deep ? scrub_level_t::deep : scrub_level_t::shallow;
-    m_active_target = SchedTarget(pg.get_pgid(), scrub_level);
-    // Use periodic_regular urgency so it observes noscrub flags
-    // (operator_requested would bypass the flags)
-    m_active_target->sched_info.urgency = urgency_t::periodic_regular;
+  if (!m_scrub_job->is_registered()) {
+    DEBUGDPP("PG not registered for scrubbing on this OSD", pg);
+    return;
   }
   
+  // This is called by start_scrub() when the scheduler picks up a queued job.
+  // We should directly start the scrub by sending the event to the state machine.
   handle_event(events::start_scrub_t{deep});
+}
+
+void PGScrubber::enqueue_scrub_requested(bool deep)
+{
+  LOG_PREFIX(PGScrubber::enqueue_scrub_requested);
+  DEBUGDPP("deep: {}", pg, deep);
+  
+  if (!m_scrub_job->is_registered()) {
+    DEBUGDPP("PG not registered for scrubbing on this OSD", pg);
+    return;
+  }
+  
+  // Similar to classic OSD's scrub_requested(), update the target and enqueue it
+  auto scrub_level = deep ? scrub_level_t::deep : scrub_level_t::shallow;
+  auto& trgt = m_scrub_job->get_target(scrub_level);
+  
+  // Dequeue if already queued
+  if (trgt.queued) {
+    pg.shard_services.get_scrub_scheduler().dequeue_target(pg.pgid, scrub_level);
+    trgt.queued = false;
+  }
+  
+  // Set urgency to operator_requested and enqueue
+  m_scrub_job->operator_forced(scrub_level, scrub_type_t::not_repair);
+  pg.shard_services.get_scrub_scheduler().enqueue_target(trgt);
+  trgt.queued = true;
+  
+  DEBUGDPP("enqueued operator-requested {} scrub", pg,
+    deep ? "deep" : "shallow");
 }
 
 void PGScrubber::handle_schedule_scrub(bool deep, int64_t offset)
@@ -446,13 +471,25 @@ void PGScrubber::handle_schedule_scrub(bool deep, int64_t offset)
   // causing it to be scheduled for scrubbing.
   
   // Calculate the timestamp to set
+  // If no offset specified, calculate one that guarantees scheduling
+  // even with random backoff (similar to classic OSD's guaranteed_offset)
   utime_t stamp = ceph_clock_now();
   if (offset != 0) {
     stamp -= offset;
   } else {
-    // If no offset specified, use a large value to guarantee scheduling
-    // Use 30 days as a safe default that will trigger scrubbing
-    stamp -= (30 * 24 * 60 * 60);
+    // Calculate guaranteed offset like classic OSD
+    const auto cnf = populate_config_params();
+    double guaranteed_offset;
+    if (deep) {
+      // For deep: interval + 3*sigma + 10
+      const double sdv = cnf.deep_interval * cnf.deep_randomize_ratio;
+      guaranteed_offset = cnf.deep_interval + abs(3 * sdv) + 10.0;
+    } else {
+      // For shallow: interval * (2.0 + randomize_ratio)
+      guaranteed_offset = cnf.shallow_interval * (2.0 + cnf.interval_randomize_ratio);
+    }
+    DEBUGDPP("calculated guaranteed offset: {}", pg, guaranteed_offset);
+    stamp -= guaranteed_offset;
   }
   
   DEBUGDPP("setting scrub stamp to: {}", pg, stamp);
@@ -479,14 +516,14 @@ void PGScrubber::handle_schedule_scrub(bool deep, int64_t offset)
   
   DEBUGDPP("scrub timestamp updated, triggering scrub schedule update", pg);
   
-  // Trigger an update to the scrub schedule so the PG gets queued
-  // This ensures the scrub is picked up by the scheduler
+  // Trigger schedule update - this will recalculate and enqueue with periodic urgency
+  // The timestamp we set is far enough in the past that it will be eligible immediately
   pg.on_scrub_schedule_input_change();
 }
 
 void PGScrubber::handle_scrub_message(Message &_m)
 {
-  LOG_PREFIX(PGScrubber::handle_scrub_requested);
+  LOG_PREFIX(PGScrubber::handle_scrub_message);
   switch (_m.get_type()) {
   case MSG_OSD_REP_SCRUB: {
     MOSDRepScrub &m = *static_cast<MOSDRepScrub*>(&_m);
@@ -932,6 +969,13 @@ bool PGScrubber::verify_against_abort(epoch_t epoch_to_verify)
   // The caller will handle the transition
   if (epoch_to_verify >= m_last_aborted) {
     m_last_aborted = std::max(epoch_to_verify, m_epoch_start);
+    
+    // Re-enqueue the aborted job so it can be retried when conditions allow
+    // Similar to classic OSD's on_mid_scrub_abort()
+    if (m_active_target) {
+      on_mid_scrub_abort(delay_cause_t::flags);
+    }
+    
     // Return false to indicate abort should happen
     return false;
   }
@@ -939,6 +983,63 @@ bool PGScrubber::verify_against_abort(epoch_t epoch_to_verify)
   // We already aborted for this or a later epoch, don't abort again
   DEBUGDPP("already aborted at epoch {}, not aborting again", pg, m_last_aborted);
   return true;
+}
+
+void PGScrubber::on_mid_scrub_abort(delay_cause_t issue)
+{
+  LOG_PREFIX(PGScrubber::on_mid_scrub_abort);
+  if (!m_scrub_job->is_registered()) {
+    DEBUGDPP("PG not registered for scrubbing. Won't requeue!", pg);
+    return;
+  }
+  
+  DEBUGDPP("aborting scrub, cause: {}", pg, issue);
+  
+  // Save the aborted target before clearing m_active_target
+  auto aborted_target = *m_active_target;
+  m_active_target.reset();
+  
+  // Clear the queued_or_active flag so the scrub can be retried
+  clear_queued_or_active();
+  
+  const auto scrub_clock_now = ceph_clock_now();
+  
+  // Get the target from scrub_job (it was reset when scrub started)
+  auto& current_targ = m_scrub_job->get_target(aborted_target.level());
+  ceph_assert(!current_targ.queued);
+  
+  // Merge the aborted target with the current target (similar to classic OSD)
+  // The current_targ was reset() when scrub started, so it has default values
+  // We merge to preserve any scheduling info from the aborted scrub
+  auto& curr_sched = current_targ.sched_info.schedule;
+  auto& abrt_sched = aborted_target.sched_info.schedule;
+  
+  current_targ.sched_info.urgency =
+      std::max(current_targ.urgency(), aborted_target.urgency());
+  curr_sched.scheduled_at =
+      std::min(curr_sched.scheduled_at, abrt_sched.scheduled_at);
+  curr_sched.not_before =
+      std::min(curr_sched.not_before, abrt_sched.not_before);
+  
+  DEBUGDPP("merged target (before delay): {}", pg, current_targ);
+  
+  // Add a delay and re-enqueue (delay_on_failure returns the modified target)
+  auto& delayed_targ = m_scrub_job->delay_on_failure(aborted_target.level(), issue, scrub_clock_now);
+  DEBUGDPP("re-enqueuing aborted target: {}", pg, delayed_targ);
+  pg.shard_services.get_scrub_scheduler().enqueue_target(delayed_targ);
+  delayed_targ.queued = true;
+  
+  // Also re-enqueue the sister target if it's not queued
+  // Match classic OSD behavior: just enqueue without delay_on_failure
+  const auto sister_level = (aborted_target.level() == scrub_level_t::deep)
+                              ? scrub_level_t::shallow
+                              : scrub_level_t::deep;
+  auto& sister = m_scrub_job->get_target(sister_level);
+  if (!sister.queued) {
+    DEBUGDPP("also re-enqueuing sister target: {}", pg, sister);
+    pg.shard_services.get_scrub_scheduler().enqueue_target(sister);
+    sister.queued = true;
+  }
 }
 
 }

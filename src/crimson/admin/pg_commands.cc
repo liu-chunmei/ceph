@@ -306,7 +306,7 @@ public:
     LOG_PREFIX(ScrubCommand::do_command);
     DEBUGDPP("deep: {}", *pg, deep);
     return PG::interruptor::with_interruption([pg] {
-      pg->scrubber.handle_scrub_requested(deep);
+      pg->scrubber.enqueue_scrub_requested(deep);
       return PG::interruptor::now();
     }, [FNAME, pg](std::exception_ptr ep) {
       DEBUGDPP("interrupted with {}", *pg, ep);

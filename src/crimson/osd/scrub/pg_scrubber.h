@@ -148,8 +148,11 @@ public:
     OSDRestrictions osd_restrictions,
     ScrubPGPreconds pg_cond);
 
-  /// handle scrub request
+  /// handle scrub request (called by start_scrub when scheduler picks up a job)
   void handle_scrub_requested(bool deep);
+
+  /// enqueue a manually requested scrub (called by admin command)
+  void enqueue_scrub_requested(bool deep);
 
   /// handle schedule-scrub command (test/debug only)
   void handle_schedule_scrub(bool deep, int64_t offset);
@@ -199,6 +202,9 @@ public:
   /// Verify if scrub should continue or abort, handling epoch tracking
   bool verify_against_abort(epoch_t epoch_to_verify);
   
+  /// Handle mid-scrub abort by re-enqueuing the job
+  void on_mid_scrub_abort(delay_cause_t issue);
+  
   /// Metrics for the last or current scrub session
   /// Persists across state transitions so it can be queried after scrub completes
   std::unique_ptr<ScrubMetrics> m_last_scrub_metrics;
@@ -209,11 +215,22 @@ public:
   /// Track the total number of objects scrubbed across all chunks
   int64_t m_objects_scrubbed_in_chunk{0};
 
+  void set_queued_or_active() {
+    m_queued_or_active = true;
+  }
+  void clear_queued_or_active()
+  {
+    if (m_queued_or_active) {
+      m_queued_or_active = false;
+    }
+  }
+
 private:
   DoutPrefixProvider &get_dpp() final { return dpp; }
 
   void schedule_scrub_with_osd() final;
   void rm_from_osd_scrubbing() final;
+  void clear_pgscrub_state() final;
 
   void notify_scrub_start(bool deep) final;
   void notify_scrub_end(bool deep) final;
@@ -253,17 +270,7 @@ private:
   sched_conf_t populate_config_params() const;
   void update_targets(utime_t scrub_clock_now);
   void set_op_parameters(ScrubPGPreconds pg_cond);
-  void set_queued_or_active() {
-    m_queued_or_active = true;
-  }
-  void clear_queued_or_active()
-  {
-    if (m_queued_or_active) {
-      m_queued_or_active = false;
-    }
-  }
   void cleanup_on_finish();
-  void clear_pgscrub_state();
   void reset_internal_state();
   std::string_view registration_state() const;
   bool should_drop_message(Message &m) const;

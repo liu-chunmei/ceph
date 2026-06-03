@@ -163,6 +163,7 @@ struct ScrubContext {
   virtual void schedule_scrub_with_osd() = 0;
   virtual void update_scrub_job() = 0;
   virtual void rm_from_osd_scrubbing() = 0;
+  virtual void clear_pgscrub_state() = 0;
 
   /// return struct defining chunk validation rules
   virtual chunk_validation_policy_t get_policy() const = 0;
@@ -454,6 +455,8 @@ struct PrimaryActive : ScrubState<PrimaryActive, ScrubMachine, AwaitScrub> {
     get_scrub_context().schedule_scrub_with_osd();
   }
   ~PrimaryActive() {
+    // Match classic OSD behavior: clear scrub state before removing from OSD queue
+    get_scrub_context().clear_pgscrub_state();
     get_scrub_context().rm_from_osd_scrubbing();
   }
   bool local_reservation_held = false;
