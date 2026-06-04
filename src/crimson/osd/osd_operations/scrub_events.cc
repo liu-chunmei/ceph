@@ -62,7 +62,11 @@ seastar::future<> RemoteScrubEventBaseT<T>::with_pg(
 
 ScrubRequested::ifut<> ScrubRequested::handle_event(PG &pg)
 {
-  pg.scrubber.handle_scrub_requested(deep);
+  // Operator-requested scrubs (via MOSDScrub2 message) should be enqueued
+  // for the scheduler to pick up, not started immediately.
+  // The scheduler will call start_scrub() which sets m_active_target before
+  // calling handle_scrub_requested().
+  pg.scrubber.enqueue_scrub_requested(deep);
   return seastar::now();
 }
 

@@ -427,6 +427,12 @@ void PGScrubber::handle_scrub_requested(bool deep)
   }
   
   // This is called by start_scrub() when the scheduler picks up a queued job.
+  // m_active_target must be set before calling this function.
+  if (!m_active_target) {
+    DEBUGDPP("m_active_target not set, cannot start scrub", pg);
+    return;
+  }
+  
   // We should directly start the scrub by sending the event to the state machine.
   handle_event(events::start_scrub_t{deep});
 }
