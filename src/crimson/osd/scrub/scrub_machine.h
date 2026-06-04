@@ -256,6 +256,9 @@ namespace events {
 /// reset ScrubMachine
 SIMPLE_EVENT(reset_t);
 
+/// abort scrub and return to AwaitScrub (stays in PrimaryActive)
+SIMPLE_EVENT(abort_t);
+
 /// start (deep) scrub
 struct start_scrub_event_t {
   bool deep = false;
@@ -465,6 +468,7 @@ struct PrimaryActive : ScrubState<PrimaryActive, ScrubMachine, AwaitScrub> {
 
   using reactions = boost::mpl::list<
     sc::transition<events::reset_t, Inactive>,
+    sc::transition<events::abort_t, AwaitScrub>,
     sc::custom_reaction<events::op_stats_t>,
     sc::transition< boost::statechart::event_base, Crash >
     >;

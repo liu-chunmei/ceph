@@ -28,8 +28,12 @@ WaitUpdate::WaitUpdate(my_context ctx) : ScrubState(ctx)
 {
   DECLARE_LOCALS;
   
-  // Note: Abort check removed from constructor. It will be caught in react() method
-  // where we can properly transit<AwaitScrub>() to stay within PrimaryActive.
+  // Check for abort before reserving range
+  if (!m_scrbr->verify_against_abort(pg.get_osdmap_epoch())) {
+    // Abort detected, post abort event to transition to AwaitScrub
+    post_event(events::abort_t{});
+    return;
+  }
   
   auto &cs = context<ChunkState>();
   cs.range_reserved = true;
@@ -43,9 +47,9 @@ sc::result WaitUpdate::react(const ScrubContext::reserve_range_complete_t &e)
   
   // Check if scrub should abort before transitioning to ScanRange
   if (!m_scrbr->verify_against_abort(pg.get_osdmap_epoch())) {
-    // Abort detected, transition to AwaitScrub
-    // The job remains in the queue and will be retried by the scheduler
-    return transit<AwaitScrub>();
+    // Abort detected, post abort event to transition to AwaitScrub
+    post_event(events::abort_t{});
+    return discard_event();
   }
   
   context<ChunkState>().version = e.value;
@@ -56,8 +60,12 @@ ScanRange::ScanRange(my_context ctx) : ScrubState(ctx)
 {
   DECLARE_LOCALS;
   
-  // Note: Abort check removed from constructor. It will be caught in react() method
-  // after scan completes, where we can properly transit<AwaitScrub>() to stay within PrimaryActive.
+  // Check for abort before scanning range
+  if (!m_scrbr->verify_against_abort(pg.get_osdmap_epoch())) {
+    // Abort detected, post abort event to transition to AwaitScrub
+    post_event(events::abort_t{});
+    return;
+  }
   
   ceph_assert(context<ChunkState>().range);
   const auto &cs = context<ChunkState>();
@@ -86,9 +94,9 @@ sc::result ScanRange::react(const ScrubContext::scan_range_complete_t &event)
   } else {
     // Check if scrub should abort after completing a chunk
     if (!m_scrbr->verify_against_abort(pg.get_osdmap_epoch())) {
-      // Abort detected, transition to AwaitScrub
-      // The job remains in the queue and will be retried by the scheduler
-      return transit<AwaitScrub>();
+      // Abort detected, post abort event to transition to AwaitScrub
+      post_event(events::abort_t{});
+      return discard_event();
     }
     
     ceph_assert(context<ChunkState>().range);
