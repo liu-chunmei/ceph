@@ -105,6 +105,7 @@ enum class OperationTypeCode {
   scrub_find_range,
   scrub_reserve_range,
   scrub_scan,
+  scrub_sleep,
   pgpct_request,
   ecrep_request,
   last_op
@@ -131,6 +132,7 @@ static constexpr const char* const OP_NAMES[] = {
   "scrub_find_range",
   "scrub_reserve_range",
   "scrub_scan",
+  "scrub_sleep",
   "pgpct_request",
   "ecrep_request",
 };

@@ -20,6 +20,7 @@ class PG;
 class ScrubScan;
 class ScrubFindRange;
 class ScrubReserveRange;
+class ScrubSleep;
 }
 
 namespace crimson::osd::scrub {
@@ -60,6 +61,7 @@ class PGScrubber : public crimson::BlockerT<PGScrubber>, ScrubContext {
   friend class ::crimson::osd::ScrubScan;
   friend class ::crimson::osd::ScrubFindRange;
   friend class ::crimson::osd::ScrubReserveRange;
+  friend class ::crimson::osd::ScrubSleep;
 
   using interruptor = ::crimson::interruptible::interruptor<
     ::crimson::osd::IOInterruptCondition>;
@@ -196,6 +198,9 @@ public:
     return m_last_scrub_metrics.get();
   }
   
+  /// Get scrub sleep time in milliseconds (like classic OSD)
+  std::chrono::milliseconds get_scrub_sleep_time() const;
+  
   /// Check if scrub should abort due to noscrub/nodeep-scrub flags
   bool should_abort() const;
   
@@ -214,6 +219,9 @@ public:
 
   /// Track the total number of objects scrubbed across all chunks
   int64_t m_objects_scrubbed_in_chunk{0};
+  
+  /// Start sleep operation between chunks
+  void start_chunk_sleep();
 
   void set_queued_or_active() {
     m_queued_or_active = true;

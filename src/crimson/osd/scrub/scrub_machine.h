@@ -259,6 +259,9 @@ SIMPLE_EVENT(reset_t);
 /// abort scrub and return to AwaitScrub (stays in PrimaryActive)
 SIMPLE_EVENT(abort_t);
 
+/// internal event to schedule next chunk after sleep
+SIMPLE_EVENT(internal_sched_scrub_t);
+
 /// start (deep) scrub
 struct start_scrub_event_t {
   bool deep = false;
@@ -498,13 +501,15 @@ struct AwaitScrub : ScrubState<AwaitScrub, PrimaryActive> {
 };
 
 struct ReservingReplicas;
+struct ChunkState;
 struct Scrubbing : ScrubState<Scrubbing, PrimaryActive, ReservingReplicas> {
   static constexpr std::string_view state_name = "Scrubbing";
   explicit Scrubbing(my_context ctx);
 
   using reactions = boost::mpl::list<
     sc::custom_reaction<internal_events::set_deep_t>,
-    sc::custom_reaction<events::op_stats_t>
+    sc::custom_reaction<events::op_stats_t>,
+    sc::transition<events::internal_sched_scrub_t, ChunkState>
     >;
 
   chunk_validation_policy_t policy;
@@ -569,6 +574,7 @@ struct ReservingReplicas : ScrubState<ReservingReplicas, Scrubbing> {
   sc::result react(const events::remotes_reserved_t &);
 };
 
+struct PendingTimer;
 struct GetRange;
 struct ChunkState : ScrubState<ChunkState, Scrubbing, GetRange> {
   static constexpr std::string_view state_name = "ChunkState";
@@ -588,6 +594,16 @@ struct ChunkState : ScrubState<ChunkState, Scrubbing, GetRange> {
       get_scrub_context().release_range();
     }
   }
+};
+
+/// State between chunks - sleeps for osd_scrub_sleep duration before next chunk
+struct PendingTimer : ScrubState<PendingTimer, Scrubbing> {
+  static constexpr std::string_view state_name = "PendingTimer";
+  explicit PendingTimer(my_context ctx);
+
+  using reactions = boost::mpl::list<
+    sc::transition<events::internal_sched_scrub_t, ChunkState>
+    >;
 };
 
 struct WaitUpdate;

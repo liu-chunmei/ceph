@@ -969,6 +969,7 @@ public:
   friend class ScrubScan;
   friend class ScrubFindRange;
   friend class ScrubReserveRange;
+  friend class ScrubSleep;
   friend class scrub::PGScrubber;
   template <typename T> friend class RemoteScrubEventBaseT;
 

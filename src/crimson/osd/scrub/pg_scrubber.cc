@@ -2,6 +2,7 @@
 // vim: ts=8 sw=2 sts=2 expandtab expandtab
 
 #include <fmt/ranges.h>
+#include <seastar/core/sleep.hh>
 
 #include "crimson/common/log.h"
 #include "crimson/osd/pg.h"
@@ -17,6 +18,51 @@ namespace crimson::osd::scrub {
 void PGScrubber::dump_detail(Formatter *f) const
 {
   f->dump_stream("pgid") << pg.get_pgid();
+  
+  // Add schedule field in the format expected by tests
+  if (m_scrub_job) {
+    const auto now_is = ceph_clock_now();
+    const auto& earliest = m_scrub_job->earliest_target(now_is);
+    
+    // Format: "scrub scheduled @ not_before (scheduled_at)"
+    std::ostringstream schedule_str;
+    schedule_str << "scrub scheduled @ "
+                 << earliest.sched_info.schedule.not_before
+                 << " (" << earliest.sched_info.schedule.scheduled_at << ")";
+    f->dump_string("schedule", schedule_str.str());
+    
+    // Add query_schedule field with detailed schedule information
+    f->open_object_section("query_schedule");
+    f->dump_stream("scheduled_at") << earliest.sched_info.schedule.scheduled_at;
+    f->dump_stream("not_before") << earliest.sched_info.schedule.not_before;
+    f->dump_bool("is_active", m_active_target.has_value());
+    f->dump_string("scrub_level",
+                   earliest.is_deep() ? "deep" : "shallow");
+    f->dump_string("urgency", fmt::format("{}", earliest.urgency()));
+    // Note: is_registered() and is_queued() access ShardServices which may not be initialized
+    // during early dump_detail calls, so we use the target's queued flag directly
+    f->dump_bool("is_registered", m_scrub_job->registered);
+    f->dump_bool("is_queued", earliest.queued);
+    
+    // Dump both targets
+    f->open_object_section("shallow_target");
+    f->dump_stream("scheduled_at") << m_scrub_job->shallow_target.sched_info.schedule.scheduled_at;
+    f->dump_stream("not_before") << m_scrub_job->shallow_target.sched_info.schedule.not_before;
+    f->dump_bool("queued", m_scrub_job->shallow_target.queued);
+    f->dump_bool("active",
+                 (m_active_target && m_active_target->is_shallow()) ? true : false);
+    f->close_section();
+    
+    f->open_object_section("deep_target");
+    f->dump_stream("scheduled_at") << m_scrub_job->deep_target.sched_info.schedule.scheduled_at;
+    f->dump_stream("not_before") << m_scrub_job->deep_target.sched_info.schedule.not_before;
+    f->dump_bool("queued", m_scrub_job->deep_target.queued);
+    f->dump_bool("active",
+                 (m_active_target && m_active_target->is_deep()) ? true : false);
+    f->close_section();
+    
+    f->close_section(); // query_schedule
+  }
 }
 spg_t PGScrubber::get_pg_id() const
 {
@@ -630,7 +676,8 @@ void PGScrubber::notify_scrub_start(bool deep)
   LOG_PREFIX(PGScrubber::notify_scrub_start);
   DEBUGDPP("deep: {}", pg, deep);
   m_is_deep = deep;
-  
+  update_op_mode_text();
+
   // Record scrub start time for duration calculation
   m_scrub_start_time = ceph::coarse_real_clock::now();
   
@@ -897,9 +944,13 @@ void PGScrubber::dump_scrub_metrics(ceph::Formatter* f)
 {
   LOG_PREFIX(PGScrubber::dump_scrub_metrics);
   DEBUGDPP("dump scrub pgid = {}", pg, pg.get_pgid());
-  f->open_object_section("pg_scrubber");
+  // Use "scrubber" section name to match classic OSD and test expectations
+  f->open_object_section("scrubber");
   f->dump_stream("pgid") << pg.get_pgid();
   f->dump_bool("is_queued_or_active", m_queued_or_active);
+  // Add 'active' field to match classic OSD output format
+  // active means scrubbing is running, not just queued
+  f->dump_bool("active", m_active_target.has_value());
   f->dump_string("mode", m_mode_desc);
   
   // Dump metrics from the last or current scrub session
@@ -921,6 +972,28 @@ void PGScrubber::update_op_mode_text()
 
   DEBUGDPP("repair: visible: {}, internal: {}. Displayed: {}",
     pg, visible_repair, m_is_repair, m_mode_desc);
+}
+
+std::chrono::milliseconds PGScrubber::get_scrub_sleep_time() const
+{
+  // Get osd_scrub_sleep config value and convert to milliseconds
+  // This matches classic OSD's scrub_sleep_time() implementation
+  using namespace std::chrono;
+  const double sleep_seconds = crimson::common::local_conf().get_val<double>("osd_scrub_sleep");
+  LOG_PREFIX(PGScrubber::get_scrub_sleep_time);
+  DEBUGDPP("osd_scrub_sleep config value: {} seconds", pg, sleep_seconds);
+  return milliseconds(static_cast<int64_t>(std::max(0.0, 1000.0 * sleep_seconds)));
+}
+
+void PGScrubber::start_chunk_sleep()
+{
+  LOG_PREFIX(PGScrubber::start_chunk_sleep);
+  DEBUGDPP("starting sleep operation", pg);
+  
+  // Start ScrubSleep operation which will handle the sleep and post event when done
+  std::ignore = pg.shard_services.start_operation_may_interrupt<
+    interruptor, ::crimson::osd::ScrubSleep
+    >(&pg);
 }
 
 std::string_view PGScrubber::get_op_mode_text() const

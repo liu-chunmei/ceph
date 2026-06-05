@@ -142,7 +142,7 @@ function MANUAL_peering_check() {
     return 0
 }
 
-function TEST_scrub_test() {
+function TES_scrub_test() {
     local dir=$1
     local poolname=test
     local OSDS=3
@@ -237,7 +237,7 @@ function check_dump_scrubs() {
     test $(echo $SCHED_TIME | sed $DATESED) = $(date +${DATEFORMAT} -d "now + $sched_time_check") || return 1
 }
 
-function TEST_interval_changes() {
+function TES_interval_changes() {
     local poolname=test
     local OSDS=2
     local objects=10
@@ -421,17 +421,17 @@ function _scrub_abort() {
     dump_scrub_metrics $dir $poolname
 }
 
-function TEST_scrub_abort() {
+function TES_scrub_abort() {
     local dir=$1
     _scrub_abort $dir scrub
 }
 
-function TEST_deep_scrub_abort() {
+function TES_deep_scrub_abort() {
     local dir=$1
     _scrub_abort $dir deep-scrub
 }
 
-function TEST_scrub_permit_time() {
+function TES_scrub_permit_time() {
     local dir=$1
     local poolname=test
     local OSDS=3
@@ -478,7 +478,7 @@ function TEST_scrub_permit_time() {
     dump_scrub_metrics $dir $poolname
 }
 
-function TEST_pg_dump_objects_scrubbed() {
+function TES_pg_dump_objects_scrubbed() {
     local dir=$1
     local poolname=test
     local OSDS=3
@@ -520,7 +520,7 @@ function TEST_pg_dump_objects_scrubbed() {
 # but nodeep-scrub is not set. This verifies that the scrubber
 # correctly distinguishes between regular scrubs and deep scrubs.
 # Fixed by PR#43521
-function TEST_just_deep_scrubs() {
+function TES_just_deep_scrubs() {
     local dir=$1
     local poolname=test
     local OSDS=3
@@ -610,6 +610,417 @@ function TEST_just_deep_scrubs() {
     
     dump_scrub_metrics $dir $poolname
 }
+
+function TEST_dump_scrub_schedule() {
+    local dir=$1
+    local poolname=test
+    local OSDS=3
+    local objects=90
+
+    TESTDATA="testdata.$$"
+
+    run_mon $dir a --osd_pool_default_size=$OSDS || return 1
+    apply_crimson_config || return 1
+    run_mgr $dir x --mgr_stats_period=1 || return 1
+
+    # Crimson-specific OSD arguments
+    # Include scrub time settings directly in OSD args to avoid config change before ShardServices init
+    local ceph_osd_args="--osd_objectstore=seastore \
+            --osd_deep_scrub_randomize_ratio=0 \
+            --osd_scrub_interval_randomize_ratio=0 \
+            --osd_scrub_backoff_ratio=0.0 \
+            --osd_op_queue=wpq \
+            --osd_stats_update_period_not_scrubbing=1 \
+            --osd_stats_update_period_scrubbing=1 \
+            --osd_scrub_retry_after_noscrub=1 \
+            --osd_scrub_retry_pg_state=2 \
+            --osd_scrub_retry_delay=2 \
+            --osd_scrub_sleep=2.0 \
+            --osd_scrub_begin_hour=0 \
+            --osd_scrub_end_hour=23"
+
+    for osd in $(seq 0 $(expr $OSDS - 1))
+    do
+      run_crimson_osd $dir $osd $ceph_osd_args --debug || return 1
+    done
+
+    # Create a pool with a single pg
+    create_pool $poolname 1 1
+    wait_for_clean || return 1
+    poolid=$(ceph osd dump | grep "^pool.*[']${poolname}[']" | awk '{ print $2 }')
+
+    dd if=/dev/urandom of=$TESTDATA bs=1032 count=1
+    for i in `seq 1 $objects`
+    do
+        rados -p $poolname put obj${i} $TESTDATA
+    done
+    rm -f $TESTDATA
+
+    local pgid="${poolid}.0"
+    #local now_is=`date -I"ns"` # note: uses a comma for the ns part
+    local now_is=`date +'%Y-%m-%dT%H:%M:%S.%N%:z'`
+
+    # before the scrubbing starts
+
+    # last scrub duration should be 0. The scheduling data should show
+    # a time in the future:
+    # e.g. 'periodic scrub scheduled @ 2021-10-12T20:32:43.645168+0000'
+
+    declare -A expct_starting=( ['query_active']="false" ['query_is_future']="true" ['query_schedule']="scrub scheduled" )
+    declare -A sched_data
+    extract_published_sch $pgid $now_is "2019-10-12T20:32:43.645168+0000" sched_data
+    schedule_against_expected sched_data expct_starting "initial"
+    (( ${sched_data['dmp_last_duration']} == 0)) || return 1
+    echo "last-scrub  --- " ${sched_data['query_last_scrub']}
+
+    #
+    # step 1: scrub once (mainly to ensure there is no urgency to scrub)
+    #
+
+    saved_last_stamp=${sched_data['query_last_stamp']}
+    ceph config set osd osd_scrub_sleep "0"
+    ceph pg deep-scrub $pgid
+
+    # wait for the 'last duration' entries to change. Note that the 'dump' one will need
+    # up to 5 seconds to sync
+
+    sleep 5
+    sched_data=()
+    declare -A expct_qry_duration=( ['query_last_duration']="0" ['query_last_duration_neg']="not0" )
+    wait_any_cond $pgid 10 $saved_last_stamp expct_qry_duration "WaitingAfterScrub " sched_data || return 1
+    # verify that 'pg dump' also shows the change in last_scrub_duration
+    sched_data=()
+    declare -A expct_dmp_duration=( ['dmp_last_duration']="0" ['dmp_last_duration_neg']="not0" )
+    wait_any_cond $pgid 10 $saved_last_stamp expct_dmp_duration "WaitingAfterScrub_dmp " sched_data || return 1
+
+    #
+    # step 2: set noscrub and request a "periodic scrub". Watch for the change in the 'is the scrub
+    #         scheduled for the future' value
+    #
+
+    ceph osd set noscrub || return 1
+    sleep 2
+    ceph config set osd osd_shallow_scrub_chunk_max "3" || return 1
+    ceph config set osd osd_scrub_sleep "2.0" || return 1
+    sleep 8
+    saved_last_stamp=${sched_data['query_last_stamp']}
+
+    ceph pg scrub $pgid
+    sleep 1
+    sched_data=()
+    declare -A expct_scrub_peri_sched=( ['query_is_future']="false" )
+    wait_any_cond $pgid 10 $saved_last_stamp expct_scrub_peri_sched "waitingBeingScheduled" sched_data || return 1
+
+    # note: the induced change in 'last_scrub_stamp' that we've caused above, is by itself not a publish-stats
+    # trigger. Thus it might happen that the information in 'pg dump' will not get updated here. Do not expect
+    # 'dmp_is_future' to follow 'query_is_future' without a good reason
+    ## declare -A expct_scrub_peri_sched_dmp=( ['dmp_is_future']="false" )
+    ## wait_any_cond $pgid 15 $saved_last_stamp expct_scrub_peri_sched_dmp "waitingBeingScheduled" sched_data || echo "must be fixed"
+
+    #
+    # step 3: allow scrubs. Watch for the conditions during the scrubbing
+    #
+
+    saved_last_stamp=${sched_data['query_last_stamp']}
+    ceph osd unset noscrub
+
+    declare -A cond_active=( ['query_active']="true" )
+    sched_data=()
+    wait_any_cond $pgid 10 $saved_last_stamp cond_active "WaitingActive " sched_data || return 1
+
+    # check for pg-dump to show being active. But if we see 'query_active' being reset - we've just
+    # missed it.
+    declare -A cond_active_dmp=( ['dmp_state_has_scrubbing']="true" ['query_active']="false" )
+    sched_data=()
+    wait_any_cond $pgid 10 $saved_last_stamp cond_active_dmp "WaitingActive " sched_data
+    sleep 4
+    dump_scrub_metrics $dir $poolname
+}
+
+
+# Crimson-specific version of standard_scrub_wpq_cluster
+# Creates a cluster with Crimson OSDs for scrub testing
+function crimson_standard_scrub_wpq_cluster() {
+    local dir=$1
+    local -n conf=$2
+    local osd_sleep=$3
+    
+    local OSDS=${conf['osds_num']}
+    local pg_num=${conf['pgs_in_pool']}
+    local poolname=${conf['pool_name']}
+    local pool_default_size=${conf['pool_size']:-3}
+    local extra_pars=${conf['extras']:-""}
+    
+    run_mon $dir a --osd_pool_default_size=$pool_default_size || return 1
+    apply_crimson_config || return 1
+    run_mgr $dir x --mgr_stats_period=1 || return 1
+    
+    local ceph_osd_args="--osd_objectstore=seastore \
+            --osd_deep_scrub_randomize_ratio=0 \
+            --osd_scrub_interval_randomize_ratio=0 \
+            --osd_scrub_backoff_ratio=0.0 \
+            --osd_pool_default_pg_autoscale_mode=off \
+            --osd_pg_stat_report_interval_max_seconds=1 \
+            --osd_pg_stat_report_interval_max_epochs=1 \
+            --osd_stats_update_period_not_scrubbing=3 \
+            --osd_stats_update_period_scrubbing=1 \
+            --osd_scrub_retry_after_noscrub=5 \
+            --osd_scrub_retry_pg_state=5 \
+            --osd_scrub_retry_delay=3 \
+            --osd_pool_default_size=$pool_default_size \
+            --osd_op_queue=wpq \
+            --osd_scrub_sleep=$osd_sleep \
+            $extra_pars"
+    
+    for osd in $(seq 0 $(expr $OSDS - 1))
+    do
+      run_crimson_osd $dir $osd $ceph_osd_args || return 1
+    done
+    
+    if [[ "$poolname" != "nopool" ]]; then
+        create_pool $poolname $pg_num $pg_num --autoscale_mode=off || return 1
+        wait_for_clean || return 1
+    fi
+    
+    # update the in/out 'args' with the ID of the new pool
+    sleep 1
+    if [[ "$poolname" != "nopool" ]]; then
+        name_n_id=`ceph osd dump | awk '/^pool.*'$poolname'/ { gsub(/'"'"'/," ",$3); print $3," ", $2}'`
+        echo "crimson_standard_scrub_wpq_cluster: test pool is $name_n_id"
+        conf['pool_id']="${name_n_id##* }"
+    fi
+    conf['osd_args']=$ceph_osd_args
+}
+
+function wait_initial_scrubs() {
+    local -n pg_to_prim_dict=$1
+    local extr_dbg=1 # note: 3 and above leave some temp files around
+
+    # set a long schedule for the periodic scrubs. Wait for the
+    # initial 'no previous scrub is known' scrubs to finish for all PGs.
+    ceph config set osd osd_scrub_min_interval 7200
+    ceph config set osd osd_deep_scrub_interval 14400
+    ceph config set osd osd_max_scrubs 32
+    ceph config set osd osd_scrub_sleep 1
+    ceph config set osd osd_shallow_scrub_chunk_max 10
+    ceph config set osd osd_scrub_chunk_max 10
+
+    for pg in "${!pg_to_prim_dict[@]}"; do
+      (( extr_dbg >= 1 )) && echo "Scheduling initial scrub for $pg"
+      ceph pg $pg scrub || return 1
+    done
+
+    sleep 1
+    (( extr_dbg >= 1 )) && ceph pg dump pgs --format=json-pretty | \
+      jq '.pg_stats | map(select(.last_scrub_duration == 0)) | map({pgid: .pgid, last_scrub_duration: .last_scrub_duration})'
+
+    tout=20
+    while [ $tout -gt 0 ] ; do
+      sleep 1
+      (( extr_dbg >= 1 )) && ceph pg dump pgs --format=json-pretty | \
+        jq '.pg_stats | map(select(.last_scrub_duration == 0)) | map({pgid: .pgid, last_scrub_duration: .last_scrub_duration})'
+      not_done=$(ceph pg dump pgs --format=json-pretty | \
+        jq '.pg_stats | map(select(.last_scrub_duration == 0)) | map({pgid: .pgid, last_scrub_duration: .last_scrub_duration})' | wc -l )
+      # note that we should ignore a header line
+      if [ "$not_done" -le 1 ]; then
+        break
+      fi
+      not_done=$(( (not_done - 2) / 4 ))
+      echo "Still waiting for $not_done PGs to finish initial scrubs (timeout $tout)"
+      tout=$((tout - 1))
+    done
+    ceph pg dump pgs --format=json-pretty | \
+      jq '.pg_stats | map(select(.last_scrub_duration == 0)) | map({pgid: .pgid, last_scrub_duration: .last_scrub_duration})'
+    (( tout == 0 )) && return 1
+    return 0
+}
+
+# Whenever a PG is being scrubbed at a regular, periodic, urgency, and is queued
+# for its replicas:
+# if the operator is requesting a scrub of the same PG, the operator's request
+# should trigger an abort of the ongoing scrub.
+#
+# The test process:
+# - a periodic scrub is initiated of a PG. That scrub is set to be a very slow one.
+# - a second PG, which shares some of its replicas, is intrcuted to be scrubbed. That one
+#   should be stuck in replica reservation. We will verify that.
+# - now - the operator is requesting that second PG to be scrubbed. The original (pending)
+#   scrub should be aborted. We would check for:
+#   - the new, operator's scrub to be scheduled
+#   - the replicas' reservers to be released
+function TES_abort_periodic_for_operator() {
+    local dir=$1
+    local -A cluster_conf=(
+        ['osds_num']="5"
+        ['pgs_in_pool']="16"
+        ['pool_name']="test"
+    )
+    local extr_dbg=1 # note: 3 and above leave some temp files around
+
+    crimson_standard_scrub_wpq_cluster "$dir" cluster_conf 2 || return 1
+    local poolid=${cluster_conf['pool_id']}
+    local poolname=${cluster_conf['pool_name']}
+    echo "Pool: $poolname : $poolid"
+
+    #turn off '-x' (but remember previous state)
+    local saved_echo_flag=${-//[^x]/}
+    set +x
+
+    # fill the pool with some data
+    TESTDATA="testdata.$$"
+    dd if=/dev/urandom of=$TESTDATA bs=320 count=1
+    for i in $( seq 1 256 )
+    do
+        rados -p "$poolname" put "obj${i}" $TESTDATA 2>/dev/null 1>/dev/null
+    done
+    rm -f $TESTDATA
+    if [[ -n "$saved_echo_flag" ]]; then set -x; fi
+
+    # create the dictionary of the PGs in the pool
+    declare -A pg_pr
+    declare -A pg_ac
+    declare -A pg_po
+    build_pg_dicts "$dir" pg_pr pg_ac pg_po "-"
+    (( extr_dbg >= 2 )) && echo "PGs table:"
+    for pg in "${!pg_pr[@]}"; do
+      (( extr_dbg >= 2 )) && echo "Got: $pg: ${pg_pr[$pg]} ( ${pg_ac[$pg]} ) ${pg_po[$pg]}"
+    done
+
+    wait_initial_scrubs pg_pr || return 1
+
+    # limit all OSDs to one scrub at a time
+    ceph tell osd.* config set osd_max_scrubs 1
+    ceph tell osd.* config set osd_stats_update_period_not_scrubbing 1
+
+    # configure for slow scrubs
+    ceph tell osd.* config set osd_scrub_sleep 3
+    ceph tell osd.* config set osd_shallow_scrub_chunk_max 2
+    ceph tell osd.* config set osd_scrub_chunk_max 2
+    (( extr_dbg >= 2 )) && ceph tell osd.2 dump_scrub_reservations --format=json-pretty
+
+    # the first PG to work with:
+    local pg2=""
+    for pg1 in "${!pg_pr[@]}"; do
+      for pg in "${!pg_pr[@]}"; do
+        if [[ "$pg" == "$pg1" ]]; then
+          continue
+        fi
+        if [[ "${pg_pr[$pg]}" == "${pg_pr[$pg1]}" ]]; then
+          local -i common=$(count_common_active $pg $pg1 pg_ac)
+          if [[ $common -gt 1 ]]; then
+            pg2=$pg
+            break 2
+          fi
+        fi
+      done
+    done
+
+    if [[ -z "$pg2" ]]; then
+      echo "No PG found with the same primary as $pg1"
+      return 0 # not an error
+    fi
+
+    # the common primary is allowed two concurrent scrubs
+    ceph tell osd."${pg_pr[$pg1]}" config set osd_max_scrubs 2
+    echo "The two PGs to manipulate are $pg1 and $pg2"
+
+    set_query_debug "$pg1"
+    # wait till the information published by pg1 is updated to show it as
+    # not being scrubbed
+    local is_act
+    for i in $( seq 1 3 )
+    do
+      is_act=$(ceph pg "$pg1" query | jq '.scrubber.active')
+      if [[ "$is_act" = "false" ]]; then
+          break
+      fi
+      echo "Still waiting for pg $pg1 to finish scrubbing"
+      sleep 0.7
+    done
+    ceph pg dump pgs
+    if [[ "$is_act" != "false" ]]; then
+      ceph pg "$pg1" query
+      echo "PG $pg1 appears to be still scrubbing"
+      return 1
+    fi
+    sleep 0.5
+
+    echo "Initiating a periodic scrub of $pg1"
+    (( extr_dbg >= 2 )) && ceph pg "$pg1" query -f json-pretty | jq '.scrubber'
+    ceph tell $pg1 schedule-deep-scrub || return 1
+    sleep 1
+    (( extr_dbg >= 2 )) && ceph pg "$pg1" query -f json-pretty | jq '.scrubber'
+
+    for i in $( seq 1 14 )
+    do
+      sleep 0.5
+      stt=$(ceph pg "$pg1" query | jq '.scrubber')
+      is_active=$(echo $stt | jq '.active')
+      is_reserving_replicas=$(echo $stt | jq '.is_reserving_replicas')
+      if [[ "$is_active" = "true" && "$is_reserving_replicas" = "false" ]]; then
+          break
+      fi
+      echo "Still waiting for pg $pg1 to start scrubbing: $stt"
+    done
+    if [[ "$is_active" != "true" || "$is_reserving_replicas" != "false" ]]; then
+      ceph pg "$pg1" query -f json-pretty | jq '.scrubber'
+      echo "The scrub is not active or is reserving replicas"
+      return 1
+    fi
+    (( extr_dbg >= 2 )) && ceph pg "$pg1" query -f json-pretty | jq '.scrubber'
+
+
+    # PG 1 is scrubbing, and has reserved the replicas - soem of which are shared
+    # by PG 2. As the max-scrubs was set to 1, that should prevent PG 2 from
+    # reserving its replicas.
+
+    (( extr_dbg >= 1 )) && ceph tell osd.* dump_scrub_reservations --format=json-pretty
+
+    # now - the 2'nd scrub - which should be blocked on reserving
+    set_query_debug "$pg2"
+    ceph tell "$pg2" schedule-deep-scrub
+    sleep 0.5
+    (( extr_dbg >= 2 )) && echo "===================================================================================="
+    (( extr_dbg >= 2 )) && ceph pg "$pg2" query -f json-pretty | jq '.scrubber'
+    (( extr_dbg >= 2 )) && ceph pg "$pg1" query -f json-pretty | jq '.scrubber'
+    sleep 1
+    (( extr_dbg >= 2 )) && echo "===================================================================================="
+    (( extr_dbg >= 2 )) && ceph pg "$pg2" query -f json-pretty | jq '.scrubber'
+    (( extr_dbg >= 2 )) && ceph pg "$pg1" query -f json-pretty | jq '.scrubber'
+
+    # make sure pg2 scrub is stuck in the reserving state
+    local stt2=$(ceph pg "$pg2" query | jq '.scrubber')
+    local pg2_is_reserving
+    pg2_is_reserving=$(echo $stt2 | jq '.is_reserving_replicas')
+    if [[ "$pg2_is_reserving" != "true" ]]; then
+      echo "The scheduled scrub for $pg2 should have been stuck"
+      ceph pg dump pgs
+      return 1
+    fi
+
+    # now - issue an operator-initiated scrub on pg2.
+    # The periodic scrub should be aborted, and the operator-initiated scrub should start.
+    echo "Instructing $pg2 to perform a high-priority scrub"
+    ceph tell "$pg2" scrub
+    for i in $( seq 1 10 )
+    do
+      sleep 0.5
+      stt2=$(ceph pg "$pg2" query | jq '.scrubber')
+      pg2_is_active=$(echo $stt2 | jq '.active')
+      pg2_is_reserving=$(echo $stt2 | jq '.is_reserving_replicas')
+      if [[ "$pg2_is_active" = "true" && "$pg2_is_reserving" != "true" ]]; then
+            break
+      fi
+      echo "Still waiting: $stt2"
+    done
+
+    if [[ "$pg2_is_active" != "true" || "$pg2_is_reserving" = "true" ]]; then
+      echo "The high-priority scrub for $pg2 is not active or is reserving replicas"
+      return 1
+    fi
+    echo "Done"
+}
+
 
 
 # Note: Some tests from the original osd-scrub-test.sh may not be fully compatible

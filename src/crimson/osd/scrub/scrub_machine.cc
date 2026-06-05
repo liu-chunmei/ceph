@@ -110,7 +110,11 @@ sc::result ScanRange::react(const ScrubContext::scan_range_complete_t &event)
 	*(context<ChunkState>().range),
 	std::move(results));
     }
-    if (context<ChunkState>().range->end.is_max()) {
+    LOG_PREFIX(ScanRange::react);
+    bool is_last = context<ChunkState>().range->end.is_max();
+    SUBDEBUGDPP(osd, "scan complete, is_last_chunk={}", dpp, is_last);
+    if (is_last) {
+      SUBDEBUGDPP(osd, "last chunk, completing scrub", dpp);
       auto& scrubbing = context<Scrubbing>();
       get_scrub_context().emit_scrub_result(
  scrubbing.deep,
@@ -125,9 +129,12 @@ sc::result ScanRange::react(const ScrubContext::scan_range_complete_t &event)
       }
       return transit<PrimaryActive>();
     } else {
-      context<Scrubbing>().advance_current(
-	context<ChunkState>().range->end);
-      return transit<ChunkState>();
+      LOG_PREFIX(ScanRange::react);
+      auto range_end = context<ChunkState>().range->end;
+      SUBDEBUGDPP(osd, "chunk complete at range end {}, advancing to next chunk", dpp, range_end);
+      context<Scrubbing>().advance_current(range_end);
+      // Transition to PendingTimer to sleep before next chunk
+      return transit<PendingTimer>();
     }
   }
 }
@@ -196,7 +203,13 @@ sc::result ReservingReplicas::react(const events::replica_grant_t &event)
       // Now that reservations are complete, scrubbing is "active"
       metrics->inc_active_started();
     }
-    return transit<ChunkState>();
+    LOG_PREFIX(ReservingReplicas::react);
+    SUBDEBUGDPP(osd, "reservations complete, starting sleep before first chunk", dpp);
+    // Start sleep operation before first chunk (like classic OSD PendingTimer)
+    // Stay in ReservingReplicas state and wait for internal_sched_scrub_t event
+    // which will be handled by parent Scrubbing state's transition to ChunkState
+    m_scrbr->start_chunk_sleep();
+    return discard_event();
   }
   return discard_event();
 
@@ -237,9 +250,21 @@ sc::result ReservingReplicas::react(const events::replica_reject_t &event)
 
 sc::result ReservingReplicas::react(const events::remotes_reserved_t &)
 {
+  DECLARE_LOCALS;
   LOG_PREFIX(ReservingReplicas::react(remotes_reserved_t));
-  SUBDEBUGDPP(osd, "no replicas to reserve, proceeding to ChunkState", dpp);
-  return transit<ChunkState>();
+  SUBDEBUGDPP(osd, "no replicas to reserve, starting sleep before first chunk", dpp);
+  
+  // Increment active_started counter since we're about to start scrubbing
+  auto &scrubbing = context<Scrubbing>();
+  if (auto* metrics = scrubbing.get_metrics()) {
+    metrics->inc_active_started();
+  }
+  
+  // Start sleep operation before first chunk (like classic OSD PendingTimer)
+  // Stay in ReservingReplicas state and wait for internal_sched_scrub_t event
+  // which will be handled by parent Scrubbing state's transition to ChunkState
+  m_scrbr->start_chunk_sleep();
+  return discard_event();
 }
 
 // -------- for replicas -----------------------------------------------------
@@ -461,6 +486,17 @@ ReplicaScanChunk::ReplicaScanChunk(my_context ctx) : ScrubState(ctx)
     to_scan.end,
     to_scan.deep);
 }
+// ----------------------- PendingTimer -----------------------------------
+
+PendingTimer::PendingTimer(my_context ctx) : ScrubState(ctx) {
+  DECLARE_LOCALS;
+  LOG_PREFIX(PendingTimer::PendingTimer);
+  SUBDEBUGDPP(osd, "entering PendingTimer state", dpp);
+  
+  // Start the sleep operation which will post internal_sched_scrub_t when done
+  m_scrbr->start_chunk_sleep();
+}
+
 
 
 };

@@ -8,6 +8,7 @@
 #include "messages/MOSDRepScrubMap.h"
 #include "scrub_events.h"
 #include "crimson/os/futurized_store.h"
+#include <seastar/core/sleep.hh>
 
 SET_SUBSYS(osd);
 
@@ -388,6 +389,22 @@ ScrubScan::ifut<> ScrubScan::deep_scan_object(
 }
 
 template class ScrubAsyncOpT<ScrubScan>;
+
+ScrubSleep::ifut<> ScrubSleep::run(PG &pg)
+{
+  LOG_PREFIX(ScrubSleep::run);
+  auto sleep_time = pg.scrubber.get_scrub_sleep_time();
+  DEBUGDPP("sleeping for {} ms", pg, sleep_time.count());
+  
+  return interruptor::make_interruptible(seastar::sleep(sleep_time)
+  ).then_interruptible([FNAME, &pg] {
+    DEBUGDPP("sleep complete, posting event to continue scrub", pg);
+    pg.scrubber.machine.process_event(
+      scrub::events::internal_sched_scrub_t{});
+  });
+}
+
+template class ScrubAsyncOpT<ScrubSleep>;
 
 }
 
