@@ -350,8 +350,8 @@ public:
     const int64_t offset = cmd_getval_or<int64_t>(cmdmap, "time", 0);
     constexpr bool is_deep = deep;
     
-    return PG::interruptor::with_interruption([pg, offset] {
-      pg->scrubber.handle_schedule_scrub(deep, offset);
+    return PG::interruptor::with_interruption([pg, offset, is_deep] {
+      pg->scrubber.handle_schedule_scrub(is_deep, offset);
       return PG::interruptor::now();
     }, [FNAME, pg](std::exception_ptr ep) {
       DEBUGDPP("interrupted with {}", *pg, ep);

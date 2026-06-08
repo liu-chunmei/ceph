@@ -520,7 +520,7 @@ void PGScrubber::handle_schedule_scrub(bool deep, int64_t offset)
   // This is a test/debug command that schedules a scrub by faking the
   // last scrub timestamps, similar to the classic OSD implementation.
   // This makes the PG appear as if it hasn't been scrubbed recently,
-  // causing it to be scheduled for scrubbing.
+  // causing it to be scheduled for scrubbing by the periodic scheduler.
   
   // Calculate the timestamp to set
   // If no offset specified, calculate one that guarantees scheduling
@@ -566,11 +566,25 @@ void PGScrubber::handle_schedule_scrub(bool deep, int64_t offset)
     return true;
   });
   
-  DEBUGDPP("scrub timestamp updated, triggering scrub schedule update", pg);
+  // Directly update the job's schedule to match the timestamp we set
+  // We can't use update_scrub_job() because it won't recalculate if urgency
+  // doesn't require randomization
+  if (m_scrub_job && m_scrub_job->is_registered()) {
+    auto& target = deep ? m_scrub_job->deep_target : m_scrub_job->shallow_target;
+    target.sched_info.schedule.scheduled_at = stamp;
+    target.sched_info.schedule.not_before = stamp;
+    
+    // Dequeue and re-enqueue to update the queue with new schedule
+    if (m_scrub_job->is_queued()) {
+      pg.shard_services.get_scrub_scheduler().remove_from_osd_queue(pg.get_pgid());
+      m_scrub_job->clear_both_targets_queued();
+    }
+    pg.shard_services.get_scrub_scheduler().enqueue_scrub_job(*m_scrub_job);
+    m_scrub_job->set_both_targets_queued();
+    pg.publish_stats_to_osd();
+  }
   
-  // Trigger schedule update - this will recalculate and enqueue with periodic urgency
-  // The timestamp we set is far enough in the past that it will be eligible immediately
-  pg.on_scrub_schedule_input_change();
+  DEBUGDPP("scrub timestamp and schedule set to: {}", pg, stamp);
 }
 
 void PGScrubber::handle_scrub_message(Message &_m)
