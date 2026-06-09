@@ -516,10 +516,8 @@ public:
       pg_to_shard_mapping(pg_to_shard_mapping),
       store_shard_nums(store_shard_nums),
       scrub_timer{[this] {
-        std::ignore = prepare_scrub(
-        ).then([this] {
-          scrub_timer.arm(std::chrono::seconds(SCRUB_TICK_INTERVAL));
-        });
+        std::ignore = prepare_scrub();
+        scrub_timer.arm(std::chrono::seconds(SCRUB_TICK_INTERVAL));
       }},
       scrub_scheduler(*this) {
         scrub_timer.arm(std::chrono::seconds(SCRUB_TICK_INTERVAL));

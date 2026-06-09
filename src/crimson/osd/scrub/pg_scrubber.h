@@ -190,6 +190,9 @@ public:
     return m_queued_or_active;
   }
 
+  /// Check if scrub is currently reserving replicas
+  bool is_reserving_replicas() const;
+
   /// Dump scrub metrics (if scrubbing is active)
   void dump_scrub_metrics(ceph::Formatter* f);
   
@@ -215,7 +218,7 @@ public:
   std::unique_ptr<ScrubMetrics> m_last_scrub_metrics;
   
   /// Track scrub start time to calculate duration
-  std::optional<ceph::coarse_real_clock::time_point> m_scrub_start_time;
+  std::optional<ScrubTimePoint> m_scrub_start_time;
 
   /// Track the total number of objects scrubbed across all chunks
   int64_t m_objects_scrubbed_in_chunk{0};
@@ -241,7 +244,7 @@ private:
   void clear_pgscrub_state() final;
 
   void notify_scrub_start(bool deep) final;
-  void notify_scrub_end(bool deep) final;
+  //void notify_scrub_end(bool deep) final;
 
   void requeue_penalized(
       scrub_level_t s_or_d,

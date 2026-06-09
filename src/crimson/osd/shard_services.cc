@@ -341,7 +341,8 @@ std::vector<std::string> OSDSingletonState::get_tracked_keys() const noexcept
   return {
     "osd_max_backfills"s,
     "osd_min_recovery_priority"s,
-    "osd_max_trimming_pgs"s
+    "osd_max_trimming_pgs"s,
+    "osd_max_scrubs"s
   };
 }
 
@@ -359,6 +360,9 @@ void OSDSingletonState::handle_conf_change(
   }
   if (changed.count("osd_max_trimming_pgs")) {
     snap_reserver.set_max(conf->osd_max_trimming_pgs);
+  }
+  if (changed.count("osd_max_scrubs")) {
+    scrub_reserver.set_max(conf->osd_max_scrubs);
   }
 }
 

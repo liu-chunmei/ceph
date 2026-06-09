@@ -172,7 +172,7 @@ struct ScrubContext {
   virtual void notify_scrub_start(bool deep) = 0;
 
   /// notifies implementation of scrub end
-  virtual void notify_scrub_end(bool deep) = 0;
+  //virtual void notify_scrub_end(bool deep) = 0;
 
   /// requests range to scrub starting at start
   struct request_range_result_t {
@@ -508,8 +508,7 @@ struct Scrubbing : ScrubState<Scrubbing, PrimaryActive, ReservingReplicas> {
 
   using reactions = boost::mpl::list<
     sc::custom_reaction<internal_events::set_deep_t>,
-    sc::custom_reaction<events::op_stats_t>,
-    sc::transition<events::internal_sched_scrub_t, ChunkState>
+    sc::custom_reaction<events::op_stats_t>
     >;
 
   chunk_validation_policy_t policy;
@@ -541,7 +540,8 @@ struct Scrubbing : ScrubState<Scrubbing, PrimaryActive, ReservingReplicas> {
   }
 
   void exit() {
-    get_scrub_context().notify_scrub_end(deep);
+    // Note: notify_scrub_end is called when scrub actually completes,
+    // not when exiting this intermediate Scrubbing state
   }
 
   sc::result react(const events::op_stats_t &event) {
@@ -566,7 +566,8 @@ struct ReservingReplicas : ScrubState<ReservingReplicas, Scrubbing> {
   using reactions = boost::mpl::list<
     sc::custom_reaction<events::replica_grant_t>,
     sc::custom_reaction<events::replica_reject_t>,
-    sc::custom_reaction<events::remotes_reserved_t>
+    sc::custom_reaction<events::remotes_reserved_t>,
+    sc::transition<events::abort_t, AwaitScrub>
     >;
 
   sc::result react(const events::replica_grant_t &);

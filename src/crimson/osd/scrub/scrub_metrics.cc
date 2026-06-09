@@ -7,13 +7,20 @@ namespace crimson::osd::scrub {
 
 void ScrubMetrics::register_metrics(
   const std::string& pool_type,
-  const std::string& scrub_level)
+  const std::string& scrub_level,
+  const std::string& pg_id)
 {
+  // Guard against double registration
+  if (metrics_registered) {
+    return;
+  }
+
   namespace sm = seastar::metrics;
 
   std::vector<sm::label_instance> labels = {
     sm::label_instance("pool_type", pool_type),
-    sm::label_instance("scrub_level", scrub_level)
+    sm::label_instance("scrub_level", scrub_level),
+    sm::label_instance("pg_id", pg_id)
   };
 
   metrics.add_group("scrub", {
@@ -94,6 +101,8 @@ void ScrubMetrics::register_metrics(
       sm::description("number of replicas"),
       labels)
   });
+
+  metrics_registered = true;
 }
 
 void ScrubMetrics::dump(ceph::Formatter* f) const

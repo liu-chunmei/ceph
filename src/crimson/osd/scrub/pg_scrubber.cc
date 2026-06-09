@@ -36,6 +36,8 @@ void PGScrubber::dump_detail(Formatter *f) const
     f->dump_stream("scheduled_at") << earliest.sched_info.schedule.scheduled_at;
     f->dump_stream("not_before") << earliest.sched_info.schedule.not_before;
     f->dump_bool("is_active", m_active_target.has_value());
+    // Check if we're in ReservingReplicas state
+    f->dump_bool("is_reserving_replicas", is_reserving_replicas());
     f->dump_string("scrub_level",
                    earliest.is_deep() ? "deep" : "shallow");
     f->dump_string("urgency", fmt::format("{}", earliest.urgency()));
@@ -64,6 +66,19 @@ void PGScrubber::dump_detail(Formatter *f) const
     f->close_section(); // query_schedule
   }
 }
+
+bool PGScrubber::is_reserving_replicas() const
+{
+  // Check if the state machine is in the ReservingReplicas state
+  // We do this by checking if we're active and the machine is in the correct state
+  if (!m_active_target.has_value()) {
+    return false;
+  }
+  
+  // Use Boost.Statechart's state_cast to check if we're in ReservingReplicas state
+  return machine.state_cast<const scrub::ReservingReplicas*>() != nullptr;
+}
+
 spg_t PGScrubber::get_pg_id() const
 {
   return pg.get_pgid();
@@ -72,6 +87,19 @@ spg_t PGScrubber::get_pg_id() const
 PGScrubber::PGScrubber(PG &pg) : pg(pg), dpp(pg), machine(*this, this), m_mode_desc("inactive")
 {
   m_scrub_job.emplace(pg.pgid, pg.pg_whoami.osd);
+  
+  // Initialize Seastar metrics for this PG
+  m_last_scrub_metrics = std::make_unique<ScrubMetrics>();
+  
+  // Determine pool type for metrics labels
+  std::string pool_type = pg.get_pgpool().info.is_replicated() ?
+    "replicated" : "erasure_coded";
+  std::string scrub_level = "unknown"; // Will be updated when scrub starts
+  
+  // Use PG ID as a label to avoid double registration when multiple PGs scrub concurrently
+  std::string pg_id_str = fmt::format("{}", pg.pgid);
+  
+  m_last_scrub_metrics->register_metrics(pool_type, scrub_level, pg_id_str);
 }
 
 void PGScrubber::on_primary_active_clean()
@@ -493,6 +521,13 @@ void PGScrubber::enqueue_scrub_requested(bool deep)
     return;
   }
   
+  // Abort an ongoing scrub if it's of the lowest priority and stuck in replica reservations
+  // This matches classic OSD behavior: m_fsm->process_event(AbortIfReserving{});
+  if (is_queued_or_active() && is_reserving_replicas()) {
+    DEBUGDPP("aborting low-priority scrub stuck in reserving replicas", pg);
+    handle_event(events::abort_t{});
+  }
+  
   // Similar to classic OSD's scrub_requested(), update the target and enqueue it
   auto scrub_level = deep ? scrub_level_t::deep : scrub_level_t::shallow;
   auto& trgt = m_scrub_job->get_target(scrub_level);
@@ -521,6 +556,8 @@ void PGScrubber::handle_schedule_scrub(bool deep, int64_t offset)
   // last scrub timestamps, similar to the classic OSD implementation.
   // This makes the PG appear as if it hasn't been scrubbed recently,
   // causing it to be scheduled for scrubbing by the periodic scheduler.
+  // IMPORTANT: Unlike operator-requested scrubs, this does NOT set high urgency,
+  // so the scrub will require replica reservations.
   
   // Calculate the timestamp to set
   // If no offset specified, calculate one that guarantees scheduling
@@ -567,18 +604,25 @@ void PGScrubber::handle_schedule_scrub(bool deep, int64_t offset)
   });
   
   // Directly update the job's schedule to match the timestamp we set
-  // We can't use update_scrub_job() because it won't recalculate if urgency
-  // doesn't require randomization
+  // We can't use update_scrub_job() because it calls update_targets() which
+  // would recalculate and overwrite the schedule we just set
   if (m_scrub_job && m_scrub_job->is_registered()) {
-    auto& target = deep ? m_scrub_job->deep_target : m_scrub_job->shallow_target;
+    auto scrub_level = deep ? scrub_level_t::deep : scrub_level_t::shallow;
+    auto& target = m_scrub_job->get_target(scrub_level);
+    
+    // Reset urgency to periodic_regular (default) to match classic OSD behavior
+    // This ensures the scrub will require replica reservations
+    target.sched_info.urgency = urgency_t::periodic_regular;
     target.sched_info.schedule.scheduled_at = stamp;
     target.sched_info.schedule.not_before = stamp;
     
     // Dequeue and re-enqueue to update the queue with new schedule
+    // Do NOT call update_scrub_job() as it would overwrite our schedule
     if (m_scrub_job->is_queued()) {
       pg.shard_services.get_scrub_scheduler().remove_from_osd_queue(pg.get_pgid());
       m_scrub_job->clear_both_targets_queued();
     }
+    // Directly enqueue without calling update_targets()
     pg.shard_services.get_scrub_scheduler().enqueue_scrub_job(*m_scrub_job);
     m_scrub_job->set_both_targets_queued();
     pg.publish_stats_to_osd();
@@ -693,7 +737,7 @@ void PGScrubber::notify_scrub_start(bool deep)
   update_op_mode_text();
 
   // Record scrub start time for duration calculation
-  m_scrub_start_time = ceph::coarse_real_clock::now();
+  m_scrub_start_time = ScrubClock::now();
   
   pg.peering_state.state_set(PG_STATE_SCRUBBING);
   if (deep) {
@@ -702,6 +746,7 @@ void PGScrubber::notify_scrub_start(bool deep)
   pg.publish_stats_to_osd();
 }
 
+/*
 void PGScrubber::notify_scrub_end(bool deep)
 {
   LOG_PREFIX(PGScrubber::notify_scrub_end);
@@ -732,7 +777,7 @@ void PGScrubber::notify_scrub_end(bool deep)
   }
   pg.publish_stats_to_osd();
 }
-
+*/
 const std::set<pg_shard_t> &PGScrubber::get_ids_to_scrub() const
 {
   return pg.peering_state.get_actingset();
@@ -893,31 +938,43 @@ void PGScrubber::emit_scrub_result(
 	  }
 	});
       foreach_scrub_checked_stat(
-	[this, FNAME, &pg_stats, &in_stats](
-	  const auto &name, auto statptr, const auto &invalid_predicate) {
-	  if (!invalid_predicate(pg_stats) &&
-	      (in_stats.*statptr != pg_stats.stats.sum.*statptr)) {
-	    LOG_SCRUB_ERROR(
-	      "stat mismatch for {}: scrubbed value: {}, stored pg value: {}",
-	      name, in_stats.*statptr, pg_stats.stats.sum.*statptr);
-	    ++pg_stats.stats.sum.num_shallow_scrub_errors;
-	  }
-	});
-	     
-	     // Update objects_scrubbed with the total count from all chunks
-	     pg_stats.objects_scrubbed = m_objects_scrubbed_in_chunk;
-	     
-	     history.last_scrub = pg.peering_state.get_info().last_update;
+ [this, FNAME, &pg_stats, &in_stats](
+   const auto &name, auto statptr, const auto &invalid_predicate) {
+   if (!invalid_predicate(pg_stats) &&
+       (in_stats.*statptr != pg_stats.stats.sum.*statptr)) {
+     LOG_SCRUB_ERROR(
+       "stat mismatch for {}: scrubbed value: {}, stored pg value: {}",
+       name, in_stats.*statptr, pg_stats.stats.sum.*statptr);
+     ++pg_stats.stats.sum.num_shallow_scrub_errors;
+   }
+ });
+      
+      // Update objects_scrubbed with the total count from all chunks
+      pg_stats.objects_scrubbed = m_objects_scrubbed_in_chunk;
+      
+      history.last_scrub = pg.peering_state.get_info().last_update;
       auto now = ceph_clock_now();
       history.last_scrub_stamp = now;
       if (deep) {
-	history.last_deep_scrub_stamp = now;
+ history.last_deep_scrub_stamp = now;
       }
-      cleanup_on_finish();
-      update_scrub_job();
-      m_active_target.reset();
+      
+      // Calculate scrub duration
+      if (m_scrub_start_time.has_value()) {
+        auto duration = ceil<milliseconds>(ScrubClock::now() - *m_scrub_start_time);
+        double dur_ms = double(duration.count());
+        pg_stats.last_scrub_duration = ceill(dur_ms / 1000.0);
+        pg_stats.scrub_duration = dur_ms;
+        DEBUGDPP("after setting: last_scrub_duration={}, scrub_duration={}",
+                 pg, pg_stats.last_scrub_duration, pg_stats.scrub_duration);
+        m_scrub_start_time.reset();
+      }
+      
       return false; // notify_scrub_end will flush stats to osd
     });
+    cleanup_on_finish();
+    update_scrub_job();
+    m_active_target.reset();
 }
 
 std::string_view PGScrubber::registration_state() const
@@ -965,6 +1022,7 @@ void PGScrubber::dump_scrub_metrics(ceph::Formatter* f)
   // Add 'active' field to match classic OSD output format
   // active means scrubbing is running, not just queued
   f->dump_bool("active", m_active_target.has_value());
+  f->dump_bool("is_reserving_replicas", is_reserving_replicas());
   f->dump_string("mode", m_mode_desc);
   
   // Dump metrics from the last or current scrub session

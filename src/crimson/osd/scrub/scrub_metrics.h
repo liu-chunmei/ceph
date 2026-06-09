@@ -52,7 +52,10 @@ public:
 
   void register_metrics(
     const std::string& pool_type,
-    const std::string& scrub_level);
+    const std::string& scrub_level,
+    const std::string& pg_id);
+
+  bool is_registered() const { return metrics_registered; }
 
   void inc_started() { ++started_cnt; }
   void inc_active_started() { ++active_started_cnt; }
@@ -101,6 +104,7 @@ public:
 
 private:
   seastar::metrics::metric_groups metrics;
+  bool metrics_registered = false;
 };
 
 } // namespace crimson::osd::scrub

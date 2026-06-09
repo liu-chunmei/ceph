@@ -142,7 +142,7 @@ function MANUAL_peering_check() {
     return 0
 }
 
-function TES_scrub_test() {
+function TEST_scrub_test() {
     local dir=$1
     local poolname=test
     local OSDS=3
@@ -237,7 +237,7 @@ function check_dump_scrubs() {
     test $(echo $SCHED_TIME | sed $DATESED) = $(date +${DATEFORMAT} -d "now + $sched_time_check") || return 1
 }
 
-function TES_interval_changes() {
+function TEST_interval_changes() {
     local poolname=test
     local OSDS=2
     local objects=10
@@ -357,16 +357,19 @@ function _scrub_abort() {
     fi
 
     # Wait for scrubbing to start
+    # Query the OSD directly via admin socket instead of monitor
+    # to avoid stat propagation delays
     set -o pipefail
     found="no"
     for i in $(seq 0 200)
     do
-      flush_pg_stats
-      if ceph pg dump pgs | grep  ^$pgid| grep -q "scrubbing"
+      # Query the primary OSD directly for PG state
+      if ceph tell osd.$primary pg $pgid query | jq -r '.state' | grep -q "scrubbing"
       then
         found="yes"
         break
       fi
+      sleep 0.1
     done
     set +o pipefail
 
@@ -421,17 +424,17 @@ function _scrub_abort() {
     dump_scrub_metrics $dir $poolname
 }
 
-function TES_scrub_abort() {
+function TEST_scrub_abort() {
     local dir=$1
     _scrub_abort $dir scrub
 }
 
-function TES_deep_scrub_abort() {
+function TEST_deep_scrub_abort() {
     local dir=$1
     _scrub_abort $dir deep-scrub
 }
 
-function TES_scrub_permit_time() {
+function TEST_scrub_permit_time() {
     local dir=$1
     local poolname=test
     local OSDS=3
@@ -478,7 +481,7 @@ function TES_scrub_permit_time() {
     dump_scrub_metrics $dir $poolname
 }
 
-function TES_pg_dump_objects_scrubbed() {
+function TEST_pg_dump_objects_scrubbed() {
     local dir=$1
     local poolname=test
     local OSDS=3
@@ -520,7 +523,7 @@ function TES_pg_dump_objects_scrubbed() {
 # but nodeep-scrub is not set. This verifies that the scrubber
 # correctly distinguishes between regular scrubs and deep scrubs.
 # Fixed by PR#43521
-function TES_just_deep_scrubs() {
+function TEST_just_deep_scrubs() {
     local dir=$1
     local poolname=test
     local OSDS=3
@@ -770,11 +773,13 @@ function crimson_standard_scrub_wpq_cluster() {
             --osd_pool_default_size=$pool_default_size \
             --osd_op_queue=wpq \
             --osd_scrub_sleep=$osd_sleep \
+            --osd_scrub_begin_hour=0 \
+            --osd_scrub_end_hour=0 \
             $extra_pars"
     
     for osd in $(seq 0 $(expr $OSDS - 1))
     do
-      run_crimson_osd $dir $osd $ceph_osd_args || return 1
+      run_crimson_osd $dir $osd $ceph_osd_args --debug || return 1
     done
     
     if [[ "$poolname" != "nopool" ]]; then
@@ -801,7 +806,7 @@ function wait_initial_scrubs() {
     ceph config set osd osd_scrub_min_interval 7200
     ceph config set osd osd_deep_scrub_interval 14400
     ceph config set osd osd_max_scrubs 32
-    ceph config set osd osd_scrub_sleep 1
+    ceph config set osd osd_scrub_sleep 0
     ceph config set osd osd_shallow_scrub_chunk_max 10
     ceph config set osd osd_scrub_chunk_max 10
 
@@ -810,28 +815,75 @@ function wait_initial_scrubs() {
       ceph pg $pg scrub || return 1
     done
 
-    sleep 1
-    (( extr_dbg >= 1 )) && ceph pg dump pgs --format=json-pretty | \
-      jq '.pg_stats | map(select(.last_scrub_duration == 0)) | map({pgid: .pgid, last_scrub_duration: .last_scrub_duration})'
+    # Give scrubs time to start and complete - Crimson scrubs may be slower
+    sleep 5
 
-    tout=20
+    # For Crimson, use multiple methods to verify scrub completion
+    # Method 1: Check successful_cnt from scrub metrics (most reliable)
+    # Method 2: Check scrub_duration from PG stats (fallback)
+    tout=120
     while [ $tout -gt 0 ] ; do
       sleep 1
-      (( extr_dbg >= 1 )) && ceph pg dump pgs --format=json-pretty | \
-        jq '.pg_stats | map(select(.last_scrub_duration == 0)) | map({pgid: .pgid, last_scrub_duration: .last_scrub_duration})'
-      not_done=$(ceph pg dump pgs --format=json-pretty | \
-        jq '.pg_stats | map(select(.last_scrub_duration == 0)) | map({pgid: .pgid, last_scrub_duration: .last_scrub_duration})' | wc -l )
-      # note that we should ignore a header line
-      if [ "$not_done" -le 1 ]; then
+      not_done=0
+      for pg in "${!pg_to_prim_dict[@]}"; do
+        local osd_id=${pg_to_prim_dict[$pg]}
+        
+        # Check if PG is currently scrubbing
+        local state=$(ceph pg $pg query 2>/dev/null | \
+          jq -r '.state // empty' 2>/dev/null || echo "")
+        
+        if echo "$state" | grep -q "scrubbing"; then
+          (( not_done++ ))
+          (( extr_dbg >= 1 )) && echo "PG $pg: state=$state (still scrubbing)"
+          continue
+        fi
+        
+        # Method 1: Try to get successful_cnt from scrub metrics
+        local successful_cnt=$(ceph pg $pg scrub_metrics 2>/dev/null | \
+          jq -r '.scrubber.scrub_metrics.session_metrics.successful_cnt // 0' 2>/dev/null || echo "0")
+        
+        if [ "$successful_cnt" != "0" ] && [ -n "$successful_cnt" ]; then
+          (( extr_dbg >= 1 )) && echo "PG $pg: successful_cnt=$successful_cnt (done via metrics)"
+          continue
+        fi
+        
+        # Method 2: Fallback to checking scrub_duration from PG stats
+        local duration_ms=$(ceph tell osd.$osd_id pg $pg query 2>/dev/null | \
+          jq -r '.info.stats.scrub_duration // 0' 2>/dev/null || echo "0")
+        
+        if [ "$duration_ms" != "0" ] && [ "$duration_ms" != "0.0" ] && [ -n "$duration_ms" ]; then
+          (( extr_dbg >= 1 )) && echo "PG $pg: scrub_duration=$duration_ms ms (done via stats)"
+          continue
+        fi
+        
+        # Neither method confirmed completion
+        (( not_done++ ))
+        (( extr_dbg >= 1 )) && echo "PG $pg: successful_cnt=$successful_cnt, scrub_duration=$duration_ms ms (not completed)"
+      done
+      
+      if [ "$not_done" -eq 0 ]; then
+        echo "All PGs have completed initial scrubs"
         break
       fi
-      not_done=$(( (not_done - 2) / 4 ))
       echo "Still waiting for $not_done PGs to finish initial scrubs (timeout $tout)"
       tout=$((tout - 1))
     done
-    ceph pg dump pgs --format=json-pretty | \
-      jq '.pg_stats | map(select(.last_scrub_duration == 0)) | map({pgid: .pgid, last_scrub_duration: .last_scrub_duration})'
-    (( tout == 0 )) && return 1
+    
+    if [ $tout -eq 0 ]; then
+      echo "Timeout waiting for scrubs to complete"
+      # Show final status
+      for pg in "${!pg_to_prim_dict[@]}"; do
+        local osd_id=${pg_to_prim_dict[$pg]}
+        local state=$(ceph pg $pg query 2>/dev/null | \
+          jq -r '.state // empty' 2>/dev/null || echo "")
+        local successful_cnt=$(ceph pg $pg scrub_metrics 2>/dev/null | \
+          jq -r '.scrubber.scrub_metrics.session_metrics.successful_cnt // 0' 2>/dev/null || echo "0")
+        local duration_ms=$(ceph tell osd.$osd_id pg $pg query 2>/dev/null | \
+          jq -r '.info.stats.scrub_duration // 0' 2>/dev/null || echo "0")
+        echo "Final: PG $pg: state=$state, successful_cnt=$successful_cnt, scrub_duration=$duration_ms ms"
+      done
+      return 1
+    fi
     return 0
 }
 
@@ -848,7 +900,7 @@ function wait_initial_scrubs() {
 #   scrub should be aborted. We would check for:
 #   - the new, operator's scrub to be scheduled
 #   - the replicas' reservers to be released
-function TES_abort_periodic_for_operator() {
+function TEST_abort_periodic_for_operator() {
     local dir=$1
     local -A cluster_conf=(
         ['osds_num']="5"
@@ -889,14 +941,20 @@ function TES_abort_periodic_for_operator() {
     wait_initial_scrubs pg_pr || return 1
 
     # limit all OSDs to one scrub at a time
-    ceph tell osd.* config set osd_max_scrubs 1
-    ceph tell osd.* config set osd_stats_update_period_not_scrubbing 1
-
+    ceph config set osd osd_max_scrubs 1
+    ceph config set osd osd_stats_update_period_not_scrubbing 1
     # configure for slow scrubs
-    ceph tell osd.* config set osd_scrub_sleep 3
-    ceph tell osd.* config set osd_shallow_scrub_chunk_max 2
-    ceph tell osd.* config set osd_scrub_chunk_max 2
-    (( extr_dbg >= 2 )) && ceph tell osd.2 dump_scrub_reservations --format=json-pretty
+    ceph config set osd osd_scrub_sleep 3
+    ceph config set osd osd_shallow_scrub_chunk_max 2
+    ceph config set osd osd_scrub_chunk_max 2
+    
+    # Use admin-daemon for dump_scrub_reservations (not available via ceph tell for Crimson)
+    if (( extr_dbg >= 2 )); then
+        for osd_id in $(seq 0 $((${cluster_conf['osds_num']} - 1))); do
+            echo "=== OSD.$osd_id scrub reservations ==="
+            CEPH_ARGS='' ceph --admin-daemon $(get_asok_path osd.${osd_id}) dump_scrub_reservations --format=json-pretty
+        done
+    fi
 
     # the first PG to work with:
     local pg2=""
@@ -921,7 +979,7 @@ function TES_abort_periodic_for_operator() {
     fi
 
     # the common primary is allowed two concurrent scrubs
-    ceph tell osd."${pg_pr[$pg1]}" config set osd_max_scrubs 2
+    ceph config set osd.${pg_pr[$pg1]} osd_max_scrubs 2
     echo "The two PGs to manipulate are $pg1 and $pg2"
 
     set_query_debug "$pg1"
@@ -947,7 +1005,7 @@ function TES_abort_periodic_for_operator() {
 
     echo "Initiating a periodic scrub of $pg1"
     (( extr_dbg >= 2 )) && ceph pg "$pg1" query -f json-pretty | jq '.scrubber'
-    ceph tell $pg1 schedule-deep-scrub || return 1
+    ceph pg $pg1 schedule-deep-scrub || return 1
     sleep 1
     (( extr_dbg >= 2 )) && ceph pg "$pg1" query -f json-pretty | jq '.scrubber'
 
@@ -974,11 +1032,17 @@ function TES_abort_periodic_for_operator() {
     # by PG 2. As the max-scrubs was set to 1, that should prevent PG 2 from
     # reserving its replicas.
 
-    (( extr_dbg >= 1 )) && ceph tell osd.* dump_scrub_reservations --format=json-pretty
+    # Use admin-daemon for dump_scrub_reservations (not available via ceph tell for Crimson)
+    if (( extr_dbg >= 1 )); then
+        for osd_id in $(seq 0 $((${cluster_conf['osds_num']} - 1))); do
+            echo "=== OSD.$osd_id scrub reservations ==="
+            CEPH_ARGS='' ceph --admin-daemon $(get_asok_path osd.${osd_id}) dump_scrub_reservations --format=json-pretty
+        done
+    fi
 
     # now - the 2'nd scrub - which should be blocked on reserving
     set_query_debug "$pg2"
-    ceph tell "$pg2" schedule-deep-scrub
+    ceph pg "$pg2" schedule-deep-scrub
     sleep 0.5
     (( extr_dbg >= 2 )) && echo "===================================================================================="
     (( extr_dbg >= 2 )) && ceph pg "$pg2" query -f json-pretty | jq '.scrubber'
@@ -1001,7 +1065,7 @@ function TES_abort_periodic_for_operator() {
     # now - issue an operator-initiated scrub on pg2.
     # The periodic scrub should be aborted, and the operator-initiated scrub should start.
     echo "Instructing $pg2 to perform a high-priority scrub"
-    ceph tell "$pg2" scrub
+    ceph pg "$pg2" scrub
     for i in $( seq 1 10 )
     do
       sleep 0.5

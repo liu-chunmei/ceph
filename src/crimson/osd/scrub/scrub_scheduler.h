@@ -12,7 +12,6 @@
 
 namespace crimson::common {
 class CephContext;
-class PerfCounters;
 }
 
 namespace crimson::osd {
@@ -26,13 +25,6 @@ class ScrubScheduler {
   scrub::ScrubResources m_resource_bookkeeper;
   /// the queue of PGs waiting to be scrubbed
   scrub::ScrubQueue m_queue;
-
-  // Performance counters infrastructure (matching classic OSD)
-  using pc_index_t = std::pair<scrub_level_t, int /*pool type*/>;
-  std::map<pc_index_t, crimson::common::PerfCounters*> m_perf_counters;
-
-  void create_scrub_perf_counters();
-  void destroy_scrub_perf_counters();
 
   seastar::future<scrub::OSDRestrictions> restrictions_on_scrubbing(
     bool is_recovery_active,
@@ -67,10 +59,6 @@ public:
   scrub::ScrubQueue& get_queue() {
     return m_queue;
   }
-
-  /// Get performance counters for a specific pool type and scrub level
-  /// Matches the classic OSD OsdScrub::get_perf_counters interface
-  crimson::common::PerfCounters* get_perf_counters(int pool_type, scrub_level_t level);
 
   /// Handle configuration changes that affect scrub scheduling
   void on_config_change();

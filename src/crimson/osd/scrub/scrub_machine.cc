@@ -147,16 +147,10 @@ Scrubbing::Scrubbing(my_context ctx)
   // Record scrub start time for elapsed time calculation (using ScrubClock like classic)
   scrub_start_time = ScrubClock::now();
   
-  // Initialize Seastar metrics in PGScrubber
-  m_scrbr->m_last_scrub_metrics = std::make_unique<ScrubMetrics>();
-  
-  // Determine pool type and scrub level for metrics labels
-  std::string pool_type = pg.get_pgpool().info.is_replicated() ?
-    "replicated" : "erasure_coded";
-  std::string scrub_level = "unknown"; // Will be set when deep flag is known
-  
-  m_scrbr->m_last_scrub_metrics->register_metrics(pool_type, scrub_level);
-  m_scrbr->m_last_scrub_metrics->inc_started();
+  // Increment started counter (metrics already registered in PGScrubber constructor)
+  if (m_scrbr->m_last_scrub_metrics) {
+    m_scrbr->m_last_scrub_metrics->inc_started();
+  }
 }
 
 ScrubMetrics* Scrubbing::get_metrics()
@@ -204,12 +198,9 @@ sc::result ReservingReplicas::react(const events::replica_grant_t &event)
       metrics->inc_active_started();
     }
     LOG_PREFIX(ReservingReplicas::react);
-    SUBDEBUGDPP(osd, "reservations complete, starting sleep before first chunk", dpp);
-    // Start sleep operation before first chunk (like classic OSD PendingTimer)
-    // Stay in ReservingReplicas state and wait for internal_sched_scrub_t event
-    // which will be handled by parent Scrubbing state's transition to ChunkState
-    m_scrbr->start_chunk_sleep();
-    return discard_event();
+    SUBDEBUGDPP(osd, "reservations complete, transitioning to PendingTimer", dpp);
+    // Transition to PendingTimer which will sleep before first chunk
+    return transit<PendingTimer>();
   }
   return discard_event();
 
@@ -252,7 +243,7 @@ sc::result ReservingReplicas::react(const events::remotes_reserved_t &)
 {
   DECLARE_LOCALS;
   LOG_PREFIX(ReservingReplicas::react(remotes_reserved_t));
-  SUBDEBUGDPP(osd, "no replicas to reserve, starting sleep before first chunk", dpp);
+  SUBDEBUGDPP(osd, "no replicas to reserve, transitioning to PendingTimer", dpp);
   
   // Increment active_started counter since we're about to start scrubbing
   auto &scrubbing = context<Scrubbing>();
@@ -260,11 +251,8 @@ sc::result ReservingReplicas::react(const events::remotes_reserved_t &)
     metrics->inc_active_started();
   }
   
-  // Start sleep operation before first chunk (like classic OSD PendingTimer)
-  // Stay in ReservingReplicas state and wait for internal_sched_scrub_t event
-  // which will be handled by parent Scrubbing state's transition to ChunkState
-  m_scrbr->start_chunk_sleep();
-  return discard_event();
+  // Transition to PendingTimer which will sleep before first chunk
+  return transit<PendingTimer>();
 }
 
 // -------- for replicas -----------------------------------------------------
