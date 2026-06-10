@@ -837,6 +837,7 @@ seastar::future<> OSD::start_asok_admin()
     asok->register_command(make_asok_hook<DumpMetricsHook>());
     asok->register_command(make_asok_hook<DumpPerfCountersHook>());
     asok->register_command(make_asok_hook<DumpScrubsHook>(get_shard_services()));
+    asok->register_command(make_asok_hook<DumpScrubReservationsHook>(get_shard_services()));
     asok->register_command(make_asok_hook<InjectDataErrorHook>(get_shard_services()));
     asok->register_command(make_asok_hook<InjectMDataErrorHook>(get_shard_services()));
     // PG commands

@@ -14,6 +14,7 @@ class DumpMetricsHook;
 class DumpPGStateHistory;
 class DumpPerfCountersHook;
 class DumpScrubsHook;
+class DumpScrubReservationsHook;
 class FlushPgStatsHook;
 class InjectDataErrorHook;
 class InjectMDataErrorHook;
