@@ -108,8 +108,7 @@ seastar::future<scrub::OSDRestrictions> ScrubScheduler::restrictions_on_scrubbin
 
   if (is_recovery_active && 
     ! crimson::common::local_conf().get_val<bool>("osd_scrub_during_recovery")) {
-    DEBUG("recovery active and osd_scrub_during_recovery is false, "
-          "delaying scrub");
+    INFO("recovery in progress. Operator-initiated scrubs only, delaying normal scrub");
     env_conditions.recovery_in_progress = true;
   }
 
