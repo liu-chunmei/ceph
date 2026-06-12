@@ -1206,6 +1206,14 @@ SeaStore::Shard::read(
   ++(shard_stats.read_num);
   ++(shard_stats.pending_read_num);
 
+  // Check for injected data error
+  if (_debug_data_eio(oid)) {
+    LOG_PREFIX(SeaStoreS::read);
+    ERROR("injected data error for oid={}", oid);
+    --(shard_stats.pending_read_num);
+    return crimson::ct_error::input_output_error::make();
+  }
+
   return repeat_with_onode<ceph::bufferlist>(
     ch,
     oid,
@@ -1320,6 +1328,15 @@ SeaStore::Shard::get_attr(
   assert(store_active);
   ++(shard_stats.read_num);
   ++(shard_stats.pending_read_num);
+
+  // Check for injected metadata error
+  // Use enodata error since get_attr_errorator doesn't include input_output_error
+  if (_debug_mdata_eio(oid)) {
+    LOG_PREFIX(SeaStoreS::get_attr);
+    ERROR("injected metadata error for oid={}", oid);
+    --(shard_stats.pending_read_num);
+    return crimson::ct_error::enodata::make();
+  }
 
   return repeat_with_onode<ceph::bufferlist>(
     ch,
@@ -1471,6 +1488,14 @@ SeaStore::Shard::omap_get_values(
   assert(store_active);
   ++(shard_stats.read_num);
   ++(shard_stats.pending_read_num);
+
+  // Check for injected metadata error
+  if (_debug_mdata_eio(oid)) {
+    LOG_PREFIX(SeaStoreS::omap_get_values);
+    ERROR("injected metadata error for oid={}", oid);
+    --(shard_stats.pending_read_num);
+    return crimson::ct_error::input_output_error::make();
+  }
 
   return repeat_with_onode<omap_values_t>(
     ch,
@@ -1838,10 +1863,10 @@ SeaStore::Shard::_do_transaction_step(
       case Transaction::OP_REMOVE:
       {
         DEBUGT("op REMOVE, oid={} ...", *ctx.transaction, oid);
-        return _remove(ctx, onode
-	).si_then([&onode] {
-	  onode.reset();
-	});
+        return _remove(ctx, onode, oid
+ ).si_then([&onode] {
+   onode.reset();
+ });
       }
       case Transaction::OP_CREATE:
       case Transaction::OP_TOUCH:
@@ -2086,8 +2111,12 @@ SeaStore::Shard::_rename(
 SeaStore::Shard::tm_ret
 SeaStore::Shard::_remove(
   internal_context_t &ctx,
-  OnodeRef &onode)
+  OnodeRef &onode,
+  const ghobject_t &oid)
 {
+  // Clean up any injected errors for this object
+  _debug_obj_on_delete(oid);
+  
   return omaptree_clear_no_onode(
     *ctx.transaction,
     get_omap_root(omap_type_t::OMAP, *onode)
@@ -3246,5 +3275,42 @@ SeaStore::Shard::omaptree_rm_key(
     return run(BtreeOMapManager(*transaction_manager));
   }
 }
+// Error injection implementation
+bool SeaStore::Shard::_debug_data_eio(const ghobject_t& o) const
+{
+  if (!crimson::common::local_conf().get_val<bool>("seastore_debug_inject_read_err")) {
+    return false;
+  }
+  return debug_data_error_objects.count(o) > 0;
+}
+
+bool SeaStore::Shard::_debug_mdata_eio(const ghobject_t& o) const
+{
+  if (!crimson::common::local_conf().get_val<bool>("seastore_debug_inject_read_err")) {
+    return false;
+  }
+  return debug_mdata_error_objects.count(o) > 0;
+}
+
+void SeaStore::Shard::_debug_obj_on_delete(const ghobject_t& o)
+{
+  if (crimson::common::local_conf().get_val<bool>("seastore_debug_inject_read_err")) {
+    debug_data_error_objects.erase(o);
+    debug_mdata_error_objects.erase(o);
+  }
+}
+
+seastar::future<> SeaStore::Shard::inject_data_error(const ghobject_t& o)
+{
+  debug_data_error_objects.insert(o);
+  return seastar::now();
+}
+
+seastar::future<> SeaStore::Shard::inject_mdata_error(const ghobject_t& o)
+{
+  debug_mdata_error_objects.insert(o);
+  return seastar::now();
+}
+
 
 }

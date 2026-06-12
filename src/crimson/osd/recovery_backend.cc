@@ -253,9 +253,9 @@ RecoveryBackend::scan_for_backfill_primary(
       return true;
     }).handle_error_interruptible(
       crimson::ct_error::enoent::handle([](auto) {
-	return false;
+ return false;
       }),
-      crimson::ct_error::assert_all(fmt::format("{} {} error when loading obc", pg, FNAME).c_str())
+      crimson::ct_error::assert_all(fmt::format("{} {} error when loading obc", pg, FNAME))
     );
     if (!found) {
       // if the object does not exist here, it must have been removed
@@ -328,9 +328,9 @@ RecoveryBackend::scan_for_backfill_replica(
       return true;
     }).handle_error_interruptible(
       crimson::ct_error::enoent::handle([](auto) {
-	return false;
+ return false;
       }),
-      crimson::ct_error::assert_all(fmt::format("{} {} error when loading obc", pg, FNAME).c_str())
+      crimson::ct_error::assert_all(fmt::format("{} {} error when loading obc", pg, FNAME))
     );
     if (!found) {
       // if the object does not exist here, it must have been removed

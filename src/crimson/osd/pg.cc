@@ -619,6 +619,8 @@ void PG::on_active_actmap()
 {
   logger().debug("{}: {} snap_trimq={}", *this, __func__, snap_trimq);
   peering_state.state_clear(PG_STATE_SNAPTRIM_ERROR);
+  
+  // Kick snap trim if active and clean
   if (peering_state.is_active() && peering_state.is_clean()) {
     if (peering_state.state_test(PG_STATE_SNAPTRIM)) {
       logger().debug("{}: {} already trimming.", *this, __func__);
@@ -656,6 +658,7 @@ void PG::on_active_actmap()
     logger().debug("pg not clean, skipping snap trim");
     ceph_assert(!peering_state.state_test(PG_STATE_SNAPTRIM));
   }
+  
 }
 
 void PG::on_active_advmap(const OSDMapRef &osdmap)
@@ -765,7 +768,7 @@ seastar::future<scrub::schedule_result_t> PG::start_scrubbing(
 	      peering_state.get_pgpool().info.has_flag(pg_pool_t::FLAG_NODEEP_SCRUB));
   pg_cond.can_autorepair =
       (crimson::common::local_conf().get_val<bool>("osd_scrub_auto_repair") &&
-       get_backend().auto_repair_supported());  //backend seems not support auto repair
+       get_backend().auto_repair_supported());
 
   return scrubber.start_scrub(
       candidate.level, osd_restrictions, pg_cond);
@@ -1340,6 +1343,40 @@ PG::interruptible_future<MURef<MOSDOpReply>> PG::do_pg_ops(Ref<MOSDOp> m)
 				     peering_state.get_info().last_user_version);
     return seastar::make_ready_future<MURef<MOSDOpReply>>(std::move(reply));
   });
+}
+
+int PG::do_scrub_ls(const MOSDOp *m, OSDOp *osd_op)
+{
+  if (m->get_pg() != get_info().pgid.pgid) {
+    logger().debug("scrubls pg={} != {}", m->get_pg(), get_info().pgid);
+    return -EINVAL;
+  }
+  
+  auto bp = osd_op->indata.cbegin();
+  scrub_ls_arg_t arg;
+  try {
+    arg.decode(bp);
+  } catch (ceph::buffer::error&) {
+    logger().warn("corrupted scrub_ls_arg_t");
+    return -EINVAL;
+  }
+
+  int r = 0;
+  scrub_ls_result_t result = {.interval = get_info().history.same_interval_since};
+
+  if (arg.interval != 0 && arg.interval != get_info().history.same_interval_since) {
+    r = -EAGAIN;
+  } else {
+    bool store_queried = scrubber.get_store_errors(arg, result);
+    if (store_queried) {
+      encode(result, osd_op->outdata);
+    } else {
+      // the scrubber's store is not initialized
+      r = -ENOENT;
+    }
+  }
+
+  return r;
 }
 
 hobject_t PG::get_oid(const hobject_t& hobj)

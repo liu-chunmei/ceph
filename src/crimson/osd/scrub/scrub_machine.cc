@@ -102,13 +102,13 @@ sc::result ScanRange::react(const ScrubContext::scan_range_complete_t &event)
     ceph_assert(context<ChunkState>().range);
     {
       auto results = validate_chunk(
-	get_scrub_context().get_dpp(),
-	context<Scrubbing>().policy,
-	maps);
+ get_scrub_context().get_dpp(),
+ context<Scrubbing>().policy,
+ maps);
       context<Scrubbing>().stats.add(results.stats);
       get_scrub_context().emit_chunk_result(
-	*(context<ChunkState>().range),
-	std::move(results));
+ *(context<ChunkState>().range),
+ std::move(results));
     }
     LOG_PREFIX(ScanRange::react);
     bool is_last = context<ChunkState>().range->end.is_max();

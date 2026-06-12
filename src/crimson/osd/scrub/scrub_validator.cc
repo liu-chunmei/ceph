@@ -101,11 +101,11 @@ shard_evaluation_t evaluate_object_shard(
     } else {
       ret.object_info = object_info_t{};
       try {
-	auto bliter = xiter->second.cbegin();
-	::decode(*(ret.object_info), bliter);
+ auto bliter = xiter->second.cbegin();
+ ::decode(*(ret.object_info), bliter);
       } catch (...) {
-	ret.shard_info.set_info_corrupted();
-	ret.object_info = std::nullopt;
+ ret.shard_info.set_info_corrupted();
+ ret.object_info = std::nullopt;
       }
     }
   }
@@ -113,7 +113,7 @@ shard_evaluation_t evaluate_object_shard(
   ret.shard_info.size = obj.size;
   if (ret.object_info &&
       obj.size != policy.logical_to_ondisk_size(ret.object_info->size)) {
-    ret.shard_info.set_size_mismatch_info();
+    ret.shard_info.set_obj_size_info_mismatch();
   }
 
   if (oid.is_head()) {
@@ -150,13 +150,13 @@ shard_evaluation_t evaluate_object_shard(
 
   if (ret.object_info) {
     if (ret.shard_info.data_digest_present &&
-	ret.object_info->is_data_digest() &&
-	(ret.object_info->data_digest != ret.shard_info.data_digest)) {
+ ret.object_info->is_data_digest() &&
+ (ret.object_info->data_digest != ret.shard_info.data_digest)) {
       ret.shard_info.set_data_digest_mismatch_info();
     }
     if (ret.shard_info.omap_digest_present &&
-	ret.object_info->is_omap_digest() &&
-	(ret.object_info->omap_digest != ret.shard_info.omap_digest)) {
+ ret.object_info->is_omap_digest() &&
+ (ret.object_info->omap_digest != ret.shard_info.omap_digest)) {
       ret.shard_info.set_omap_digest_mismatch_info();
     }
   }
@@ -168,17 +168,20 @@ librados::obj_err_t compare_candidate_to_authoritative(
   const chunk_validation_policy_t &policy,
   const hobject_t &oid,
   const shard_evaluation_t &auth,
-  const shard_evaluation_t &cand)
+  shard_evaluation_t &cand)
 {
   using namespace librados;
   obj_err_t ret;
 
+  // If candidate is missing, we can't compare attributes/digests, but the
+  // SHARD_MISSING error in cand.shard_info will be picked up by evaluate_object()
+  // which checks std::any_of(shards, [](auto &s) { return s.has_errors(); })
   if (cand.shard_info.has_shard_missing()) {
     return ret;
   }
 
   const auto &auth_si = auth.shard_info;
-  const auto &cand_si = cand.shard_info;
+  auto &cand_si = cand.shard_info;
 
   if (auth_si.data_digest != cand_si.data_digest) {
     ret.errors |= obj_err_t::DATA_DIGEST_MISMATCH;
@@ -284,34 +287,74 @@ object_evaluation_t evaluate_object(
 
   object_evaluation_t ret;
   inconsistent_obj_wrapper iow{hoid};
-  if (!auth_eval.has_errors()) {
-    ret.object_info = auth_eval.object_info;
-    ret.omap_keys = auth_eval.omap_keys;
-    ret.omap_bytes = auth_eval.omap_bytes;
-    ret.snapset = auth_eval.snapset;
-    if (auth_eval.object_info->size > policy.max_object_size) {
+
+  // Check if we have at least one shard with the object (not missing)
+  // This handles the case where primary is missing but replica has it
+  bool has_valid_copy = std::any_of(
+    shards.begin(), shards.end(),
+    [](const auto &eval) {
+      return eval.object_info.has_value() && !eval.shard_info.has_shard_missing();
+    });
+
+  // Perform comparisons if:
+  // 1. Auth has no errors at all, OR
+  // 2. Auth is missing but we have a valid copy, OR
+  // 3. Auth has ONLY deep errors (not shallow errors that would make it unreliable)
+  bool auth_has_only_deep_errors = auth_eval.has_errors() &&
+                                    (auth_eval.shard_info.errors & ~librados::err_t::DEEP_ERRORS) == 0;
+  
+  if (!auth_eval.has_errors() ||
+      (has_valid_copy && auth_eval.shard_info.has_shard_missing()) ||
+      auth_has_only_deep_errors) {
+    // Use auth_eval if it meets one of the above conditions
+    
+    // If auth is missing, find the best non-missing shard
+    shard_evaluation_t *actual_auth = &auth_eval;
+    if (auth_eval.shard_info.has_shard_missing() && has_valid_copy) {
+      // Find the best shard that actually has the object
+      for (auto it = shards.rbegin(); it != shards.rend(); ++it) {
+        if (it->object_info.has_value() && !it->shard_info.has_shard_missing()) {
+          actual_auth = &(*it);
+          break;
+        }
+      }
+    }
+    
+    ret.object_info = actual_auth->object_info;
+    ret.omap_keys = actual_auth->omap_keys;
+    ret.omap_bytes = actual_auth->omap_bytes;
+    ret.snapset = actual_auth->snapset;
+    if (actual_auth->object_info &&
+        actual_auth->object_info->size > policy.max_object_size) {
       iow.set_size_too_large();
     }
-    auth_eval.shard_info.selected_oi = true;
+    actual_auth->shard_info.selected_oi = true;
+    
+    // Compare all other shards against the authoritative one
     std::for_each(
-      shards.begin(), shards.end() - 1,
-      [&policy, &hoid, &auth_eval, &iow](auto &cand_eval) {
-	auto err = compare_candidate_to_authoritative(
-	  policy, hoid, auth_eval, cand_eval);
-	iow.merge(err);
+      shards.begin(), shards.end(),
+      [&policy, &hoid, actual_auth, &iow](auto &cand_eval) {
+        if (&cand_eval != actual_auth) {
+          auto err = compare_candidate_to_authoritative(
+            policy, hoid, *actual_auth, cand_eval);
+          iow.merge(err);
+        }
       });
   }
 
   if (iow.errors ||
       std::any_of(shards.begin(), shards.end(),
-		  [](auto &cand) { return cand.has_errors(); })) {
+    [](auto &cand) { return cand.has_errors(); })) {
     for (auto &eval : shards) {
       iow.shards.emplace(
-	librados::osd_shard_t{eval.source.osd, static_cast<int8_t>(eval.source.shard)},
-	eval.shard_info);
+ librados::osd_shard_t{eval.source.osd, static_cast<int8_t>(eval.source.shard)},
+ eval.shard_info);
       iow.union_shards.errors |= eval.shard_info.errors;
     }
-    if (auth_eval.object_info) {
+    // Use actual_auth's object_info if available, otherwise fall back to auth_eval
+    if (ret.object_info) {
+      iow.version = ret.object_info->version.version;
+    } else if (auth_eval.object_info) {
       iow.version = auth_eval.object_info->version.version;
     }
     ret.inconsistency = iow;
@@ -436,6 +479,8 @@ chunk_result_t validate_chunk(
     add_object_to_stats(policy, eval, &ret.stats);
     if (eval.inconsistency) {
       ret.object_errors.push_back(*eval.inconsistency);
+      // Store the hobject_t for repair - it has the correct hash
+      ret.object_hoids[oid.oid.name] = oid;
     }
     if (oid.is_head()) {
       /* We're only going to consider the head object as "existing" if

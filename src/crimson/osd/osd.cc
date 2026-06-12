@@ -500,7 +500,7 @@ seastar::future<> OSD::start()
     return store.mount().handle_error(
       crimson::stateful_ec::assert_failure(fmt::format(
         "{} error mounting object store in {}",
-        FNAME, local_conf().get_val<std::string>("osd_data")).c_str())
+        FNAME, local_conf().get_val<std::string>("osd_data")))
     );
   }).then([this, FNAME] {
     auto stats_seconds = local_conf().get_val<int64_t>("crimson_osd_stat_interval");
@@ -1128,7 +1128,8 @@ std::vector<std::string> OSD::get_tracked_keys() const noexcept
     "osd_scrub_begin_hour"s,
     "osd_scrub_end_hour"s,
     "osd_scrub_begin_week_day"s,
-    "osd_scrub_end_week_day"s
+    "osd_scrub_end_week_day"s,
+    "osd_scrub_auto_repair"s
   };
 }
 
@@ -1151,13 +1152,16 @@ void OSD::handle_conf_change(
     "osd_scrub_begin_hour",
     "osd_scrub_end_hour",
     "osd_scrub_begin_week_day",
-    "osd_scrub_end_week_day"
+    "osd_scrub_end_week_day",
+    "osd_scrub_auto_repair"
   };
   
   for (const auto& config : scrub_configs) {
     if (changed.contains(config)) {
       INFO("Scrub config changed: {}, updating scrub schedules", config);
-      get_shard_services().get_scrub_scheduler().on_config_change();
+      if (shard_services.local_is_initialized()) {
+        get_shard_services().get_scrub_scheduler().on_config_change();
+      }
       break;
     }
   }
@@ -1526,7 +1530,7 @@ seastar::future<> OSD::handle_scrub_command(
     [m, conn, this](spg_t pgid) {
     return pg_shard_manager.start_pg_operation<
       crimson::osd::ScrubRequested
-      >(m->deep, conn, m->epoch, pgid).second;
+      >(m->deep, m->repair, conn, m->epoch, pgid).second;
   });
 }
 

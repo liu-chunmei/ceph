@@ -140,6 +140,12 @@ class ScrubQueue {
    */
   void remove_from_osd_queue(spg_t pgid);
 
+  /**
+   * Clear all entries from the scrub queue.
+   * Used during shutdown to prevent memory leaks.
+   */
+  void clear_queue();
+
   /// A predicate over the entries in the queue
   using EntryPred =
       std::function<bool(const SchedEntry&, bool only_eligibles)>;
