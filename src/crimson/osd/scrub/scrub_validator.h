@@ -62,6 +62,10 @@ struct chunk_result_t {
   // detected errors
   std::vector<inconsistent_snapset_wrapper> snapset_errors;
   std::vector<inconsistent_obj_wrapper> object_errors;
+  
+  // Map from object name to hobject_t for repair
+  // This preserves the correct hash value for each inconsistent object
+  std::map<std::string, hobject_t> object_hoids;
 
   bool has_errors() const {
     return !snapset_errors.empty() || !object_errors.empty();

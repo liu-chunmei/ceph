@@ -103,8 +103,8 @@ seastar::future<> PeeringEvent<T>::with_pg(
        * https://tracker.ceph.com/issues/66708
        */
       return interruptor::async([this, pg, &shard_services] {
-	pg->do_peering_event(evt, ctx);
-	complete_rctx(shard_services, pg).get();
+ pg->do_peering_event(evt, ctx);
+ complete_rctx(shard_services, pg).get();
       }).then_interruptible([this] {
 	return that()->get_handle().complete();
       });

@@ -619,6 +619,8 @@ void PG::on_active_actmap()
 {
   logger().debug("{}: {} snap_trimq={}", *this, __func__, snap_trimq);
   peering_state.state_clear(PG_STATE_SNAPTRIM_ERROR);
+  
+  // Kick snap trim if active and clean
   if (peering_state.is_active() && peering_state.is_clean()) {
     if (peering_state.state_test(PG_STATE_SNAPTRIM)) {
       logger().debug("{}: {} already trimming.", *this, __func__);
@@ -656,6 +658,7 @@ void PG::on_active_actmap()
     logger().debug("pg not clean, skipping snap trim");
     ceph_assert(!peering_state.state_test(PG_STATE_SNAPTRIM));
   }
+  
 }
 
 void PG::on_active_advmap(const OSDMapRef &osdmap)

@@ -226,6 +226,9 @@ ScrubScheduler::ScrubScheduler(ShardServices &shard_services)
 
 ScrubScheduler::~ScrubScheduler()
 {
+  // Clear the queue to prevent memory leaks
+  // The queue's destructor doesn't automatically free allocated entries
+  m_queue.clear_queue();
 }
 
 void ScrubScheduler::on_config_change()
