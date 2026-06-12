@@ -7,6 +7,7 @@
 #include "crimson/common/log.h"
 #include "crimson/osd/pg.h"
 #include "crimson/osd/osd_operations/scrub_events.h"
+#include "crimson/osd/osd_operations/peering_event.h"
 #include "messages/MOSDRepScrub.h"
 #include "messages/MOSDRepScrubMap.h"
 #include "pg_scrubber.h"
@@ -100,6 +101,17 @@ PGScrubber::PGScrubber(PG &pg) : pg(pg), dpp(pg), machine(*this, this), m_mode_d
   std::string pg_id_str = fmt::format("{}", pg.pgid);
   
   m_last_scrub_metrics->register_metrics(pool_type, scrub_level, pg_id_str);
+}
+
+PGScrubber::~PGScrubber()
+{
+  // Clean up any queued scrub jobs to prevent memory leaks
+  // Do this directly without logging to avoid issues during destruction
+  if (m_scrub_job && m_scrub_job->is_registered() && m_scrub_job->is_queued()) {
+    pg.shard_services.get_scrub_scheduler().remove_from_osd_queue(pg.get_pgid());
+    m_scrub_job->clear_both_targets_queued();
+    m_scrub_job->registered = false;
+  }
 }
 
 void PGScrubber::on_primary_active_clean()
@@ -225,14 +237,20 @@ void PGScrubber::update_scrub_job()
   DEBUGDPP("update job: {}", pg, *m_scrub_job);
   if (!m_scrub_job->is_registered())
     return;
-  if (m_scrub_job->is_queued()) {
+  
+  // If already queued or active, remove old entries first to prevent duplicates
+  if (m_queued_or_active || m_scrub_job->is_queued()) {
     pg.shard_services.get_scrub_scheduler().remove_from_osd_queue(pg.get_pgid());
     m_scrub_job->clear_both_targets_queued();
+    clear_queued_or_active();  // Clear flag before re-enqueueing
   }
+  
   update_targets(ceph_clock_now());
   DEBUGDPP("scheduling scrub job with OSD {}", pg, *m_scrub_job);
   pg.shard_services.get_scrub_scheduler().enqueue_scrub_job(*m_scrub_job);
   m_scrub_job->set_both_targets_queued();
+  // Note: m_queued_or_active is NOT set here - it's only set when scrub becomes active
+  // in set_op_parameters(), matching classic OSD behavior
   pg.publish_stats_to_osd();
 }
 
@@ -244,6 +262,7 @@ void PGScrubber::rm_from_osd_scrubbing()
     pg.shard_services.get_scrub_scheduler().remove_from_osd_queue(pg.get_pgid());
     m_scrub_job->clear_both_targets_queued();
     m_scrub_job->registered = false;
+    clear_queued_or_active();
   }
 }
 
@@ -511,10 +530,10 @@ void PGScrubber::handle_scrub_requested(bool deep)
   handle_event(events::start_scrub_t{deep});
 }
 
-void PGScrubber::enqueue_scrub_requested(bool deep)
+void PGScrubber::enqueue_scrub_requested(bool deep, bool repair)
 {
   LOG_PREFIX(PGScrubber::enqueue_scrub_requested);
-  DEBUGDPP("deep: {}", pg, deep);
+  DEBUGDPP("deep: {}, repair: {}", pg, deep, repair);
   
   if (!m_scrub_job->is_registered()) {
     DEBUGDPP("PG not registered for scrubbing on this OSD", pg);
@@ -529,7 +548,9 @@ void PGScrubber::enqueue_scrub_requested(bool deep)
   }
   
   // Similar to classic OSD's scrub_requested(), update the target and enqueue it
-  auto scrub_level = deep ? scrub_level_t::deep : scrub_level_t::shallow;
+  // Repair always implies deep scrub (matching classic OSD behavior)
+  const bool deep_requested = deep || repair;
+  auto scrub_level = deep_requested ? scrub_level_t::deep : scrub_level_t::shallow;
   auto& trgt = m_scrub_job->get_target(scrub_level);
   
   // Dequeue if already queued
@@ -538,13 +559,14 @@ void PGScrubber::enqueue_scrub_requested(bool deep)
     trgt.queued = false;
   }
   
-  // Set urgency to operator_requested and enqueue
-  m_scrub_job->operator_forced(scrub_level, scrub_type_t::not_repair);
+  // Set urgency to operator_requested and enqueue with correct scrub type
+  auto scrub_type = repair ? scrub_type_t::do_repair : scrub_type_t::not_repair;
+  m_scrub_job->operator_forced(scrub_level, scrub_type);
   pg.shard_services.get_scrub_scheduler().enqueue_target(trgt);
   trgt.queued = true;
   
-  DEBUGDPP("enqueued operator-requested {} scrub", pg,
-    deep ? "deep" : "shallow");
+  DEBUGDPP("enqueued operator-requested {} {}", pg,
+    deep_requested ? "deep" : "shallow", repair ? "repair" : "scrub");
 }
 
 void PGScrubber::handle_schedule_scrub(bool deep, int64_t offset)
@@ -625,6 +647,8 @@ void PGScrubber::handle_schedule_scrub(bool deep, int64_t offset)
     // Directly enqueue without calling update_targets()
     pg.shard_services.get_scrub_scheduler().enqueue_scrub_job(*m_scrub_job);
     m_scrub_job->set_both_targets_queued();
+    // Note: m_queued_or_active is NOT set here - it's only set when scrub becomes active,
+    // matching classic OSD behavior
     pg.publish_stats_to_osd();
   }
   
@@ -906,6 +930,14 @@ void PGScrubber::emit_chunk_result(
     LOG_SCRUB_ERROR(
       "Scrub errors found. range: {}, result: {}",
       range, result);
+    
+    // If this is a repair scrub, initiate repairs for inconsistent objects
+    // Use the object_hoids map which has the correct hobject_t with hash
+    if (m_is_repair) {
+      int fixed = scrub_process_inconsistent(result.object_errors, result.object_hoids);
+      m_fixed_count += fixed;
+      DEBUGDPP("Initiated repair for {} object copies", pg, fixed);
+    }
   } else {
     DEBUGDPP("Chunk complete. range: {}", pg, range);
   }
@@ -915,12 +947,83 @@ void PGScrubber::emit_chunk_result(
   m_objects_scrubbed_in_chunk += result.stats.num_objects;
 }
 
+int PGScrubber::scrub_process_inconsistent(
+  const std::vector<inconsistent_obj_wrapper>& object_errors,
+  const std::map<std::string, hobject_t>& object_hoids)
+{
+  LOG_PREFIX(PGScrubber::scrub_process_inconsistent);
+  DEBUGDPP("Processing {} inconsistent objects for repair",
+           pg, object_errors.size());
+  
+  int fixed_count = 0;
+  
+  for (const auto& obj_error : object_errors) {
+    // Get the hobject_t from the map - it has the correct hash
+    auto it = object_hoids.find(obj_error.object.name);
+    if (it == object_hoids.end()) {
+      ERRORDPP("Could not find hobject_t for inconsistent object: name={}",
+               pg, obj_error.object.name);
+      continue;
+    }
+    
+    const hobject_t& oid = it->second;
+    DEBUGDPP("Found object {} with hash {:x}", pg, oid, oid.get_hash());
+    
+    // Find the authoritative shard and the shards with errors
+    pg_shard_t auth_shard;
+    std::set<pg_shard_t> bad_shards;
+    
+    // Iterate through all shards to find auth and bad ones
+    for (const auto& [shard_id, shard_info] : obj_error.shards) {
+      pg_shard_t pg_shard(shard_id.osd, shard_id_t(shard_id.shard));
+      
+      if (shard_info.selected_oi) {
+        // This is the authoritative shard
+        auth_shard = pg_shard;
+      }
+      
+      if (shard_info.has_errors()) {
+        // This shard has errors and needs repair
+        bad_shards.insert(pg_shard);
+      }
+    }
+    
+    if (!bad_shards.empty()) {
+      // Count the number of bad shards being fixed
+      // This matches classic OSD's behavior of counting bad_peers.size()
+      fixed_count += bad_shards.size();
+      
+      // Get the version for repair
+      eversion_t repair_version(0, obj_error.version);
+      
+      // Mark objects as missing on bad shards
+      // This matches classic OSD's approach in scrub_backend.cc:424
+      // Classic OSD just calls force_object_missing() and lets the PG state
+      // machine automatically queue recovery when it detects the PG is not clean
+      for (const auto& bad_shard : bad_shards) {
+        pg.peering_state.force_object_missing(bad_shard, oid, repair_version);
+        DEBUGDPP("Marked object {} as missing on shard {}", pg, oid, bad_shard);
+      }
+    }
+  }
+  
+  return fixed_count;
+}
+
 void PGScrubber::emit_scrub_result(
   bool deep,
   object_stat_sum_t in_stats)
 {
   LOG_PREFIX(PGScrubber::emit_scrub_result);
   DEBUGDPP("objects_scrubbed: {}", pg, m_objects_scrubbed_in_chunk);
+  
+  // Log repair results if this was a repair scrub
+  if (m_is_repair && m_fixed_count > 0) {
+    INFODPP("Scrub repair completed: {} object copies fixed", pg, m_fixed_count);
+    pg.get_clog_info() << "pg " << pg.get_pgid()
+                       << " scrub repair: " << m_fixed_count << " fixed";
+  }
+  
   pg.peering_state.update_stats(
     [this, FNAME, deep, &in_stats](auto &history, auto &pg_stats) {
       // Handle invalid stats, in case of split/merge
@@ -931,12 +1034,12 @@ void PGScrubber::emit_scrub_result(
         return false;
       }
       foreach_scrub_maintained_stat(
-	[deep, &pg_stats, &in_stats](
-	  const auto &name, auto statptr, bool skip_for_shallow) {
-	  if (deep && !skip_for_shallow) {
-	    pg_stats.stats.sum.*statptr = in_stats.*statptr;
-	  }
-	});
+ [deep, &pg_stats, &in_stats](
+   const auto &name, auto statptr, bool skip_for_shallow) {
+   if (deep && !skip_for_shallow) {
+     pg_stats.stats.sum.*statptr = in_stats.*statptr;
+   }
+ });
       foreach_scrub_checked_stat(
  [this, FNAME, &pg_stats, &in_stats](
    const auto &name, auto statptr, const auto &invalid_predicate) {
@@ -959,6 +1062,23 @@ void PGScrubber::emit_scrub_result(
  history.last_deep_scrub_stamp = now;
       }
       
+      // If this was a repair and all errors were fixed, clear the error counts
+      // This matches classic OSD behavior in scrub_finish()
+      if (m_is_repair && m_fixed_count > 0) {
+        int total_errors = pg_stats.stats.sum.num_shallow_scrub_errors +
+                          pg_stats.stats.sum.num_deep_scrub_errors;
+        if (m_fixed_count == total_errors) {
+          DEBUGDPP("All {} errors fixed, clearing error counts", pg, total_errors);
+          pg_stats.stats.sum.num_shallow_scrub_errors = 0;
+          pg_stats.stats.sum.num_deep_scrub_errors = 0;
+        }
+      }
+      
+      // Recalculate total scrub errors (matches classic OSD)
+      pg_stats.stats.sum.num_scrub_errors =
+        pg_stats.stats.sum.num_shallow_scrub_errors +
+        pg_stats.stats.sum.num_deep_scrub_errors;
+      
       // Calculate scrub duration
       if (m_scrub_start_time.has_value()) {
         auto duration = ceil<milliseconds>(ScrubClock::now() - *m_scrub_start_time);
@@ -972,9 +1092,30 @@ void PGScrubber::emit_scrub_result(
       
       return false; // notify_scrub_end will flush stats to osd
     });
+    
+    // Save fixed_count before cleanup resets it
+    int fixed_count = m_fixed_count;
+    bool is_repair = m_is_repair;
+    
     cleanup_on_finish();
     update_scrub_job();
     m_active_target.reset();
+    
+    // If repair marked objects as missing, post DoRecovery event to trigger recovery
+    // This causes the PeeringState state machine to transition to RECOVERING state
+    // and properly start recovery operations to restore the missing objects.
+    // IMPORTANT: Post this AFTER scrub cleanup to avoid interfering with scrub completion
+    if (is_repair && fixed_count > 0) {
+      DEBUGDPP("Repair marked {} objects as missing, posting DoRecovery event", pg, fixed_count);
+      (void) pg.get_shard_services().start_operation<LocalPeeringEvent>(
+        &pg,
+        pg.get_pg_whoami(),
+        pg.get_pgid(),
+        float(0.001),
+        pg.get_osdmap_epoch(),
+        pg.get_osdmap_epoch(),
+        PeeringState::DoRecovery{});
+    }
 }
 
 std::string_view PGScrubber::registration_state() const
@@ -1009,6 +1150,7 @@ void PGScrubber::reset_internal_state()
 {
   clear_queued_or_active();
   m_objects_scrubbed_in_chunk = 0;
+  m_fixed_count = 0;
 }
 
 void PGScrubber::dump_scrub_metrics(ceph::Formatter* f)
@@ -1024,6 +1166,11 @@ void PGScrubber::dump_scrub_metrics(ceph::Formatter* f)
   f->dump_bool("active", m_active_target.has_value());
   f->dump_bool("is_reserving_replicas", is_reserving_replicas());
   f->dump_string("mode", m_mode_desc);
+  
+  // Dump repair statistics (matches classic OSD)
+  if (m_is_repair) {
+    f->dump_int("fixed", m_fixed_count);
+  }
   
   // Dump metrics from the last or current scrub session
   if (m_last_scrub_metrics) {

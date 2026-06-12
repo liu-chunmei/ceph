@@ -67,7 +67,7 @@ ScrubRequested::ifut<> ScrubRequested::handle_event(PG &pg)
   // for the scheduler to pick up, not started immediately.
   // The scheduler will call start_scrub() which sets m_active_target before
   // calling handle_scrub_requested().
-  pg.scrubber.enqueue_scrub_requested(deep);
+  pg.scrubber.enqueue_scrub_requested(deep, repair);
   return seastar::now();
 }
 

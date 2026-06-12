@@ -208,16 +208,16 @@ struct unthrowable_wrapper : error_t<unthrowable_wrapper<ErrorT, ErrorV>> {
   };
 
   class assert_failure {
-    const char* const msg = nullptr;
+    std::string msg;
   public:
-    assert_failure(const char* msg)
-      : msg(msg) {
+    assert_failure(std::string msg)
+      : msg(std::move(msg)) {
     }
     assert_failure() = default;
 
     no_touch_error_marker operator()(const unthrowable_wrapper& raw_error) {
       handle([this] (auto&& error_v) {
-        ceph_abort_msgf("%s: %s", msg ? msg : "", error_v.message().c_str());
+        ceph_abort_msgf("%s: %s", msg.c_str(), error_v.message().c_str());
       })(raw_error);
       return no_touch_error_marker{};
     }
@@ -288,16 +288,16 @@ struct stateful_error_t : error_t<stateful_error_t<ErrorT>> {
   }
 
   class assert_failure {
-    const char* const msg = nullptr;
+    std::string msg;
   public:
-    assert_failure(const char* msg)
-      : msg(msg) {
+    assert_failure(std::string msg)
+      : msg(std::move(msg)) {
     }
     assert_failure() = default;
 
     no_touch_error_marker operator()(stateful_error_t<ErrorT>&& raw_error) {
       handle([this] (auto&& error_v) {
-        ceph_abort_msgf("%s: %s", msg ? msg : "", error_v.message().c_str());
+        ceph_abort_msgf("%s: %s", msg.c_str(), error_v.message().c_str());
       })(std::move(raw_error));
       return no_touch_error_marker{};
     }
@@ -939,10 +939,10 @@ public:
   }
 
   class assert_all {
-    const char* const msg = nullptr;
+    std::string msg;
   public:
-    assert_all(const char* msg)
-      : msg(msg) {
+    assert_all(std::string msg)
+      : msg(std::move(msg)) {
     }
     assert_all() = default;
 
@@ -952,7 +952,7 @@ public:
       static_assert(contains_once_v<decayed_t>,
                     "discarding disallowed ErrorT");
       decayed_t::error_t::handle([this] (auto&& error_v) {
-        ceph_abort_msgf("%s: %s", msg ? msg : "", error_v.message().c_str());
+        ceph_abort_msgf("%s: %s", msg.c_str(), error_v.message().c_str());
       })(std::forward<ErrorT>(raw_error));
       return no_touch_error_marker{};
     }
@@ -1305,10 +1305,10 @@ namespace ct_error {
   };
 
   class assert_all {
-    const char* const msg = nullptr;
+    std::string msg;
   public:
-    assert_all(const char* msg)
-      : msg(msg) {
+    assert_all(std::string msg)
+      : msg(std::move(msg)) {
     }
     assert_all() = default;
 
@@ -1316,7 +1316,7 @@ namespace ct_error {
     no_touch_error_marker operator()(ErrorT&& raw_error) {
       using decayed_t = std::decay_t<ErrorT>;
       decayed_t::error_t::handle([this] (auto&& error_v) {
-        ceph_abort_msgf("%s: %s", msg ? msg : "", error_v.message().c_str());
+        ceph_abort_msgf("%s: %s", msg.c_str(), error_v.message().c_str());
       })(std::forward<ErrorT>(raw_error));
       return no_touch_error_marker{};
     }

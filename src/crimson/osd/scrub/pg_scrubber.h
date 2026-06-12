@@ -8,6 +8,8 @@
 #include <seastar/core/shared_future.hh>
 
 #include "crimson/common/operation.h"
+#include "crimson/common/interruptible_future.h"
+#include "crimson/osd/pg_interval_interrupt_condition.h"
 #include "msg/Message.h"
 #include "osd/scrubber_common.h"
 #include "scrub_machine.h"
@@ -128,7 +130,7 @@ public:
 
   static utime_t scrub_must_stamp() { return utime_t(1, 1); }
   PGScrubber(PG &pg);
-  virtual ~PGScrubber() = default;
+  virtual ~PGScrubber();
 
   /// setup scrub machine state
   void initiate() { machine.initiate(); }
@@ -154,7 +156,7 @@ public:
   void handle_scrub_requested(bool deep);
 
   /// enqueue a manually requested scrub (called by admin command)
-  void enqueue_scrub_requested(bool deep);
+  void enqueue_scrub_requested(bool deep, bool repair = false);
 
   /// handle schedule-scrub command (test/debug only)
   void handle_schedule_scrub(bool deep, int64_t offset);
@@ -222,6 +224,9 @@ public:
 
   /// Track the total number of objects scrubbed across all chunks
   int64_t m_objects_scrubbed_in_chunk{0};
+
+  /// Track the number of object copies fixed during repair scrub
+  int m_fixed_count{0};
   
   /// Start sleep operation between chunks
   void start_chunk_sleep();
@@ -277,6 +282,42 @@ private:
   void emit_scrub_result(
     bool deep,
     object_stat_sum_t scrub_stats) final;
+
+  /**
+   * scrub_process_inconsistent
+   *
+   * Process inconsistent objects found during scrub and initiate repairs.
+   * Similar to classic OSD's ScrubBackend::scrub_process_inconsistent().
+   * Spawns async repair operations in the background.
+   *
+   * @param object_errors Vector of inconsistent objects with error details
+   * @param object_hoids Map from object name to hobject_t with correct hash
+   * @return Number of object copies being repaired
+   */
+  int scrub_process_inconsistent(
+    const std::vector<inconsistent_obj_wrapper>& object_errors,
+    const std::map<std::string, hobject_t>& object_hoids);
+
+  /**
+   * repair_object
+   *
+   * Repair a single object by marking it as missing on bad shards,
+   * then triggering recovery if the primary has a bad copy.
+   * Follows the classic OSD pattern from ScrubBackend::repair_object()
+   * but uses Crimson's async PG::repair_object() to trigger recovery.
+   *
+   * @param soid Object to repair
+   * @param auth_shard Authoritative shard with good copy
+   * @param bad_shards Set of shards with bad/missing copies
+   * @param version Object version for repair
+   * @return Future that completes when repair is initiated
+   */
+  ::crimson::interruptible::interruptible_future<
+    ::crimson::osd::IOInterruptCondition, void> repair_object(
+    const hobject_t& soid,
+    pg_shard_t auth_shard,
+    const std::set<pg_shard_t>& bad_shards,
+    uint64_t version);
 
   sched_conf_t populate_config_params() const;
   void update_targets(utime_t scrub_clock_now);

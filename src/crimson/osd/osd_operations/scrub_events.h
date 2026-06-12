@@ -78,6 +78,7 @@ public:
 
 class ScrubRequested final : public RemoteScrubEventBaseT<ScrubRequested> {
   bool deep = false;
+  bool repair = false;
 protected:
   ifut<> handle_event(PG &pg) final;
 
@@ -85,19 +86,20 @@ public:
   static constexpr OperationTypeCode type = OperationTypeCode::scrub_requested;
 
   template <typename... Args>
-  ScrubRequested(bool deep, Args&&... base_args)
+  ScrubRequested(bool deep, bool repair, Args&&... base_args)
     : RemoteScrubEventBaseT<ScrubRequested>(std::forward<Args>(base_args)...),
-      deep(deep) {}
+      deep(deep), repair(repair) {}
 
   epoch_t get_epoch_sent_at() const {
     return epoch;
   }
 
   void print(std::ostream &out) const final {
-    out << "(deep=" << deep << ")";
+    out << "(deep=" << deep << ", repair=" << repair << ")";
   }
   void dump_detail(ceph::Formatter *f) const final {
     f->dump_bool("deep", deep);
+    f->dump_bool("repair", repair);
   }
 
 };

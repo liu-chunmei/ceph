@@ -500,7 +500,7 @@ seastar::future<> OSD::start()
     return store.mount().handle_error(
       crimson::stateful_ec::assert_failure(fmt::format(
         "{} error mounting object store in {}",
-        FNAME, local_conf().get_val<std::string>("osd_data")).c_str())
+        FNAME, local_conf().get_val<std::string>("osd_data")))
     );
   }).then([this, FNAME] {
     auto stats_seconds = local_conf().get_val<int64_t>("crimson_osd_stat_interval");
@@ -1526,7 +1526,7 @@ seastar::future<> OSD::handle_scrub_command(
     [m, conn, this](spg_t pgid) {
     return pg_shard_manager.start_pg_operation<
       crimson::osd::ScrubRequested
-      >(m->deep, conn, m->epoch, pgid).second;
+      >(m->deep, m->repair, conn, m->epoch, pgid).second;
   });
 }
 

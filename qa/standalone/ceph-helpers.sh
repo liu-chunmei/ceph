@@ -95,6 +95,9 @@ EXTRA_OPTS=""
 #
 
 
+# Global associative array to store crimson OSD arguments
+declare -A CRIMSON_OSD_ARGS
+
 function get_asok_dir() {
     if [ -n "$CEPH_ASOK_DIR" ]; then
         echo "$CEPH_ASOK_DIR"
@@ -200,8 +203,8 @@ function teardown() {
      mv $dir/*.log $TESTDIR/archive/log
  fi
     fi
-    rm -fr $dir
-    rm -rf $(get_asok_dir)
+    #rm -fr $dir
+    #rm -rf $(get_asok_dir)
     if [ "$cores" = "yes" ]; then
         echo "ERROR: Failure due to cores found"
         if [ -n "$LOCALRUN" ]; then
@@ -739,6 +742,9 @@ function run_crimson_osd() {
     ceph_args+=" "
     ceph_args+="$@"
     mkdir -p $osd_data
+    
+    # Save the original arguments in global array for potential restart
+    CRIMSON_OSD_ARGS[$id]="$@"
 
     # Find crimson-osd binary
     local crimson_osd=""
@@ -1391,7 +1397,17 @@ function _objectstore_tool_nowait() {
     shift
     local osd_data=$dir/$id
 
-    kill_daemons $dir TERM osd.$id >&2 < /dev/null || return 1
+    # Check if this is a crimson OSD - they need KILL signal instead of TERM
+    local signal="TERM"
+    if [ -f "$osd_data/type" ]; then
+        local osd_type=$(cat $osd_data/type)
+        if [ "$osd_type" = "seastore" ]; then
+            # Crimson OSDs (Seastar-based) don't respond well to TERM, use KILL
+            signal="KILL"
+        fi
+    fi
+
+    kill_daemons $dir $signal osd.$id >&2 < /dev/null || return 1
 
     _objectstore_tool_nodown $dir $id "$@" || return 1
     
@@ -1429,6 +1445,12 @@ function _objectstore_tool_nowait() {
             ceph_args+=" --ms-bind-msgr2=true"
             ceph_args+=" --ms-bind-msgr1=false"
             ceph_args+=" "
+            
+            # Restore original arguments from global array
+            if [ -n "${CRIMSON_OSD_ARGS[$id]}" ]; then
+                ceph_args+="${CRIMSON_OSD_ARGS[$id]}"
+                ceph_args+=" "
+            fi
             ceph_args+="$ceph_osd_args"
             
             echo "Restarting crimson osd.$id" >&2

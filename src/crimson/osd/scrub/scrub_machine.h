@@ -457,14 +457,45 @@ struct Inactive : ScrubState<Inactive, ScrubMachine> {
 struct AwaitScrub;
 struct PrimaryActive : ScrubState<PrimaryActive, ScrubMachine, AwaitScrub> {
   static constexpr std::string_view state_name = "PrimaryActive";
-  explicit PrimaryActive(my_context ctx) : ScrubState(ctx) {
-    get_scrub_context().schedule_scrub_with_osd();
+  explicit PrimaryActive(my_context ctx) : ScrubState(ctx), scrub_context(get_scrub_context()) {
+    scrub_context.schedule_scrub_with_osd();
   }
+  
   ~PrimaryActive() {
-    // Match classic OSD behavior: clear scrub state before removing from OSD queue
-    get_scrub_context().clear_pgscrub_state();
-    get_scrub_context().rm_from_osd_scrubbing();
+    LOG_PREFIX(PrimaryActive::~PrimaryActive);
+    SUBDEBUGDPP(osd, "destructor called, cleanup_done={}", dpp, cleanup_done);
+    // Ensure cleanup happens even if exit() wasn't called.
+    // This can happen when the state machine is terminated without a proper
+    // state transition (e.g., during PG shutdown). We must clean up resources
+    // to prevent memory leaks.
+    if (!cleanup_done) {
+      do_cleanup();
+    }
   }
+  
+  void exit() {
+    LOG_PREFIX(PrimaryActive::exit);
+    SUBDEBUGDPP(osd, "exit called, cleanup_done={}", dpp, cleanup_done);
+    // Match classic OSD behavior: clear scrub state before removing from OSD queue
+    // exit() is called during normal state transitions while context is valid
+    if (!cleanup_done) {
+      do_cleanup();
+    }
+  }
+
+private:
+  ScrubContext& scrub_context;
+  bool cleanup_done = false;
+  
+  void do_cleanup() {
+    LOG_PREFIX(PrimaryActive::do_cleanup);
+    SUBDEBUGDPP(osd, "performing cleanup", dpp);
+    scrub_context.clear_pgscrub_state();
+    scrub_context.rm_from_osd_scrubbing();
+    cleanup_done = true;
+  }
+
+public:
   bool local_reservation_held = false;
   std::set<pg_shard_t> remote_reservations_held;
   reservation_nonce_t last_request_sent_nonce{1};
@@ -491,12 +522,19 @@ struct AwaitScrub : ScrubState<AwaitScrub, PrimaryActive> {
   explicit AwaitScrub(my_context ctx) : ScrubState(ctx) {}
 
   using reactions = boost::mpl::list<
-    sc::custom_reaction<events::start_scrub_t>
+    sc::custom_reaction<events::start_scrub_t>,
+    sc::custom_reaction<events::primary_activate_t>
     >;
 
   sc::result react(const events::start_scrub_t &event) {
     post_event(internal_events::set_deep_t{event.value.deep});
     return transit<Scrubbing>();
+  }
+
+  sc::result react(const events::primary_activate_t &) {
+    // Already in PrimaryActive state, discard redundant activation event
+    // This can happen when PG transitions to Active+Clean after recovery
+    return discard_event();
   }
 };
 
@@ -505,6 +543,15 @@ struct ChunkState;
 struct Scrubbing : ScrubState<Scrubbing, PrimaryActive, ReservingReplicas> {
   static constexpr std::string_view state_name = "Scrubbing";
   explicit Scrubbing(my_context ctx);
+  
+  ~Scrubbing() {
+    // Match classic OSD behavior: release reservations and clear state
+    // See Session::~Session() in src/osd/scrubber/scrub_machine.cc
+    if (m_reservations) {
+      m_reservations.reset();
+    }
+    get_scrub_context().clear_pgscrub_state();
+  }
 
   using reactions = boost::mpl::list<
     sc::custom_reaction<internal_events::set_deep_t>,
@@ -540,6 +587,10 @@ struct Scrubbing : ScrubState<Scrubbing, PrimaryActive, ReservingReplicas> {
   }
 
   void exit() {
+    // Release replica reservations if they were acquired
+    if (m_reservations) {
+      m_reservations.reset();
+    }
     // Note: notify_scrub_end is called when scrub actually completes,
     // not when exiting this intermediate Scrubbing state
   }
