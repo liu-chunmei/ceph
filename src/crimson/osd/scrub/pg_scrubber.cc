@@ -231,6 +231,17 @@ void PGScrubber::schedule_scrub_with_osd()
   m_scrub_job->registered = true;
   update_scrub_job();
 }
+void PGScrubber::request_rescrubbing()
+{
+  LOG_PREFIX(PGScrubber::request_rescrubbing);
+  DEBUGDPP("job on entry: {}", pg, *m_scrub_job);
+  auto& trgt = m_scrub_job->get_target(scrub_level_t::deep);
+  trgt.up_urgency_to(urgency_t::repairing);
+  const auto clock_now = ceph_clock_now();
+  trgt.sched_info.schedule.scheduled_at = clock_now;
+  trgt.sched_info.schedule.not_before = clock_now;
+}
+
 
 void PGScrubber::update_scrub_job()
 {
@@ -1125,11 +1136,37 @@ void PGScrubber::emit_scrub_result(
       return false; // notify_scrub_end will flush stats to osd
     });
     
+    // Check if we need to initiate a deep scrub after finding errors in shallow scrub
+    // This matches classic OSD behavior in scrub_finish()
+    bool do_auto_scrub = false;
+    int error_count = in_stats.num_shallow_scrub_errors +
+                      in_stats.num_deep_scrub_errors;
+    
+    DEBUGDPP("auto-repair check: deep_scrub_on_error={}, error_count={}, is_deep={}, max_errors={}",
+             pg, m_flags.deep_scrub_on_error, error_count, m_is_deep,
+             crimson::common::local_conf().get_val<uint64_t>("osd_scrub_auto_repair_num_errors"));
+    
+    if (m_flags.deep_scrub_on_error && error_count > 0 &&
+        error_count <= static_cast<int>(
+            crimson::common::local_conf().get_val<uint64_t>("osd_scrub_auto_repair_num_errors"))) {
+      ceph_assert(!m_is_deep);
+      do_auto_scrub = true;
+      DEBUGDPP("will initiate a deep scrub to fix {} errors", pg, error_count);
+    }
+    
+    m_flags.deep_scrub_on_error = false;
+    
     // Save fixed_count before cleanup resets it
     int fixed_count = m_fixed_count;
     bool is_repair = m_is_repair;
     
     cleanup_on_finish();
+    
+    // Request a deep scrub if needed (before update_scrub_job which resets targets)
+    if (do_auto_scrub) {
+      request_rescrubbing();
+    }
+    
     update_scrub_job();
     m_active_target.reset();
     

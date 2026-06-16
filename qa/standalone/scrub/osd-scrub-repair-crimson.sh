@@ -472,7 +472,7 @@ function wait_end_of_scrub() { # osd# pg
 }
 
 
-function TEST_auto_repair_seastore_basic() {
+function TES_auto_repair_seastore_basic() {
     local dir=$1
     local poolname=testpool
 
@@ -527,6 +527,120 @@ function TEST_auto_repair_seastore_basic() {
     diff $dir/ORIGINAL $dir/COPY || return 1
     grep scrub_finish $dir/osd.${primary}.log
 }
+
+function TES_auto_repair_seastore_tag() {
+    local dir=$1
+    local poolname=testpool
+
+    # Launch a cluster with 3 seconds scrub interval
+    run_mon $dir a || return 1
+    apply_crimson_config || return 1
+    run_mgr $dir x || return 1
+    # Set scheduler to "wpq" until there's a reliable way to query scrub states
+    # with "--osd-scrub-sleep" set to 0. The "mclock_scheduler" overrides the
+    # scrub sleep to 0 and as a result the checks in the test fail.
+    local ceph_osd_args="--osd_objectstore=seastore \
+            --osd-scrub-auto-repair=true \
+            --osd_deep_scrub_randomize_ratio=0 \
+            --osd-scrub-interval-randomize-ratio=0 \
+            --osd-op-queue=wpq"
+    for id in $(seq 0 2) ; do
+        run_crimson_osd $dir $id $ceph_osd_args --debug || return 1
+    done
+
+    create_pool $poolname 1 1 || return 1
+    ceph osd pool set $poolname size 2
+    wait_for_clean || return 1
+
+    # Put an object
+    local payload=ABCDEF
+    echo $payload > $dir/ORIGINAL
+    rados --pool $poolname put SOMETHING $dir/ORIGINAL || return 1
+
+    # Remove the object from one shard physically
+    # Restarted osd get $ceph_osd_args passed
+    objectstore_tool $dir $(get_not_primary $poolname SOMETHING) SOMETHING remove || return 1
+
+    local pgid=$(get_pg $poolname SOMETHING)
+    local primary=$(get_primary $poolname SOMETHING)
+    echo "Affected PG " $pgid " w/ primary " $primary
+    local last_scrub_stamp="$(get_last_scrub_stamp $pgid)"
+    initiate_and_fetch_state $primary $pgid "3.0"
+    r=$?
+    echo "initiate_and_fetch_state ret: " $r
+    set_config "osd"  "$1"  "osd_scrub_sleep"  "0"
+    if [ $r -ne 0 ]; then
+        return 1
+    fi
+
+    wait_end_of_scrub "$primary" "$pgid" || return 1
+    ceph pg dump pgs
+
+    # Verify - the file should be back
+    # Restarted osd get $ceph_osd_args passed
+    objectstore_tool $dir $(get_not_primary $poolname SOMETHING) SOMETHING list-attrs || return 1
+    objectstore_tool $dir $(get_not_primary $poolname SOMETHING) SOMETHING get-bytes $dir/COPY || return 1
+    diff $dir/ORIGINAL $dir/COPY || return 1
+    grep scrub_finish $dir/osd.${primary}.log
+}
+function TEST_auto_repair_seastore_scrub() {
+    local dir=$1
+    local poolname=testpool
+
+    # Launch a cluster with 5 seconds scrub interval
+    run_mon $dir a || return 1
+    apply_crimson_config || return 1
+    run_mgr $dir x || return 1
+    local ceph_osd_args="--osd_objectstore=seastore \
+            --osd-scrub-auto-repair=true \
+            --osd_deep_scrub_randomize_ratio=0 \
+            --osd-scrub-interval-randomize-ratio=0 \
+            --osd-scrub-backoff-ratio=0"
+    for id in $(seq 0 2) ; do
+        run_crimson_osd $dir $id $ceph_osd_args --debug || return 1
+    done
+
+    create_pool $poolname 1 1 || return 1
+    ceph osd pool set $poolname size 2
+    wait_for_clean || return 1
+
+    # Put an object
+    local payload=ABCDEF
+    echo $payload > $dir/ORIGINAL
+    rados --pool $poolname put SOMETHING $dir/ORIGINAL || return 1
+
+    # Remove the object from one shard physically
+    # Restarted osd get $ceph_osd_args passed
+    objectstore_tool $dir $(get_not_primary $poolname SOMETHING) SOMETHING remove || return 1
+
+    local pgid=$(get_pg $poolname SOMETHING)
+    local primary=$(get_primary $poolname SOMETHING)
+    local last_scrub_stamp="$(get_last_scrub_stamp $pgid)"
+    ceph pg $pgid schedule-scrub
+
+    # Wait for scrub -> auto repair
+    wait_for_scrub $pgid "$last_scrub_stamp" || return 1
+    ceph pg dump pgs
+    # Actually this causes 2 scrubs, so we better wait a little longer
+    sleep 2
+    ceph pg dump pgs
+    sleep 2
+    ceph pg dump pgs
+    sleep 5
+    wait_for_clean || return 1
+    ceph pg dump pgs
+    # Verify - the file should be back
+    # Restarted osd get $ceph_osd_args passed
+    objectstore_tool $dir $(get_not_primary $poolname SOMETHING) SOMETHING list-attrs || return 1
+    rados --pool $poolname get SOMETHING $dir/COPY || return 1
+    diff $dir/ORIGINAL $dir/COPY || return 1
+    grep scrub_finish $dir/osd.${primary}.log
+
+    # This should have caused 1 object to be repaired
+    COUNT=$(ceph pg $pgid query | jq '.info.stats.stat_sum.num_objects_repaired')
+    test "$COUNT" = "1" || return 1
+}
+
 
 
 main osd-scrub-repair-crimson "$@"

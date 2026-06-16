@@ -1128,7 +1128,8 @@ std::vector<std::string> OSD::get_tracked_keys() const noexcept
     "osd_scrub_begin_hour"s,
     "osd_scrub_end_hour"s,
     "osd_scrub_begin_week_day"s,
-    "osd_scrub_end_week_day"s
+    "osd_scrub_end_week_day"s,
+    "osd_scrub_auto_repair"s
   };
 }
 
@@ -1151,7 +1152,8 @@ void OSD::handle_conf_change(
     "osd_scrub_begin_hour",
     "osd_scrub_end_hour",
     "osd_scrub_begin_week_day",
-    "osd_scrub_end_week_day"
+    "osd_scrub_end_week_day",
+    "osd_scrub_auto_repair"
   };
   
   for (const auto& config : scrub_configs) {

@@ -186,6 +186,9 @@ public:
 
   /// Update scrub job scheduling (called when config changes or pool info changes)
   void update_scrub_job();
+  /// Request a deep scrub to repair errors found in shallow scrub
+  void request_rescrubbing();
+
 
   /// Check if scrub is queued or actively running
   bool is_queued_or_active() const {

@@ -471,6 +471,14 @@ void PGRecovery::on_peer_recover(
   LOG_PREFIX(PGRecovery::on_peer_recover);
   DEBUGDPP("{}, {} on {}", *pg->get_dpp(), oid, recovery_info.version, peer);
   pg->get_peering_state().on_peer_recover(peer, oid, recovery_info.version);
+  
+  // Increment num_objects_repaired if this is a repair operation
+  if (pg->get_peering_state().is_repair()) {
+    pg->get_peering_state().update_stats([](auto& history, auto& stats) {
+      stats.stats.sum.num_objects_repaired++;
+      return false;
+    });
+  }
 }
 
 void PGRecovery::_committed_pushed_object(epoch_t epoch,
