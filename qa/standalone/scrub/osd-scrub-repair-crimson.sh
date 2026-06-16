@@ -133,7 +133,7 @@ function TES_corrupt_and_repair_replicated() {
 # Allow operator-initiated scrubs to be scheduled even when some recovering is still
 # undergoing on the same OSD
 #
-function TEST_allow_oper_initiated_scrub_during_recovery() {
+function TES_allow_oper_initiated_scrub_during_recovery() {
     local dir=$1
     local poolname=rbd
 
@@ -158,7 +158,7 @@ function TEST_allow_oper_initiated_scrub_during_recovery() {
 #
 # Allow repair to be scheduled when some recovering is still undergoing on the same OSD
 #
-function TES_allow_repair_during_recovery() {
+function TEST_allow_repair_during_recovery() {
     local dir=$1
     local poolname=rbd
 
@@ -167,10 +167,10 @@ function TES_allow_repair_during_recovery() {
     run_mgr $dir x || return 1
     run_crimson_osd $dir 0 --osd_objectstore=seastore \
                    --osd_scrub_during_recovery=false \
-                   --osd_debug_pretend_recovery_active=true || return 1
+                   --osd_debug_pretend_recovery_active=true --debug || return 1
     run_crimson_osd $dir 1 --osd_objectstore=seastore \
                    --osd_scrub_during_recovery=false \
-                   --osd_debug_pretend_recovery_active=true || return 1
+                   --osd_debug_pretend_recovery_active=true --debug || return 1
     create_rbd_pool || return 1
     wait_for_clean || return 1
 
