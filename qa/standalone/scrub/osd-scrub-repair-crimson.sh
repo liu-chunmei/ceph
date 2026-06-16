@@ -111,7 +111,7 @@ function add_something() {
 #
 # Corrupt one copy of a replicated pool
 #
-function TEST_corrupt_and_repair_replicated() {
+function TES_corrupt_and_repair_replicated() {
     local dir=$1
     local poolname=rbd
 
@@ -133,7 +133,7 @@ function TEST_corrupt_and_repair_replicated() {
 # Allow operator-initiated scrubs to be scheduled even when some recovering is still
 # undergoing on the same OSD
 #
-function TES_allow_oper_initiated_scrub_during_recovery() {
+function TEST_allow_oper_initiated_scrub_during_recovery() {
     local dir=$1
     local poolname=rbd
 
@@ -145,8 +145,8 @@ function TES_allow_oper_initiated_scrub_during_recovery() {
         --osd_scrub_during_recovery=false \
         --osd_debug_pretend_recovery_active=true"
     
-    run_crimson_osd $dir 0 $ceph_osd_args || return 1
-    run_crimson_osd $dir 1 $ceph_osd_args || return 1
+    run_crimson_osd $dir 0 $ceph_osd_args --debug|| return 1
+    run_crimson_osd $dir 1 $ceph_osd_args --debug|| return 1
     
     create_rbd_pool || return 1
     wait_for_clean || return 1
@@ -213,7 +213,7 @@ function oper_scrub_and_schedule() {
     #
     local pg=$(get_pg $poolname SOMETHING)
     local last_scrub=$(get_last_scrub_stamp $pg)
-    ceph tell $pg scrub
+    ceph pg $pg scrub
 
     #
     # 2) Assure the scrub was executed

@@ -719,6 +719,9 @@ public:
   auto is_recovery_active() {
     LOG_PREFIX(ShardServices::is_recovery_active);
     SUBDEBUG(osd, "sending to singleton");
+    if (crimson::common::local_conf()->osd_debug_pretend_recovery_active) {
+      return seastar::make_ready_future<bool>(true);
+    }
     return with_singleton(
       [FNAME](auto &singleton) {
       SUBDEBUG(osd, "on singleton");
