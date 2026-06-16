@@ -158,7 +158,7 @@ function TES_allow_oper_initiated_scrub_during_recovery() {
 #
 # Allow repair to be scheduled when some recovering is still undergoing on the same OSD
 #
-function TEST_allow_repair_during_recovery() {
+function TES_allow_repair_during_recovery() {
     local dir=$1
     local poolname=rbd
 
@@ -183,7 +183,7 @@ function TEST_allow_repair_during_recovery() {
 #
 # Note: forgoing the automatic creation of a pool in standard_scrub_cluster as
 #       the test requires a specific RBD pool.
-function TES_skip_non_repair_during_recovery() {
+function TEST_skip_non_repair_during_recovery() {
     local dir=$1
     local -A cluster_conf=(
         ['osds_num']="2"
@@ -193,7 +193,7 @@ function TES_skip_non_repair_during_recovery() {
         ['extras']="--osd_scrub_during_recovery=false --osd_debug_pretend_recovery_active=true"
     )
 
-    standard_scrub_cluster $dir cluster_conf
+    crimson_standard_scrub_cluster $dir cluster_conf
     local poolname=rbd
     create_rbd_pool || return 1
     wait_for_clean || return 1
@@ -247,7 +247,7 @@ function scrub_and_not_schedule() {
     #
     local pg=$(get_pg $poolname SOMETHING)
     local last_scrub=$(get_last_scrub_stamp $pg)
-    ceph tell $pg schedule-scrub
+    ceph pg $pg schedule-scrub
 
     #
     # 2) Assure the scrub is not scheduled
