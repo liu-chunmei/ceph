@@ -183,7 +183,7 @@ function TES_allow_repair_during_recovery() {
 #
 # Note: forgoing the automatic creation of a pool in standard_scrub_cluster as
 #       the test requires a specific RBD pool.
-function TEST_skip_non_repair_during_recovery() {
+function TES_skip_non_repair_during_recovery() {
     local dir=$1
     local -A cluster_conf=(
         ['osds_num']="2"
@@ -371,7 +371,7 @@ function auto_repair_erasure_coded() {
             --osd-scrub-min-interval=5 \
             --osd-scrub-interval-randomize-ratio=0"
     for id in $(seq 0 2) ; do
-        run_crimson_osd $dir $id $ceph_osd_args || return 1
+        run_crimson_osd $dir $id $ceph_osd_args --debug || return 1
     done
     create_rbd_pool || return 1
     wait_for_clean || return 1
@@ -472,7 +472,7 @@ function wait_end_of_scrub() { # osd# pg
 }
 
 
-function TES_auto_repair_crimson_basic() {
+function TEST_auto_repair_seastore_basic() {
     local dir=$1
     local poolname=testpool
 
@@ -489,7 +489,7 @@ function TES_auto_repair_crimson_basic() {
             --osd-scrub-interval-randomize-ratio=0 \
             --osd-op-queue=wpq"
     for id in $(seq 0 2) ; do
-        run_crimson_osd $dir $id $ceph_osd_args || return 1
+        run_crimson_osd $dir $id $ceph_osd_args --debug || return 1
     done
 
     create_pool $poolname 1 1 || return 1
@@ -536,4 +536,3 @@ main osd-scrub-repair-crimson "$@"
 #    ../qa/run-standalone.sh osd-scrub-repair-crimson.sh"
 # End:
 
-# Made with Bob

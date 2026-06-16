@@ -10,6 +10,7 @@
 #include "crimson/osd/osd_operations/peering_event.h"
 #include "messages/MOSDRepScrub.h"
 #include "messages/MOSDRepScrubMap.h"
+#include "osd/osd_types.h"
 #include "pg_scrubber.h"
 
 SET_SUBSYS(osd);
@@ -971,6 +972,7 @@ int PGScrubber::scrub_process_inconsistent(
     
     // Find the authoritative shard and the shards with errors
     pg_shard_t auth_shard;
+    const librados::shard_info_t* auth_shard_info = nullptr;
     std::set<pg_shard_t> bad_shards;
     
     // Iterate through all shards to find auth and bad ones
@@ -980,6 +982,7 @@ int PGScrubber::scrub_process_inconsistent(
       if (shard_info.selected_oi) {
         // This is the authoritative shard
         auth_shard = pg_shard;
+        auth_shard_info = &shard_info;
       }
       
       if (shard_info.has_errors()) {
@@ -988,13 +991,34 @@ int PGScrubber::scrub_process_inconsistent(
       }
     }
     
-    if (!bad_shards.empty()) {
+    if (!bad_shards.empty() && auth_shard_info) {
       // Count the number of bad shards being fixed
       // This matches classic OSD's behavior of counting bad_peers.size()
       fixed_count += bad_shards.size();
       
-      // Get the version for repair
-      eversion_t repair_version(0, obj_error.version);
+      // Get the version from the authoritative shard's object_info
+      // This matches classic OSD's approach in scrub_backend.cc:402-424
+      eversion_t repair_version;
+      try {
+        object_info_t oi;
+        auto it = auth_shard_info->attrs.find(OI_ATTR);
+        if (it != auth_shard_info->attrs.end()) {
+          auto bliter = it->second.cbegin();
+          decode(oi, bliter);
+          repair_version = oi.version;
+          DEBUGDPP("Got version {} from authoritative shard {} for object {}",
+                   pg, repair_version, auth_shard, oid);
+        } else {
+          ERRORDPP("Authoritative shard {} missing OI_ATTR for object {}",
+                   pg, auth_shard, oid);
+          // Fall back to using epoch from inconsistent_obj_t
+          repair_version = eversion_t(0, obj_error.version);
+        }
+      } catch (...) {
+        ERRORDPP("Failed to decode object_info for {}, using fallback version",
+                 pg, oid);
+        repair_version = eversion_t(0, obj_error.version);
+      }
       
       // Mark objects as missing on bad shards
       // This matches classic OSD's approach in scrub_backend.cc:424
@@ -1002,7 +1026,8 @@ int PGScrubber::scrub_process_inconsistent(
       // machine automatically queue recovery when it detects the PG is not clean
       for (const auto& bad_shard : bad_shards) {
         pg.peering_state.force_object_missing(bad_shard, oid, repair_version);
-        DEBUGDPP("Marked object {} as missing on shard {}", pg, oid, bad_shard);
+        DEBUGDPP("Marked object {} as missing on shard {} with version {}",
+                 pg, oid, bad_shard, repair_version);
       }
     }
   }
@@ -1078,6 +1103,13 @@ void PGScrubber::emit_scrub_result(
       pg_stats.stats.sum.num_scrub_errors =
         pg_stats.stats.sum.num_shallow_scrub_errors +
         pg_stats.stats.sum.num_deep_scrub_errors;
+      
+      // Log scrub_finish for test compatibility (matches classic OSD)
+
+      INFODPP("scrub_finish shard {} num_omap_bytes = {} num_omap_keys = {}",
+                pg, pg.get_pg_whoami().shard,
+                pg_stats.stats.sum.num_omap_bytes,
+                pg_stats.stats.sum.num_omap_keys);
       
       // Calculate scrub duration
       if (m_scrub_start_time.has_value()) {

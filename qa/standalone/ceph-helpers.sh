@@ -2757,10 +2757,10 @@ function create_ec_pool() {
 
     ceph osd erasure-code-profile set myprofile crush-failure-domain=osd "$@" || return 1
 
-    create_pool "$poolname" 1 1 erasure myprofile || return 1
+    create_pool "$pool_name" 1 1 erasure myprofile || return 1
 
     if [ "$allow_overwrites" = "true" ]; then
-        ceph osd pool set "$poolname" allow_ec_overwrites true || return 1
+        ceph osd pool set "$pool_name" allow_ec_overwrites true || return 1
     fi
 
     wait_for_clean || return 1

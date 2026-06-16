@@ -768,7 +768,7 @@ seastar::future<scrub::schedule_result_t> PG::start_scrubbing(
 	      peering_state.get_pgpool().info.has_flag(pg_pool_t::FLAG_NODEEP_SCRUB));
   pg_cond.can_autorepair =
       (crimson::common::local_conf().get_val<bool>("osd_scrub_auto_repair") &&
-       get_backend().auto_repair_supported());  //backend seems not support auto repair
+       get_backend().auto_repair_supported());
 
   return scrubber.start_scrub(
       candidate.level, osd_restrictions, pg_cond);
