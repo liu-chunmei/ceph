@@ -583,7 +583,7 @@ function TES_auto_repair_seastore_tag() {
     diff $dir/ORIGINAL $dir/COPY || return 1
     grep scrub_finish $dir/osd.${primary}.log
 }
-function TEST_auto_repair_seastore_scrub() {
+function TES_auto_repair_seastore_scrub() {
     local dir=$1
     local poolname=testpool
 
@@ -640,6 +640,76 @@ function TEST_auto_repair_seastore_scrub() {
     COUNT=$(ceph pg $pgid query | jq '.info.stats.stat_sum.num_objects_repaired')
     test "$COUNT" = "1" || return 1
 }
+function TEST_auto_repair_seastore_failed() {
+    local dir=$1
+    local poolname=testpool
+
+    # Launch a cluster with 5 seconds scrub interval
+    run_mon $dir a || return 1
+    apply_crimson_config || return 1
+    run_mgr $dir x || return 1
+    local ceph_osd_args="--osd_objectstore=seastore \
+            --osd-scrub-auto-repair=true \
+            --osd_deep_scrub_randomize_ratio=0 \
+            --osd-scrub-interval-randomize-ratio=0 \
+            --osd-scrub-begin-hour=0 \
+            --osd-scrub-end-hour=0 \
+            --osd-scrub-backoff-ratio=0.0"
+    for id in $(seq 0 2) ; do
+        run_crimson_osd $dir $id $ceph_osd_args --debug || return 1
+    done
+
+    create_pool $poolname 1 1 || return 1
+    ceph osd pool set $poolname size 2
+    wait_for_clean || return 1
+
+    # Put an object
+    local payload=ABCDEF
+    echo $payload > $dir/ORIGINAL
+    for i in $(seq 1 10)
+    do
+      rados --pool $poolname put obj$i $dir/ORIGINAL || return 1
+    done
+
+    # Remove the object from one shard physically
+    # Restarted osd get $ceph_osd_args passed
+    objectstore_tool $dir $(get_not_primary $poolname SOMETHING) obj1 remove || return 1
+    # obj2 can't be repaired
+    objectstore_tool $dir $(get_not_primary $poolname SOMETHING) obj2 remove || return 1
+    objectstore_tool $dir $(get_primary $poolname SOMETHING) obj2 rm-attr _ || return 1
+
+    local pgid=$(get_pg $poolname obj1)
+    local primary=$(get_primary $poolname obj1)
+    local last_scrub_stamp="$(get_last_scrub_stamp $pgid)"
+    ceph pg $pgid schedule-deep-scrub
+
+    # Wait for auto repair
+    wait_for_scrub $pgid "$last_scrub_stamp" || return 1
+    wait_for_clean || return 1
+    flush_pg_stats
+    grep scrub_finish $dir/osd.${primary}.log
+    grep -q "scrub_finish.*still present after re-scrub" $dir/osd.${primary}.log || return 1
+    ceph pg dump pgs
+    ceph pg dump pgs | grep -q "^${pgid}.*+failed_repair" || return 1
+
+    # Verify - obj1 should be back
+    # Restarted osd get $ceph_osd_args passed
+    objectstore_tool $dir $(get_not_primary $poolname obj1) obj1 list-attrs || return 1
+    rados --pool $poolname get obj1 $dir/COPY || return 1
+    diff $dir/ORIGINAL $dir/COPY || return 1
+    grep scrub_finish $dir/osd.${primary}.log
+
+    # Make it repairable
+    objectstore_tool $dir $(get_primary $poolname SOMETHING) obj2 remove || return 1
+    repair $pgid
+    sleep 2
+
+    flush_pg_stats
+    ceph pg dump pgs
+    ceph pg dump pgs | grep -q -e "^${pgid}.* active+clean " -e "^${pgid}.* active+clean+wait " || return 1
+    grep scrub_finish $dir/osd.${primary}.log
+}
+
 
 
 

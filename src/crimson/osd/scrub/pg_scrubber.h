@@ -99,6 +99,7 @@ class PGScrubber : public crimson::BlockerT<PGScrubber>, ScrubContext {
   scrub_flags_t m_flags;
   bool m_is_deep{false};
   bool m_is_repair{false};
+  bool m_after_repair_scrub_required{false}; ///< schedule after_repair scrub after recovery
   enum class delay_both_targets_t { no, yes };
 
   template <typename E>
@@ -146,6 +147,9 @@ public:
 
   /// notify machine that PG has committed up to versino v
   void on_log_update(eversion_t v);
+
+  /// notify scrubber that recovery has completed
+  void recovery_completed();
 
   seastar::future<schedule_result_t> start_scrub(
     scrub_level_t s_or_d,

@@ -1029,6 +1029,9 @@ public:
   PGRecovery* get_recovery_handler() final {
     return recovery_handler.get();
   }
+  scrub::PGScrubber* get_scrubber() final {
+    return &scrubber;
+  }
   PeeringState& get_peering_state() final {
     return peering_state;
   }

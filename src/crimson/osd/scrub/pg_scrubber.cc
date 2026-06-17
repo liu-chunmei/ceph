@@ -241,6 +241,40 @@ void PGScrubber::request_rescrubbing()
   trgt.sched_info.schedule.scheduled_at = clock_now;
   trgt.sched_info.schedule.not_before = clock_now;
 }
+void PGScrubber::recovery_completed()
+{
+  LOG_PREFIX(PGScrubber::recovery_completed);
+  DEBUGDPP("is after_repair scrub required? {}", pg, m_after_repair_scrub_required);
+  if (m_after_repair_scrub_required) {
+    m_after_repair_scrub_required = false;
+    
+    if (!m_scrub_job->is_registered()) {
+      DEBUGDPP("Scrub job not registered, cannot schedule after_repair scrub", pg);
+      return;
+    }
+    
+    // Remove from queue if already queued to prevent duplicates
+    if (m_queued_or_active || m_scrub_job->is_queued()) {
+      pg.shard_services.get_scrub_scheduler().remove_from_osd_queue(pg.get_pgid());
+      m_scrub_job->clear_both_targets_queued();
+      clear_queued_or_active();
+    }
+    
+    // Set urgency and schedule for immediate execution
+    auto& trgt = m_scrub_job->get_target(scrub_level_t::deep);
+    trgt.up_urgency_to(urgency_t::after_repair);
+    const auto clock_now = ceph_clock_now();
+    trgt.sched_info.schedule.scheduled_at = clock_now;
+    trgt.sched_info.schedule.not_before = clock_now;
+    
+    // Enqueue directly without calling update_scrub_job() to preserve our schedule
+    DEBUGDPP("Enqueueing after_repair scrub job: {}", pg, *m_scrub_job);
+    pg.shard_services.get_scrub_scheduler().enqueue_scrub_job(*m_scrub_job);
+    m_scrub_job->set_both_targets_queued();
+    pg.publish_stats_to_osd();
+  }
+}
+
 
 
 void PGScrubber::update_scrub_job()
@@ -1098,15 +1132,23 @@ void PGScrubber::emit_scrub_result(
  history.last_deep_scrub_stamp = now;
       }
       
-      // If this was a repair and all errors were fixed, clear the error counts
+      // Update error counts from current scrub results (matches classic OSD)
+      // For deep scrubs, we update both shallow and deep error counts
+      if (deep) {
+        pg_stats.stats.sum.num_shallow_scrub_errors = in_stats.num_shallow_scrub_errors;
+        pg_stats.stats.sum.num_deep_scrub_errors = in_stats.num_deep_scrub_errors;
+      }
+      
+      // If this was a repair, check if we need to schedule after_repair scrub
       // This matches classic OSD behavior in scrub_finish()
       if (m_is_repair && m_fixed_count > 0) {
         int total_errors = pg_stats.stats.sum.num_shallow_scrub_errors +
                           pg_stats.stats.sum.num_deep_scrub_errors;
-        if (m_fixed_count == total_errors) {
-          DEBUGDPP("All {} errors fixed, clearing error counts", pg, total_errors);
-          pg_stats.stats.sum.num_shallow_scrub_errors = 0;
-          pg_stats.stats.sum.num_deep_scrub_errors = 0;
+        if (total_errors > 0) {
+          // Errors remain after repair - schedule an after_repair scrub after recovery
+          m_after_repair_scrub_required = true;
+          DEBUGDPP("Repair completed but {} errors remain (fixed {}), will schedule after_repair scrub after recovery",
+                   pg, total_errors, m_fixed_count);
         }
       }
       
@@ -1114,6 +1156,18 @@ void PGScrubber::emit_scrub_result(
       pg_stats.stats.sum.num_scrub_errors =
         pg_stats.stats.sum.num_shallow_scrub_errors +
         pg_stats.stats.sum.num_deep_scrub_errors;
+      
+      // Check if this was a repair verification scrub (check_repair flag)
+      // If errors still exist after repair, log and set FAILED_REPAIR state
+      // This matches classic OSD behavior in scrub_finish()
+      if (m_flags.check_repair) {
+        m_flags.check_repair = false;
+        if (pg_stats.stats.sum.num_scrub_errors > 0) {
+          pg.state_set(PG_STATE_FAILED_REPAIR);
+          INFODPP("scrub_finish {} error(s) still present after re-scrub",
+                  pg, pg_stats.stats.sum.num_scrub_errors);
+        }
+      }
       
       // Log scrub_finish for test compatibility (matches classic OSD)
 
@@ -1170,11 +1224,12 @@ void PGScrubber::emit_scrub_result(
     update_scrub_job();
     m_active_target.reset();
     
-    // If repair marked objects as missing, post DoRecovery event to trigger recovery
-    // This causes the PeeringState state machine to transition to RECOVERING state
-    // and properly start recovery operations to restore the missing objects.
-    // IMPORTANT: Post this AFTER scrub cleanup to avoid interfering with scrub completion
+    // Handle repair completion based on whether recovery is needed
+    // This matches classic OSD behavior in scrub_finish()
     if (is_repair && fixed_count > 0) {
+      // Repair marked objects as missing, post DoRecovery event to trigger recovery
+      // This causes the PeeringState state machine to transition to RECOVERING state
+      // and properly start recovery operations to restore the missing objects.
       DEBUGDPP("Repair marked {} objects as missing, posting DoRecovery event", pg, fixed_count);
       (void) pg.get_shard_services().start_operation<LocalPeeringEvent>(
         &pg,
@@ -1184,6 +1239,13 @@ void PGScrubber::emit_scrub_result(
         pg.get_osdmap_epoch(),
         pg.get_osdmap_epoch(),
         PeeringState::DoRecovery{});
+    } else if (is_repair && error_count == 0) {
+      // Repair completed with no errors and no recovery needed - clear repair state
+      // The INCONSISTENT state will be cleared automatically by prepare_stats_for_publish()
+      // when num_scrub_errors == 0
+      m_is_repair = false;
+      pg.state_clear(PG_STATE_REPAIR);
+      DEBUGDPP("Repair complete with no errors, clearing PG_STATE_REPAIR", pg);
     }
 }
 
