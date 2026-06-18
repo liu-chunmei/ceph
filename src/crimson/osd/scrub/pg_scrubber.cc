@@ -1239,6 +1239,11 @@ void PGScrubber::emit_scrub_result(
         pg.get_osdmap_epoch(),
         pg.get_osdmap_epoch(),
         PeeringState::DoRecovery{});
+    } else if (is_repair && error_count > 0 && fixed_count == 0) {
+      // We have errors but nothing can be fixed, so there is no repair possible
+      // This matches classic OSD behavior in scrub_finish()
+      pg.state_set(PG_STATE_FAILED_REPAIR);
+      INFODPP("scrub_finish {} error(s) present with no repair possible", pg, error_count);
     } else if (is_repair && error_count == 0) {
       // Repair completed with no errors and no recovery needed - clear repair state
       // The INCONSISTENT state will be cleared automatically by prepare_stats_for_publish()
