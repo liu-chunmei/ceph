@@ -386,7 +386,8 @@ PGRecovery::on_local_recover(
   const hobject_t& soid,
   const ObjectRecoveryInfo& recovery_info,
   const bool is_delete,
-  ceph::os::Transaction& t)
+  ceph::os::Transaction& t,
+  bool is_repair)
 {
   LOG_PREFIX(PGRecovery::on_local_recover);
   DEBUGDPP("{}", *pg->get_dpp(), soid);
@@ -402,7 +403,7 @@ PGRecovery::on_local_recover(
   }
 
   return RecoveryBackend::interruptor::async(
-    [soid, &recovery_info, is_delete, &t, this] {
+    [soid, &recovery_info, is_delete, &t, is_repair, this] {
     if (soid.is_snap()) {
       OSDriver::OSTransaction _t(pg->get_osdriver().get_transaction(&t));
       [[maybe_unused]] int r = pg->get_snap_mapper().remove_oid(soid, &_t);
@@ -418,16 +419,21 @@ PGRecovery::on_local_recover(
     }
 
     pg->get_peering_state().recover_got(soid,
-	recovery_info.version, is_delete, t);
+ recovery_info.version, is_delete, t);
+
+    // Increment OSD-level repair counter when this OSD recovers an object during repair
+    if (is_repair) {
+      pg->inc_osd_stat_repaired();
+    }
 
     if (pg->is_primary()) {
       if (!is_delete) {
-	auto& obc = pg->get_recovery_backend()->get_recovering(soid).obc; //TODO: move to pg backend?
-	obc->obs.exists = true;
-	obc->obs.oi = recovery_info.oi;
+ auto& obc = pg->get_recovery_backend()->get_recovering(soid).obc; //TODO: move to pg backend?
+ obc->obs.exists = true;
+ obc->obs.oi = recovery_info.oi;
       }
       if (!pg->is_unreadable_object(soid)) {
-	pg->get_recovery_backend()->get_recovering(soid).set_readable();
+ pg->get_recovery_backend()->get_recovering(soid).set_readable();
       }
       pg->publish_stats_to_osd();
     }
@@ -441,7 +447,14 @@ void PGRecovery::on_global_recover (
 {
   LOG_PREFIX(PGRecovery::on_global_recover);
   DEBUGDPP("{}", *pg->get_dpp(), soid);
-  pg->get_peering_state().object_recovered(soid, stat_diff);
+  
+  // Increment num_objects_repaired if this is a repair operation
+  object_stat_sum_t adjusted_stat_diff = stat_diff;
+  if (pg->get_peering_state().is_repair()) {
+    adjusted_stat_diff.num_objects_repaired++;
+  }
+  
+  pg->get_peering_state().object_recovered(soid, adjusted_stat_diff);
   pg->publish_stats_to_osd();
   auto& recovery_waiter = pg->get_recovery_backend()->get_recovering(soid);
   if (!is_delete)
@@ -472,13 +485,8 @@ void PGRecovery::on_peer_recover(
   DEBUGDPP("{}, {} on {}", *pg->get_dpp(), oid, recovery_info.version, peer);
   pg->get_peering_state().on_peer_recover(peer, oid, recovery_info.version);
   
-  // Increment num_objects_repaired if this is a repair operation
-  if (pg->get_peering_state().is_repair()) {
-    pg->get_peering_state().update_stats([](auto& history, auto& stats) {
-      stats.stats.sum.num_objects_repaired++;
-      return false;
-    });
-  }
+  // Note: num_objects_repaired is incremented in on_global_recover()
+  // to avoid counting the same object multiple times (once per peer)
 }
 
 void PGRecovery::_committed_pushed_object(epoch_t epoch,

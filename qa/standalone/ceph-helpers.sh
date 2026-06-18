@@ -971,19 +971,47 @@ function activate_osd() {
     ceph_args+=$EXTRA_OPTS
     ceph_args+=" --run-dir=$dir"
     ceph_args+=" --admin-socket=$(get_asok_path)"
-    ceph_args+=" --debug-osd=20"
     ceph_args+=" --log-file=$dir/\$name.log"
     ceph_args+=" --pid-file=$dir/\$name.pid"
     ceph_args+=" --osd-max-object-name-len=460"
     ceph_args+=" --osd-max-object-namespace-len=64"
-    ceph_args+=" --enable-experimental-unrecoverable-data-corrupting-features=*"
-    ceph_args+=" --osd-mclock-profile=high_recovery_ops"
-    ceph_args+=" "
-    ceph_args+="$@"
     mkdir -p $osd_data
 
+    # Check if this is a Crimson OSD by checking the type file
+    local osd_binary="ceph-osd"
+    if [ -f "$osd_data/type" ]; then
+        local osd_type=$(cat $osd_data/type)
+        if [ "$osd_type" = "seastore" ]; then
+            # This is a Crimson OSD, use crimson-osd binary
+            if [ -f "./bin/crimson-osd" ]; then
+                osd_binary="./bin/crimson-osd"
+            elif [ -f "$CEPH_ROOT/build/bin/crimson-osd" ]; then
+                osd_binary="$CEPH_ROOT/build/bin/crimson-osd"
+            else
+                echo "ERROR: crimson-osd binary not found for OSD $id"
+                return 1
+            fi
+            # Crimson requires msgr2
+            ceph_args+=" --ms-bind-msgr2=true"
+            ceph_args+=" --ms-bind-msgr1=false"
+        else
+            # Classic OSD
+            ceph_args+=" --debug-osd=20"
+            ceph_args+=" --enable-experimental-unrecoverable-data-corrupting-features=*"
+            ceph_args+=" --osd-mclock-profile=high_recovery_ops"
+        fi
+    else
+        # No type file, assume classic OSD
+        ceph_args+=" --debug-osd=20"
+        ceph_args+=" --enable-experimental-unrecoverable-data-corrupting-features=*"
+        ceph_args+=" --osd-mclock-profile=high_recovery_ops"
+    fi
+    
+    ceph_args+=" "
+    ceph_args+="$@"
+
     echo start osd.$id
-    ceph-osd -i $id $ceph_args &
+    $osd_binary -i $id $ceph_args &
 
     [ "$id" = "$(cat $osd_data/whoami)" ] || return 1
 
