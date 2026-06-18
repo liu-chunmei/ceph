@@ -1345,6 +1345,40 @@ PG::interruptible_future<MURef<MOSDOpReply>> PG::do_pg_ops(Ref<MOSDOp> m)
   });
 }
 
+int PG::do_scrub_ls(const MOSDOp *m, OSDOp *osd_op)
+{
+  if (m->get_pg() != get_info().pgid.pgid) {
+    logger().debug("scrubls pg={} != {}", m->get_pg(), get_info().pgid);
+    return -EINVAL;
+  }
+  
+  auto bp = osd_op->indata.cbegin();
+  scrub_ls_arg_t arg;
+  try {
+    arg.decode(bp);
+  } catch (ceph::buffer::error&) {
+    logger().warn("corrupted scrub_ls_arg_t");
+    return -EINVAL;
+  }
+
+  int r = 0;
+  scrub_ls_result_t result = {.interval = get_info().history.same_interval_since};
+
+  if (arg.interval != 0 && arg.interval != get_info().history.same_interval_since) {
+    r = -EAGAIN;
+  } else {
+    bool store_queried = scrubber.get_store_errors(arg, result);
+    if (store_queried) {
+      encode(result, osd_op->outdata);
+    } else {
+      // the scrubber's store is not initialized
+      r = -ENOENT;
+    }
+  }
+
+  return r;
+}
+
 hobject_t PG::get_oid(const hobject_t& hobj)
 {
   return hobj.snap == CEPH_SNAPDIR ? hobj.get_head() : hobj;

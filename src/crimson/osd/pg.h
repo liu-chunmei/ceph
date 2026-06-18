@@ -906,6 +906,7 @@ private:
   interruptible_future<MURef<MOSDOpReply>> do_pg_ops(Ref<MOSDOp> m);
 
 public:
+  int do_scrub_ls(const MOSDOp *m, OSDOp *osd_op);
   using rep_op_fut_t = std::tuple<interruptible_future<>,
                                   interruptible_future<>>;
   interruptible_future<rep_op_fut_t>

@@ -193,6 +193,9 @@ public:
   /// Request a deep scrub to repair errors found in shallow scrub
   void request_rescrubbing();
 
+  /// Get scrub store errors for SCRUBLS operation
+  bool get_store_errors(const scrub_ls_arg_t& arg,
+                        scrub_ls_result_t& res_inout) const;
 
   /// Check if scrub is queued or actively running
   bool is_queued_or_active() const {
@@ -234,6 +237,11 @@ public:
 
   /// Track the number of object copies fixed during repair scrub
   int m_fixed_count{0};
+
+  /// Store scrub results for retrieval by rados list-inconsistent-obj
+  epoch_t m_scrub_epoch{0};
+  std::vector<inconsistent_obj_wrapper> m_stored_errors;
+  std::vector<inconsistent_snapset_wrapper> m_stored_snapset_errors;
   
   /// Start sleep operation between chunks
   void start_chunk_sleep();
@@ -289,6 +297,17 @@ private:
   void emit_scrub_result(
     bool deep,
     object_stat_sum_t scrub_stats) final;
+
+  /**
+   * log_object_errors
+   *
+   * Log detailed error messages for an inconsistent object to the cluster log.
+   * This matches the classic OSD behavior where individual object errors
+   * are logged with specific details about what's wrong.
+   *
+   * @param obj_error The inconsistent object with error details
+   */
+  void log_object_errors(const inconsistent_obj_wrapper& obj_error);
 
   /**
    * scrub_process_inconsistent

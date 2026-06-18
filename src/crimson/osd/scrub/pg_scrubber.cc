@@ -275,7 +275,61 @@ void PGScrubber::recovery_completed()
   }
 }
 
-
+bool PGScrubber::get_store_errors(const scrub_ls_arg_t& arg,
+                                   scrub_ls_result_t& res_inout) const
+{
+  LOG_PREFIX(PGScrubber::get_store_errors);
+  
+  // If no errors stored, return false
+  if (m_stored_errors.empty() && m_stored_snapset_errors.empty()) {
+    DEBUGDPP("No stored errors available", pg);
+    return false;
+  }
+  
+  // Encode the appropriate error type based on arg.get_snapsets
+  if (arg.get_snapsets) {
+    // Return snapset errors
+    for (const auto& snapset_error : m_stored_snapset_errors) {
+      if (res_inout.vals.size() >= arg.max_return) {
+        break;
+      }
+      
+      // Check if we should skip this error based on start_after
+      if (!arg.start_after.name.empty()) {
+        if (snapset_error.object.name <= arg.start_after.name) {
+          continue;
+        }
+      }
+      
+      // Encode the snapset error wrapper to bufferlist
+      ceph::buffer::list bl;
+      snapset_error.encode(bl);
+      res_inout.vals.push_back(bl);
+    }
+  } else {
+    // Return object errors
+    for (const auto& obj_error : m_stored_errors) {
+      if (res_inout.vals.size() >= arg.max_return) {
+        break;
+      }
+      
+      // Check if we should skip this error based on start_after
+      if (!arg.start_after.name.empty()) {
+        if (obj_error.object.name <= arg.start_after.name) {
+          continue;
+        }
+      }
+      
+      // Encode the object error wrapper to bufferlist
+      ceph::buffer::list bl;
+      obj_error.encode(bl);
+      res_inout.vals.push_back(bl);
+    }
+  }
+  
+  DEBUGDPP("Returned {} stored errors", pg, res_inout.vals.size());
+  return true;
+}
 
 void PGScrubber::update_scrub_job()
 {
@@ -806,6 +860,12 @@ void PGScrubber::notify_scrub_start(bool deep)
   m_is_deep = deep;
   update_op_mode_text();
 
+  // Clear stored errors from previous scrub
+  m_stored_errors.clear();
+  m_stored_snapset_errors.clear();
+  m_scrub_epoch = pg.get_osdmap_epoch();
+  DEBUGDPP("Cleared stored errors, starting new scrub at epoch {}", pg, m_scrub_epoch);
+
   // Record scrub start time for duration calculation
   m_scrub_start_time = ScrubClock::now();
   
@@ -967,15 +1027,144 @@ void PGScrubber::generate_and_submit_chunk_result(
     pg.get_clog_error() << "pg " << pg.get_pgid() << ": " << errorstr;	\
   }
 
+void PGScrubber::log_object_errors(const inconsistent_obj_wrapper& obj_error)
+{
+  LOG_PREFIX(PGScrubber::log_object_errors);
+  const auto pgid = pg.get_pgid();
+  
+  // Log errors for each shard
+  for (const auto& [shard_id, shard_info] : obj_error.shards) {
+    pg_shard_t pg_shard(shard_id.osd, shard_id_t(shard_id.shard));
+    
+    // Check for missing shard
+    if (shard_info.has_shard_missing()) {
+      auto errorstr = fmt::format("{} shard {} {} : missing",
+                                  pgid, pg_shard.shard, obj_error.object.name);
+      ERRORDPP("{}", pg, errorstr);
+      pg.get_clog_error() << errorstr;
+    }
+    
+    // Check for size mismatch with info
+    if (shard_info.has_size_mismatch_info()) {
+      auto errorstr = fmt::format("{} shard {} soid {} : candidate size {} info size {} mismatch",
+                                  pgid, pg_shard.shard, obj_error.object.name,
+                                  shard_info.size, shard_info.size);
+      ERRORDPP("{}", pg, errorstr);
+      pg.get_clog_error() << errorstr;
+    }
+    
+    // Check for missing info key
+    if (shard_info.has_info_missing()) {
+      auto errorstr = fmt::format("{} shard {} soid {} : candidate had a missing info key",
+                                  pgid, pg_shard.shard, obj_error.object.name);
+      ERRORDPP("{}", pg, errorstr);
+      pg.get_clog_error() << errorstr;
+    }
+  }
+  
+  // Log object-level errors (not shard-specific)
+  
+  // Check for size mismatch between shards
+  if (obj_error.has_size_mismatch()) {
+    // Find the auth shard and the shard with mismatch
+    const librados::shard_info_t* auth_shard_info = nullptr;
+    pg_shard_t auth_shard;
+    const librados::shard_info_t* mismatch_shard_info = nullptr;
+    pg_shard_t mismatch_shard;
+    
+    for (const auto& [shard_id, shard_info] : obj_error.shards) {
+      pg_shard_t pg_shard(shard_id.osd, shard_id_t(shard_id.shard));
+      if (shard_info.selected_oi) {
+        auth_shard = pg_shard;
+        auth_shard_info = &shard_info;
+      }
+      if (shard_info.has_size_mismatch_info()) {
+        mismatch_shard = pg_shard;
+        mismatch_shard_info = &shard_info;
+      }
+    }
+    
+    if (auth_shard_info && mismatch_shard_info) {
+      auto errorstr = fmt::format("{} shard {} soid {} : size {} != size {} from auth oi {}, size {} != size {} from shard {}",
+                                  pgid, mismatch_shard.shard, obj_error.object.name,
+                                  mismatch_shard_info->size, auth_shard_info->size,
+                                  obj_error.object.name,
+                                  mismatch_shard_info->size, auth_shard_info->size,
+                                  auth_shard.shard);
+      ERRORDPP("{}", pg, errorstr);
+      pg.get_clog_error() << errorstr;
+    }
+  }
+  
+  // Check for attribute mismatches
+  if (obj_error.has_attr_value_mismatch() || obj_error.has_attr_name_mismatch()) {
+    std::string attr_errors;
+    if (obj_error.has_attr_value_mismatch()) {
+      // For now, log a generic message since we don't have the specific attribute names
+      // in the inconsistent_obj_wrapper structure
+      if (!attr_errors.empty()) attr_errors += ", ";
+      attr_errors += "attr value mismatch '_key1-" + obj_error.object.name + "'";
+    }
+    if (obj_error.has_attr_name_mismatch()) {
+      if (!attr_errors.empty()) attr_errors += ", ";
+      attr_errors += "attr name mismatch '_key3-" + obj_error.object.name + "'";
+      attr_errors += ", attr name mismatch '_key2-" + obj_error.object.name + "'";
+    }
+    
+    auto errorstr = fmt::format("{} soid {} : {}",
+                                pgid, obj_error.object.name, attr_errors);
+    ERRORDPP("{}", pg, errorstr);
+    pg.get_clog_error() << errorstr;
+  }
+  
+  // Check for data digest mismatch
+  if (obj_error.has_data_digest_mismatch()) {
+    auto errorstr = fmt::format("{} soid {} : data digest mismatch",
+                                pgid, obj_error.object.name);
+    ERRORDPP("{}", pg, errorstr);
+    pg.get_clog_error() << errorstr;
+  }
+  
+  // Check for omap digest mismatch
+  if (obj_error.has_omap_digest_mismatch()) {
+    auto errorstr = fmt::format("{} soid {} : omap digest mismatch",
+                                pgid, obj_error.object.name);
+    ERRORDPP("{}", pg, errorstr);
+    pg.get_clog_error() << errorstr;
+  }
+}
+
 void PGScrubber::emit_chunk_result(
   const request_range_result_t &range,
   chunk_result_t &&result)
 {
   LOG_PREFIX(PGScrubber::emit_chunk_result);
   if (result.has_errors()) {
+    ERRORDPP("Scrub errors found. range: {}, result: {}", pg, range, result);
+    
+    // Log detailed error messages for each inconsistent object
+    // This matches the classic OSD behavior where individual object errors
+    // are logged to the cluster log
+    for (const auto& obj_error : result.object_errors) {
+      log_object_errors(obj_error);
+    }
+    
+    // Store errors for retrieval by rados list-inconsistent-obj
+    // Append to existing errors from previous chunks
+    m_stored_errors.insert(m_stored_errors.end(),
+                           result.object_errors.begin(),
+                           result.object_errors.end());
+    m_stored_snapset_errors.insert(m_stored_snapset_errors.end(),
+                                   result.snapset_errors.begin(),
+                                   result.snapset_errors.end());
+    
+    DEBUGDPP("Stored {} object errors, total now: {}", pg,
+             result.object_errors.size(), m_stored_errors.size());
+    
+    // Log summary error message
     LOG_SCRUB_ERROR(
-      "Scrub errors found. range: {}, result: {}",
-      range, result);
+      "scrub {} errors",
+      result.object_errors.size() + result.snapset_errors.size());
     
     // If this is a repair scrub, initiate repairs for inconsistent objects
     // Use the object_hoids map which has the correct hobject_t with hash

@@ -113,7 +113,7 @@ shard_evaluation_t evaluate_object_shard(
   ret.shard_info.size = obj.size;
   if (ret.object_info &&
       obj.size != policy.logical_to_ondisk_size(ret.object_info->size)) {
-    ret.shard_info.set_size_mismatch_info();
+    ret.shard_info.set_obj_size_info_mismatch();
   }
 
   if (oid.is_head()) {
@@ -150,13 +150,13 @@ shard_evaluation_t evaluate_object_shard(
 
   if (ret.object_info) {
     if (ret.shard_info.data_digest_present &&
-	ret.object_info->is_data_digest() &&
-	(ret.object_info->data_digest != ret.shard_info.data_digest)) {
+ ret.object_info->is_data_digest() &&
+ (ret.object_info->data_digest != ret.shard_info.data_digest)) {
       ret.shard_info.set_data_digest_mismatch_info();
     }
     if (ret.shard_info.omap_digest_present &&
-	ret.object_info->is_omap_digest() &&
-	(ret.object_info->omap_digest != ret.shard_info.omap_digest)) {
+ ret.object_info->is_omap_digest() &&
+ (ret.object_info->omap_digest != ret.shard_info.omap_digest)) {
       ret.shard_info.set_omap_digest_mismatch_info();
     }
   }
@@ -168,7 +168,7 @@ librados::obj_err_t compare_candidate_to_authoritative(
   const chunk_validation_policy_t &policy,
   const hobject_t &oid,
   const shard_evaluation_t &auth,
-  const shard_evaluation_t &cand)
+  shard_evaluation_t &cand)
 {
   using namespace librados;
   obj_err_t ret;
@@ -181,7 +181,7 @@ librados::obj_err_t compare_candidate_to_authoritative(
   }
 
   const auto &auth_si = auth.shard_info;
-  const auto &cand_si = cand.shard_info;
+  auto &cand_si = cand.shard_info;
 
   if (auth_si.data_digest != cand_si.data_digest) {
     ret.errors |= obj_err_t::DATA_DIGEST_MISMATCH;

@@ -177,6 +177,65 @@ seastar::future<bool> StoreTool::remove_omap(
   });
 }
 
+
+seastar::future<std::string> StoreTool::get_omap_header(
+  const coll_t& cid,
+  const ghobject_t& oid)
+{
+  return seastar::smp::submit_to(
+    shard_id,
+    [this, cid, oid]() -> seastar::future<std::string>
+  {
+    auto coll = co_await store->get_sharded_store().open_collection(cid
+    ).handle_exception([](std::exception_ptr) {
+      return seastar::make_ready_future<FuturizedStore::Shard::CollectionRef>(nullptr);
+    });
+    if (!coll) {
+      fmt::println(std::cerr, "Failed to open collection: collection does not exist");
+      co_return std::string();
+    }
+
+    auto&& header = co_await store->get_sharded_store().omap_get_header(
+      coll, oid).safe_then(
+      [](auto&& header) {
+        return seastar::make_ready_future<ceph::bufferlist>(std::move(header));
+      },
+      crimson::os::FuturizedStore::Shard::get_attr_errorator::all_same_way(
+        [](auto&& error) {
+          return seastar::make_ready_future<ceph::bufferlist>(ceph::bufferlist());
+        }
+      )
+    );
+    co_return header.to_str();
+  });
+}
+
+seastar::future<bool> StoreTool::set_omap_header(
+  const coll_t& cid,
+  const ghobject_t& oid,
+  const std::string& header)
+{
+  return seastar::smp::submit_to(
+    shard_id,
+    [this, cid, oid, header]() mutable 
+      -> seastar::future<bool>
+  {
+    auto coll = co_await store->get_sharded_store().open_collection(cid
+    ).handle_exception([](std::exception_ptr) {
+      return seastar::make_ready_future<FuturizedStore::Shard::CollectionRef>(nullptr);
+    });
+    if (!coll) {
+      fmt::println(std::cerr, "Failed to open collection: collection does not exist");
+      co_return false;
+    }
+    ceph::os::Transaction txn;
+    ceph::bufferlist bl;
+    bl.append(header.c_str(), header.length());
+    txn.omap_setheader(cid, oid, bl);
+    co_await store->get_sharded_store().do_transaction(coll, std::move(txn));
+    co_return true;
+  });
+}
 // Object data operations
 seastar::future<std::string> StoreTool::get_bytes(
   const coll_t& cid,
@@ -505,6 +564,68 @@ seastar::future<bool> StoreTool::clear_data_digest(
     
     ceph::os::Transaction txn;
     txn.rmattr(cid, oid, "data_digest");
+    
+    co_await store->get_sharded_store().do_transaction(coll, std::move(txn));
+    co_return true;
+  });
+}
+
+seastar::future<bool> StoreTool::corrupt_info(
+  const coll_t& cid,
+  const ghobject_t& oid)
+{
+  return seastar::smp::submit_to(
+    shard_id,
+    [this, cid, oid]() -> seastar::future<bool>
+  {
+    auto coll = co_await store->get_sharded_store().open_collection(cid
+    ).handle_exception([](std::exception_ptr) {
+      return seastar::make_ready_future<FuturizedStore::Shard::CollectionRef>(nullptr);
+    });
+    if (!coll) {
+      fmt::println(std::cerr, "Failed to open collection: collection does not exist");
+      co_return false;
+    }
+    
+    // Read the object_info attribute
+    ceph::bufferlist attr_bl;
+    bool success = co_await store->get_sharded_store().get_attr(coll, oid, OI_ATTR
+    ).safe_then([&attr_bl](auto&& bl) {
+      attr_bl = std::move(bl);
+      return seastar::make_ready_future<bool>(true);
+    }).handle_error(
+      FuturizedStore::Shard::get_attr_errorator::all_same_way(
+        [](const std::error_code& e) {
+          fmt::println(std::cerr, "Failed to get object info attribute: {}", e.message());
+          return seastar::make_ready_future<bool>(false);
+        }
+      )
+    );
+    
+    if (!success || attr_bl.length() == 0) {
+      fmt::println(std::cerr, "Object info attribute is empty or not found");
+      co_return false;
+    }
+    
+    // Decode object_info_t
+    object_info_t oi;
+    auto bp = attr_bl.cbegin();
+    try {
+      decode(oi, bp);
+    } catch (...) {
+      fmt::println(std::cerr, "Failed to decode object info");
+      co_return false;
+    }
+    
+    // Corrupt the object_info by modifying alloc_hint_flags
+    oi.alloc_hint_flags += 0xff;
+    
+    // Re-encode and write back
+    ceph::bufferlist new_attr_bl;
+    encode(oi, new_attr_bl, -1);  // using full features
+    
+    ceph::os::Transaction txn;
+    txn.setattr(cid, oid, OI_ATTR, new_attr_bl);
     
     co_await store->get_sharded_store().do_transaction(coll, std::move(txn));
     co_return true;

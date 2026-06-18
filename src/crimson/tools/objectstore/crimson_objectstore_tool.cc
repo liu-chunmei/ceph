@@ -84,11 +84,14 @@ enum class operation_type_t {
   SET_OMAP,
   RM_OMAP,
   LIST_OMAP,
+  GET_OMAPHDR,
+  SET_OMAPHDR,
   REMOVE,
   REMOVEALL,
   DUMP,
   SET_SIZE,
   CLEAR_DATA_DIGEST,
+  CORRUPT_INFO,
 
   // Device-inspection operations (--op)
   DUMP_SUPERBLOCK,
@@ -112,11 +115,14 @@ std::string to_string(operation_type_t op) {
     case operation_type_t::SET_OMAP: return "set-omap";
     case operation_type_t::RM_OMAP: return "rm-omap";
     case operation_type_t::LIST_OMAP: return "list-omap";
+    case operation_type_t::GET_OMAPHDR: return "get-omaphdr";
+    case operation_type_t::SET_OMAPHDR: return "set-omaphdr";
     case operation_type_t::REMOVE: return "remove";
     case operation_type_t::REMOVEALL: return "removeall";
     case operation_type_t::DUMP: return "dump";
     case operation_type_t::SET_SIZE: return "set-size";
     case operation_type_t::CLEAR_DATA_DIGEST: return "clear-data-digest";
+    case operation_type_t::CORRUPT_INFO: return "corrupt-info";
     case operation_type_t::DUMP_SUPERBLOCK: return "dump-superblock";
     case operation_type_t::GC: return "gc";
     default: return "unknown";
@@ -143,11 +149,14 @@ tl::expected<operation_type_t, std::string> parse_object_operation(const std::st
   if (objcmd == "set-omap") return operation_type_t::SET_OMAP;
   if (objcmd == "rm-omap") return operation_type_t::RM_OMAP;
   if (objcmd == "list-omap") return operation_type_t::LIST_OMAP;
+  if (objcmd == "get-omaphdr") return operation_type_t::GET_OMAPHDR;
+  if (objcmd == "set-omaphdr") return operation_type_t::SET_OMAPHDR;
   if (objcmd == "remove") return operation_type_t::REMOVE;
   if (objcmd == "removeall") return operation_type_t::REMOVEALL;
   if (objcmd == "dump") return operation_type_t::DUMP;
   if (objcmd == "set-size") return operation_type_t::SET_SIZE;
   if (objcmd == "clear-data-digest") return operation_type_t::CLEAR_DATA_DIGEST;
+  if (objcmd == "corrupt-info") return operation_type_t::CORRUPT_INFO;
   return tl::unexpected("Unknown object command: " + objcmd);
 }
 
@@ -434,12 +443,14 @@ void print_usage(const bpo::options_description& desc) {
   std::cout << "crimson-objectstore-tool ... <object> (get|set)-bytes [file]" << std::endl;
   std::cout << "crimson-objectstore-tool ... <object> set-(attr|omap) <key> [file]" << std::endl;
   std::cout << "crimson-objectstore-tool ... <object> (get|rm)-(attr|omap) <key>" << std::endl;
+  std::cout << "crimson-objectstore-tool ... <object> (get|set)-omaphdr [file]" << std::endl;
   std::cout << "crimson-objectstore-tool ... <object> list-attrs" << std::endl;
   std::cout << "crimson-objectstore-tool ... <object> list-omap" << std::endl;
   std::cout << "crimson-objectstore-tool ... <object> remove|removeall" << std::endl;
   std::cout << "crimson-objectstore-tool ... <object> dump" << std::endl;
   std::cout << "crimson-objectstore-tool ... <object> set-size" << std::endl;
   std::cout << "crimson-objectstore-tool ... <object> clear-data-digest" << std::endl;
+  std::cout << "crimson-objectstore-tool ... <object> corrupt-info" << std::endl;
   std::cout << std::endl;
   std::cout << "<object> can be a JSON object description as displayed" << std::endl;
   std::cout << "by --op list." << std::endl;
@@ -847,6 +858,30 @@ seastar::future<int> run_tool(StoreTool& st, objectstore_config_t& config) {
       break;
     }
 
+    case operation_type_t::GET_OMAPHDR: {
+      std::string header = co_await st.get_omap_header(
+        config.coll, config.ghobj);
+      co_return co_await write_output(op.file, header);
+    }
+
+    case operation_type_t::SET_OMAPHDR: {
+      auto header_result = read_input(op.file);
+      if (!header_result) {
+        co_return header_result.error();
+      }
+      
+      bool success = co_await st.set_omap_header(
+        config.coll, config.ghobj, *header_result);
+      if (success) {
+        fmt::println(std::cout, "set omap header success: size={}",
+          header_result->size());
+      } else {
+        fmt::println(std::cerr, "set omap header failed");
+        co_return EXIT_FAILURE;
+      }
+      break;
+    }
+
     case operation_type_t::LIST_ATTRS: {
       auto attrs_result = co_await st.get_attrs(config.coll, config.ghobj);
       if (!attrs_result) {
@@ -1002,6 +1037,17 @@ seastar::future<int> run_tool(StoreTool& st, objectstore_config_t& config) {
       break;
     }
 
+    case operation_type_t::CORRUPT_INFO: {
+      bool success = co_await st.corrupt_info(config.coll, config.ghobj);
+      if (success) {
+        fmt::println(std::cout, "corrupt info success");
+      } else {
+        fmt::println(std::cerr, "corrupt info failed");
+        co_return EXIT_FAILURE;
+      }
+      break;
+    }
+
     case operation_type_t::GC: {
       co_await st.do_gc();
       break;
@@ -1026,8 +1072,8 @@ int main(int argc, const char* argv[])
   positional.add_options()
     ("object", bpo::value<std::string>(&config.object), 
      "'' for pgmeta_oid, object name or ghobject in json")
-    ("objcmd", bpo::value<std::string>(&config.objcmd), 
-     "command [(get|set)-bytes, (get|set|rm)-(attr|omap), list-attrs, list-omap, remove, removeall, dump, set-size, clear-data-digest]")
+    ("objcmd", bpo::value<std::string>(&config.objcmd),
+     "command [(get|set)-bytes, (get|set|rm)-(attr|omap), list-attrs, list-omap, remove, removeall, dump, set-size, clear-data-digest, corrupt-info]")
     ("arg1", bpo::value<std::string>(&config.arg1), "arg1 based on cmd")
     ("arg2", bpo::value<std::string>(&config.arg2), "arg2 based on cmd")
     ;
