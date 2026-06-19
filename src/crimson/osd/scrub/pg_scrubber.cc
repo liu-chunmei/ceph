@@ -709,11 +709,11 @@ void PGScrubber::handle_schedule_scrub(bool deep, int64_t offset)
   auto& info = const_cast<pg_info_t&>(pg.get_info());
   
   if (deep) {
-    // For deep scrub, save the shallow stamp and set both stamps
-    const auto saved_shallow_stamp = info.history.last_scrub_stamp;
+    // For deep scrub, keep the deep-specific timestamp and also move the regular
+    // scrub timestamp back far enough to trigger PG_NOT_SCRUBBED, matching the
+    // classic test expectation that deep-late PGs are also regular-scrub late.
     info.history.last_deep_scrub_stamp = stamp;
-    // Restore shallow stamp to avoid scheduling shallow before deep
-    info.history.last_scrub_stamp = saved_shallow_stamp;
+    info.history.last_scrub_stamp = std::min(info.history.last_scrub_stamp, stamp);
   } else {
     // For shallow scrub, just set the shallow stamp
     info.history.last_scrub_stamp = stamp;
