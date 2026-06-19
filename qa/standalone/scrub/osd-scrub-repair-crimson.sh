@@ -17,11 +17,8 @@
 # GNU Library Public License for more details.
 #
 set -x
-echo "DEBUG: Starting osd-scrub-repair-crimson.sh"
-echo "DEBUG: CEPH_ROOT=$CEPH_ROOT"
 source $CEPH_ROOT/qa/standalone/ceph-helpers.sh
 source $CEPH_ROOT/qa/standalone/scrub/scrub-helpers.sh
-echo "DEBUG: Sourced helper files"
 
 if [ `uname` = FreeBSD ]; then
     # erasure coding overwrites are only tested on Bluestore
@@ -54,7 +51,6 @@ walk(if type == "object" then del(.mtime) else . end)
 sortkeys='import json; import sys ; JSON=sys.stdin.read() ; ud = json.loads(JSON) ; print(json.dumps(ud, sort_keys=True, indent=2))'
 
 function run() {
-    echo "DEBUG: run() function called with dir=$1"
     local dir=$1
     shift
 
@@ -72,10 +68,7 @@ function run() {
 
     export -n CEPH_CLI_TEST_DUP_COMMAND
     local funcs=${@:-$(set | sed -n -e 's/^\(TEST_[0-9a-z_]*\) .*/\1/p')}
-    echo "DEBUG: Found test functions: $funcs"
-    echo "DEBUG: Number of test functions: $(echo $funcs | wc -w)"
     for func in $funcs ; do
-        echo "DEBUG: Running test function: $func"
         setup $dir || return 1
         $func $dir || return 1
         teardown $dir || return 1
@@ -847,7 +840,7 @@ function TES_repair_stats() {
 # Test corrupt scrub replicated - Crimson adaptation
 # Copied from classic test with Crimson-specific OSD startup
 #
-function TEST_corrupt_scrub_replicated() {
+function TES_corrupt_scrub_replicated() {
     local dir=$1
     local poolname=csr_pool
     local total_objs=19
@@ -3528,10 +3521,96 @@ EOF
     ceph osd pool rm $poolname $poolname --yes-i-really-really-mean-it
 }
 
-echo "DEBUG: About to call main function"
-echo "DEBUG: Arguments: $@"
+#
+# Test periodic scrub with deep-scrub errors
+# Adapted from osd-scrub-repair.sh for Crimson
+#
+function TEST_periodic_scrub_replicated() {
+    local dir=$1
+    local poolname=psr_pool
+    local objname=POBJ
+
+    run_mon $dir a --osd_pool_default_size=2 || return 1
+    apply_crimson_config || return 1
+    run_mgr $dir x || return 1
+    local ceph_osd_args="--osd-scrub-interval-randomize-ratio=0 --osd-deep-scrub-randomize-ratio=0 "
+    ceph_osd_args+="--osd_scrub_backoff_ratio=0"
+    run_crimson_osd $dir 0 $ceph_osd_args --osd_objectstore=seastore || return 1
+    run_crimson_osd $dir 1 $ceph_osd_args --osd_objectstore=seastore || return 1
+    create_rbd_pool || return 1
+    wait_for_clean || return 1
+
+    create_pool $poolname 1 1 || return 1
+    wait_for_clean || return 1
+
+    local osd=0
+    add_something $dir $poolname $objname scrub || return 1
+    local primary=$(get_primary $poolname $objname)
+    local pg=$(get_pg $poolname $objname)
+
+    # Add deep-scrub only error
+    local payload=UVWXYZ
+    echo $payload > $dir/CORRUPT
+    # Uses $ceph_osd_args for osd restart
+    objectstore_tool $dir $osd $objname set-bytes $dir/CORRUPT || return 1
+
+    # No scrub information available, so expect failure
+    set -o pipefail
+    !  rados list-inconsistent-obj $pg | jq '.' || return 1
+    set +o pipefail
+
+    pg_deep_scrub $pg || return 1
+
+    # Make sure bad object found
+    rados list-inconsistent-obj $pg | jq '.' | grep -q $objname || return 1
+
+    flush_pg_stats
+    local last_scrub=$(get_last_scrub_stamp $pg)
+    # Fake a scheduled deep scrub
+    ceph pg $pg schedule-scrub || return 1
+    # Wait for schedule regular scrub
+    wait_for_scrub $pg "$last_scrub"
+
+    # It needed to be upgraded
+    # update 2024: the "upgrade" functionality has been removed
+    grep -q "Deep scrub errors, upgrading scrub to deep-scrub" $dir/osd.${primary}.log || return 1
+
+    # Bad object still known
+    rados list-inconsistent-obj $pg | jq '.' | grep -q $objname || return 1
+
+    # Can't upgrade with this set
+    ceph osd set nodeep-scrub
+    # Let map change propagate to OSDs
+    ceph tell osd.0 get_latest_osdmap
+    flush_pg_stats
+    sleep 5
+
+    # Fake a schedule scrub
+    ceph pg $pg schedule-scrub || return 1
+    # Wait for schedule regular scrub
+    # to notice scrub and skip it
+    local found=false
+    for i in $(seq 14 -1 0)
+    do
+      sleep 1
+      ! grep -q "Regular scrub skipped due to deep-scrub errors and nodeep-scrub set" $dir/osd.${primary}.log || { found=true ; break; }
+      echo Time left: $i seconds
+    done
+    test $found = "true" || return 1
+
+    # Bad object still known
+    rados list-inconsistent-obj $pg | jq '.' | grep -q $objname || return 1
+
+    flush_pg_stats
+    # Request a regular scrub and it will be done
+    pg_scrub $pg
+    grep -q "Regular scrub request, deep-scrub details will be lost" $dir/osd.${primary}.log || return 1
+
+    # deep-scrub error is no longer present
+    rados list-inconsistent-obj $pg | jq '.' | grep -qv $objname || return 1
+}
+
 main osd-scrub-repair-crimson "$@"
-echo "DEBUG: main function returned: $?"
 
 # Local Variables:
 # compile-command: "cd build ; make -j4 && \
