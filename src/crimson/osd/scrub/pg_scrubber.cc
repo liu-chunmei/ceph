@@ -1132,6 +1132,76 @@ void PGScrubber::log_object_errors(const inconsistent_obj_wrapper& obj_error)
     ERRORDPP("{}", pg, errorstr);
     pg.get_clog_error() << errorstr;
   }
+  
+  // Check for snapset inconsistency
+  if (obj_error.has_snapset_inconsistency()) {
+    auto errorstr = fmt::format("{} soid {} : snapset inconsistent",
+                                pgid, obj_error.object.name);
+    ERRORDPP("{}", pg, errorstr);
+    pg.get_clog_error() << errorstr;
+  }
+}
+
+void PGScrubber::log_snapset_errors(const inconsistent_snapset_wrapper& snapset_error)
+{
+  LOG_PREFIX(PGScrubber::log_snapset_errors);
+  const auto pgid = pg.get_pgid();
+  
+  // Log snapset inconsistent error - matches classic OSD format
+  if (snapset_error.snapset_error()) {
+    auto errorstr = fmt::format("{} soid {} : snapset inconsistent",
+                                pgid, snapset_error.object.name);
+    ERRORDPP("{}", pg, errorstr);
+    pg.get_clog_error() << errorstr;
+  }
+  
+  // Log unexpected clone errors (extra clones that shouldn't exist)
+  for (const auto& clone_snap : snapset_error.clones) {
+    // Construct hobject_t for the clone
+    hobject_t clone_obj;
+    clone_obj.oid.name = snapset_error.object.name;
+    clone_obj.set_key(snapset_error.object.locator);
+    clone_obj.nspace = snapset_error.object.nspace;
+    clone_obj.snap = clone_snap;
+    clone_obj.pool = pgid.pgid.pool();
+    
+    auto errorstr = fmt::format("scrub {} {} : is an unexpected clone",
+                                pgid, clone_obj);
+    ERRORDPP("{}", pg, errorstr);
+    pg.get_clog_error() << errorstr;
+  }
+  
+  // Log missing clone errors
+  for (const auto& missing_snap : snapset_error.missing) {
+    // Construct hobject_t for the missing clone
+    hobject_t missing_obj;
+    missing_obj.oid.name = snapset_error.object.name;
+    missing_obj.set_key(snapset_error.object.locator);
+    missing_obj.nspace = snapset_error.object.nspace;
+    missing_obj.snap = missing_snap;
+    missing_obj.pool = pgid.pgid.pool();
+    
+    auto errorstr = fmt::format("scrub {} {} : missing clone",
+                                pgid, missing_obj);
+    ERRORDPP("{}", pg, errorstr);
+    pg.get_clog_error() << errorstr;
+  }
+  
+  // Log size mismatch errors
+  if (snapset_error.size_mismatch()) {
+    auto errorstr = fmt::format("{} soid {} : size mismatch in snapset",
+                                pgid, snapset_error.object.name);
+    ERRORDPP("{}", pg, errorstr);
+    pg.get_clog_error() << errorstr;
+  }
+  
+  // Log headless clone errors
+  if (snapset_error.headless()) {
+    auto errorstr = fmt::format("{} soid {} : headless clone",
+                                pgid, snapset_error.object.name);
+    ERRORDPP("{}", pg, errorstr);
+    pg.get_clog_error() << errorstr;
+  }
 }
 
 void PGScrubber::emit_chunk_result(
@@ -1149,6 +1219,11 @@ void PGScrubber::emit_chunk_result(
       log_object_errors(obj_error);
     }
     
+    // Log snapset errors
+    for (const auto& snapset_error : result.snapset_errors) {
+      log_snapset_errors(snapset_error);
+    }
+    
     // Store errors for retrieval by rados list-inconsistent-obj
     // Append to existing errors from previous chunks
     m_stored_errors.insert(m_stored_errors.end(),
@@ -1161,10 +1236,40 @@ void PGScrubber::emit_chunk_result(
     DEBUGDPP("Stored {} object errors, total now: {}", pg,
              result.object_errors.size(), m_stored_errors.size());
     
-    // Log summary error message
+    // Count missing and inconsistent objects for summary message
+    int missing_count = 0;
+    int inconsistent_count = 0;
+    for (const auto& obj_error : result.object_errors) {
+      bool has_missing = false;
+      for (const auto& [shard_id, shard_info] : obj_error.shards) {
+        if (shard_info.has_shard_missing()) {
+          has_missing = true;
+          break;
+        }
+      }
+      if (has_missing) {
+        missing_count++;
+      } else {
+        inconsistent_count++;
+      }
+    }
+    
+    // Add snapset errors to inconsistent count
+    inconsistent_count += result.snapset_errors.size();
+    
+    // Log "X missing, Y inconsistent objects" message (matches classic OSD)
+    if (missing_count > 0 || inconsistent_count > 0) {
+      auto errorstr = fmt::format("{} scrub {} missing, {} inconsistent objects",
+                                  pg.get_pgid(), missing_count, inconsistent_count);
+      ERRORDPP("{}", pg, errorstr);
+      pg.get_clog_error() << errorstr;
+    }
+    
+    // Log total error count (matches classic OSD)
+    int total_errors = result.object_errors.size() + result.snapset_errors.size();
     LOG_SCRUB_ERROR(
       "scrub {} errors",
-      result.object_errors.size() + result.snapset_errors.size());
+      total_errors);
     
     // If this is a repair scrub, initiate repairs for inconsistent objects
     // Use the object_hoids map which has the correct hobject_t with hash
@@ -1240,8 +1345,8 @@ int PGScrubber::scrub_process_inconsistent(
           auto bliter = it->second.cbegin();
           decode(oi, bliter);
           repair_version = oi.version;
-          DEBUGDPP("Got version {} from authoritative shard {} for object {}",
-                   pg, repair_version, auth_shard, oid);
+          DEBUGDPP("Got version {} from authoritative shard {} for object {}, is_data_digest={} data_digest=0x{:x} flags=0x{:x}",
+                   pg, repair_version, auth_shard, oid, oi.is_data_digest(), oi.data_digest, (uint32_t)oi.flags);
         } else {
           ERRORDPP("Authoritative shard {} missing OI_ATTR for object {}",
                    pg, auth_shard, oid);

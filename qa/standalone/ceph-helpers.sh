@@ -182,14 +182,14 @@ function teardown() {
     fi
     if [ "$cores" = "yes" -o "$dumplogs" = "1" ]; then
  if [ -n "$LOCALRUN" ]; then
-     # Check if this is a Crimson test by looking for crimson-osd logs
-     if ls $dir/*crimson-osd*.log >/dev/null 2>&1; then
+     # Check if this is a Crimson test by checking directory name or log files
+     if [[ "$dir" == *"crimson"* ]] || ls $dir/*crimson-osd*.log >/dev/null 2>&1; then
          # Use tail to display only last part of logs to avoid pipe buffer overflow with large Crimson logs
          echo "Crimson test detected - displaying last 1000 lines of each log file in $dir:"
          for logfile in $dir/*.log; do
              if [ -f "$logfile" ]; then
                  echo "=== Last 1000 lines of $(basename $logfile) ==="
-                 tail -n 1000 "$logfile" 2>/dev/null || echo "Could not read $logfile"
+                 tail -n 1000 "$logfile" 2>/dev/null || true
              fi
          done
          echo "Full logs preserved in $dir"

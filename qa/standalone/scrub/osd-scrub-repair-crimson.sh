@@ -3610,7 +3610,7 @@ function TES_periodic_scrub_replicated() {
     rados list-inconsistent-obj $pg | jq '.' | grep -qv $objname || return 1
 }
 
-function TEST_scrub_warning() {
+function TES_scrub_warning() {
     local dir=$1
     local poolname=psr_pool
     local objname=POBJ
@@ -3689,6 +3689,271 @@ function TEST_scrub_warning() {
       return 1
     fi
 }
+#
+# TEST_corrupt_snapset_scrub_rep - Crimson adaptation
+# Test corruption of snapset and scrub repair for replicated pools
+#
+function TEST_corrupt_snapset_scrub_rep() {
+    local dir=$1
+    local poolname=csr_pool
+    local total_objs=2
+
+    run_mon $dir a --osd_pool_default_size=2 || return 1
+    apply_crimson_config || return 1
+    run_mgr $dir x || return 1
+    run_crimson_osd $dir 0 --osd_objectstore=seastore --debug || return 1
+    run_crimson_osd $dir 1 --osd_objectstore=seastore --debug || return 1
+    create_rbd_pool || return 1
+    wait_for_clean || return 1
+
+    create_pool foo 1 || return 1
+    create_pool $poolname 1 1 || return 1
+    wait_for_clean || return 1
+
+    for i in $(seq 1 $total_objs) ; do
+        objname=ROBJ${i}
+        add_something $dir $poolname $objname || return 1
+
+        rados --pool $poolname setomapheader $objname hdr-$objname || return 1
+        rados --pool $poolname setomapval $objname key-$objname val-$objname || return 1
+    done
+
+    local pg=$(get_pg $poolname ROBJ1)
+    local primary=$(get_primary $poolname ROBJ1)
+
+    rados -p $poolname mksnap snap1
+    echo -n head_of_snapshot_data > $dir/change
+
+    for i in $(seq 1 $total_objs) ; do
+        objname=ROBJ${i}
+
+        # Alternate corruption between osd.0 and osd.1
+        local osd=$(expr $i % 2)
+
+        case $i in
+        1)
+          rados --pool $poolname put $objname $dir/change
+          objectstore_tool $dir $osd --pgid $pg --head $objname clear-snapset corrupt || return 1
+          ;;
+
+        2)
+          rados --pool $poolname put $objname $dir/change
+          objectstore_tool $dir $osd --pgid $pg --head $objname clear-snapset corrupt || return 1
+          ;;
+
+        esac
+    done
+    rm $dir/change
+
+    pg_scrub $pg
+
+    rados list-inconsistent-pg $poolname > $dir/json || return 1
+    # Check pg count
+    test $(jq '. | length' $dir/json) = "1" || return 1
+    # Check pgid
+    test $(jq -r '.[0]' $dir/json) = $pg || return 1
+
+    rados list-inconsistent-obj $pg > $dir/json || return 1
+
+    jq "$jqfilter" << EOF | jq '.inconsistents' | python3 -c "$sortkeys" > $dir/checkcsjson
+{
+  "epoch": 39,
+  "inconsistents": [
+    {
+      "object": {
+        "name": "ROBJ1",
+        "nspace": "",
+        "locator": "",
+        "snap": "head",
+        "version": 8
+      },
+      "errors": [
+        "snapset_inconsistency"
+      ],
+      "union_shard_errors": [],
+      "selected_object_info": {
+        "oid": {
+          "oid": "ROBJ1",
+          "key": "",
+          "snapid": -2,
+          "hash": 1454963827,
+          "max": 0,
+          "pool": 3,
+          "namespace": ""
+        },
+        "user_version": 8,
+        "size": 21,
+        "lost": 0,
+        "flags": [
+          "dirty",
+          "omap",
+          "data_digest"
+        ],
+        "truncate_seq": 0,
+        "truncate_size": 0,
+        "data_digest": "0x53acb008",
+        "omap_digest": "0xffffffff",
+        "expected_object_size": 0,
+        "expected_write_size": 0,
+        "alloc_hint_flags": 0,
+        "manifest": {
+          "type": 0
+        },
+        "watchers": {},
+        "shard_versions": []
+      },
+      "shards": [
+        {
+          "osd": 0,
+          "primary": false,
+          "errors": [],
+          "size": 21,
+          "snapset": {
+            "seq": 1,
+            "clones": [
+              {
+                "snap": 1,
+                "size": 7,
+                "overlap": "[]",
+                "snaps": [
+                  1
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "osd": 1,
+          "primary": true,
+          "errors": [],
+          "size": 21,
+          "snapset": {
+            "seq": 0,
+            "clones": []
+          }
+        }
+      ]
+    },
+    {
+      "object": {
+        "name": "ROBJ2",
+        "nspace": "",
+        "locator": "",
+        "snap": "head",
+        "version": 10
+      },
+      "errors": [
+        "snapset_inconsistency"
+      ],
+      "union_shard_errors": [],
+      "selected_object_info": {
+        "oid": {
+          "oid": "ROBJ2",
+          "key": "",
+          "snapid": -2,
+          "hash": 2026323607,
+          "max": 0,
+          "pool": 3,
+          "namespace": ""
+        },
+        "user_version": 10,
+        "size": 21,
+        "lost": 0,
+        "flags": [
+          "dirty",
+          "omap",
+          "data_digest"
+        ],
+        "truncate_seq": 0,
+        "truncate_size": 0,
+        "data_digest": "0x53acb008",
+        "omap_digest": "0xffffffff",
+        "expected_object_size": 0,
+        "expected_write_size": 0,
+        "alloc_hint_flags": 0,
+        "manifest": {
+          "type": 0
+        },
+        "watchers": {},
+        "shard_versions": []
+      },
+      "shards": [
+        {
+          "osd": 0,
+          "primary": false,
+          "errors": [],
+          "size": 21,
+          "snapset": {
+            "seq": 0,
+            "clones": []
+          }
+        },
+        {
+          "osd": 1,
+          "primary": true,
+          "errors": [],
+          "size": 21,
+          "snapset": {
+            "seq": 1,
+            "clones": [
+              {
+                "snap": 1,
+                "size": 7,
+                "overlap": "[]",
+                "snaps": [
+                  1
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
+
+EOF
+
+    jq "$jqfilter" $dir/json | jq '.inconsistents' | python3 -c "$sortkeys" > $dir/csjson
+    multidiff $dir/checkcsjson $dir/csjson || test $getjson = "yes" || return 1
+    if test $getjson = "yes"
+    then
+        jq '.' $dir/json > save6.json
+    fi
+
+    if test "$LOCALRUN" = "yes" && which jsonschema > /dev/null;
+    then
+      jsonschema -i $dir/json $CEPH_ROOT/doc/rados/command/list-inconsistent-obj.json || return 1
+    fi
+
+    ERRORS=0
+    declare -a err_strings
+    # Crimson uses ERRORDPP format instead of log_channel format
+    err_strings[0]="ERROR.*PGScrubber::log_object_errors: 3.0 soid ROBJ1 : snapset inconsistent"
+    err_strings[1]="ERROR.*PGScrubber::log_object_errors: 3.0 soid ROBJ2 : snapset inconsistent"
+    err_strings[2]="ERROR.*PGScrubber::log_snapset_errors: scrub 3.0 [0-9]*:.*:::ROBJ1:1 : is an unexpected clone"
+    err_strings[3]="ERROR.*PGScrubber::emit_scrub_result: stat mismatch"
+    err_strings[4]="ERROR.*PGScrubber::emit_chunk_result: 3.0 scrub 0 missing, [0-9]* inconsistent objects"
+    err_strings[5]="ERROR.*PGScrubber::emit_chunk_result: scrub [0-9]* errors"
+
+    for err_string in "${err_strings[@]}"
+    do
+        if ! grep -q "$err_string" $dir/osd.${primary}.log
+        then
+            echo "Missing log message '$err_string'"
+            ERRORS=$(expr $ERRORS + 1)
+        fi
+    done
+
+    if [ $ERRORS != "0" ];
+    then
+        echo "TEST FAILED WITH $ERRORS ERRORS"
+        return 1
+    fi
+
+    ceph osd pool rm $poolname $poolname --yes-i-really-really-mean-it
+}
+
 
 main osd-scrub-repair-crimson "$@"
 

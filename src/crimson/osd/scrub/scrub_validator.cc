@@ -101,11 +101,11 @@ shard_evaluation_t evaluate_object_shard(
     } else {
       ret.object_info = object_info_t{};
       try {
-	auto bliter = xiter->second.cbegin();
-	::decode(*(ret.object_info), bliter);
+ auto bliter = xiter->second.cbegin();
+ ::decode(*(ret.object_info), bliter);
       } catch (...) {
-	ret.shard_info.set_info_corrupted();
-	ret.object_info = std::nullopt;
+ ret.shard_info.set_info_corrupted();
+ ret.object_info = std::nullopt;
       }
     }
   }

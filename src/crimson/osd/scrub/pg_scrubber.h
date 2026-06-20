@@ -310,6 +310,17 @@ private:
   void log_object_errors(const inconsistent_obj_wrapper& obj_error);
 
   /**
+   * log_snapset_errors
+   *
+   * Log detailed error messages for an inconsistent snapset to the cluster log.
+   * This matches the classic OSD behavior where snapset errors are logged
+   * with specific details about what's wrong (missing clones, unexpected clones, etc).
+   *
+   * @param snapset_error The inconsistent snapset with error details
+   */
+  void log_snapset_errors(const inconsistent_snapset_wrapper& snapset_error);
+
+  /**
    * scrub_process_inconsistent
    *
    * Process inconsistent objects found during scrub and initiate repairs.

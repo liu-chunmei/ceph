@@ -958,6 +958,9 @@ pg_log_entry_t OpsExecuter::prepare_head_update(
     obc->obs.oi.mtime = osd_op_params->mtime;
     obc->obs.oi.local_mtime = ceph_clock_now();
     
+    logger().info("finalize: before set_metadata for {}: is_data_digest={} data_digest=0x{:x} flags=0x{:x}",
+                  obc->obs.oi.soid, obc->obs.oi.is_data_digest(), obc->obs.oi.data_digest, (uint32_t)obc->obs.oi.flags);
+    
     obc->ssc->exists = true;
     pg->get_backend().set_metadata(
       obc->obs.oi.soid,

@@ -113,6 +113,10 @@ public:
   seastar::future<bool> corrupt_info(
     const coll_t& cid,
     const ghobject_t& oid);
+  seastar::future<bool> clear_snapset(
+    const coll_t& cid,
+    const ghobject_t& oid,
+    bool corrupt = false);
 
 private:
   seastar::shard_id shard_id = 0;
