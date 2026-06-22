@@ -111,7 +111,7 @@ function add_something() {
 #
 # Corrupt one copy of a replicated pool
 #
-function TES_corrupt_and_repair_replicated() {
+function TEST_corrupt_and_repair_replicated() {
     local dir=$1
     local poolname=rbd
 
@@ -133,7 +133,7 @@ function TES_corrupt_and_repair_replicated() {
 # Allow operator-initiated scrubs to be scheduled even when some recovering is still
 # undergoing on the same OSD
 #
-function TES_allow_oper_initiated_scrub_during_recovery() {
+function TEST_allow_oper_initiated_scrub_during_recovery() {
     local dir=$1
     local poolname=rbd
 
@@ -158,7 +158,7 @@ function TES_allow_oper_initiated_scrub_during_recovery() {
 #
 # Allow repair to be scheduled when some recovering is still undergoing on the same OSD
 #
-function TES_allow_repair_during_recovery() {
+function TEST_allow_repair_during_recovery() {
     local dir=$1
     local poolname=rbd
 
@@ -183,7 +183,7 @@ function TES_allow_repair_during_recovery() {
 #
 # Note: forgoing the automatic creation of a pool in standard_scrub_cluster as
 #       the test requires a specific RBD pool.
-function TES_skip_non_repair_during_recovery() {
+function TEST_skip_non_repair_during_recovery() {
     local dir=$1
     local -A cluster_conf=(
         ['osds_num']="2"
@@ -472,7 +472,7 @@ function wait_end_of_scrub() { # osd# pg
 }
 
 
-function TES_auto_repair_seastore_basic() {
+function TEST_auto_repair_seastore_basic() {
     local dir=$1
     local poolname=testpool
 
@@ -528,7 +528,7 @@ function TES_auto_repair_seastore_basic() {
     grep scrub_finish $dir/osd.${primary}.log
 }
 
-function TES_auto_repair_seastore_tag() {
+function TEST_auto_repair_seastore_tag() {
     local dir=$1
     local poolname=testpool
 
@@ -583,7 +583,7 @@ function TES_auto_repair_seastore_tag() {
     diff $dir/ORIGINAL $dir/COPY || return 1
     grep scrub_finish $dir/osd.${primary}.log
 }
-function TES_auto_repair_seastore_scrub() {
+function TEST_auto_repair_seastore_scrub() {
     local dir=$1
     local poolname=testpool
 
@@ -640,7 +640,7 @@ function TES_auto_repair_seastore_scrub() {
     COUNT=$(ceph pg $pgid query | jq '.info.stats.stat_sum.num_objects_repaired')
     test "$COUNT" = "1" || return 1
 }
-function TES_auto_repair_seastore_failed() {
+function TEST_auto_repair_seastore_failed() {
     local dir=$1
     local poolname=testpool
 
@@ -710,7 +710,7 @@ function TES_auto_repair_seastore_failed() {
     grep scrub_finish $dir/osd.${primary}.log
 }
 
-function TES_auto_repair_seastore_failed_norecov() {
+function TEST_auto_repair_seastore_failed_norecov() {
     local dir=$1
     local poolname=testpool
 
@@ -764,7 +764,7 @@ function TES_auto_repair_seastore_failed_norecov() {
     ceph pg dump pgs
     ceph pg dump pgs | grep -q "^${pgid}.*+failed_repair" || return 1
 }
-function TES_repair_stats() {
+function TEST_repair_stats() {
     local dir=$1
     local poolname=testpool
     local OSDS=2
@@ -840,7 +840,7 @@ function TES_repair_stats() {
 # Test corrupt scrub replicated - Crimson adaptation
 # Copied from classic test with Crimson-specific OSD startup
 #
-function TES_corrupt_scrub_replicated() {
+function TEST_corrupt_scrub_replicated() {
     local dir=$1
     local poolname=csr_pool
     local total_objs=19
@@ -3525,7 +3525,7 @@ EOF
 # Test periodic scrub with deep-scrub errors
 # Adapted from osd-scrub-repair.sh for Crimson
 #
-function TES_periodic_scrub_replicated() {
+function TEST_periodic_scrub_replicated() {
     local dir=$1
     local poolname=psr_pool
     local objname=POBJ
@@ -3610,7 +3610,7 @@ function TES_periodic_scrub_replicated() {
     rados list-inconsistent-obj $pg | jq '.' | grep -qv $objname || return 1
 }
 
-function TES_scrub_warning() {
+function TEST_scrub_warning() {
     local dir=$1
     local poolname=psr_pool
     local objname=POBJ
@@ -3751,7 +3751,7 @@ function TEST_request_scrub_priority() {
 }
 
 #
-function TES_corrupt_snapset_scrub_rep() {
+function TEST_corrupt_snapset_scrub_rep() {
     local dir=$1
     local poolname=csr_pool
     local total_objs=2
@@ -4011,6 +4011,252 @@ EOF
 
     ceph osd pool rm $poolname $poolname --yes-i-really-really-mean-it
 }
+#
+# TEST_dual_store_replicated_cluster - Crimson adaptation
+# Copied from osd-scrub-repair.sh with Crimson-specific modifications
+#
+function TES_dual_store_replicated_cluster() {
+    local dir=$1
+    local poolname=csr_pool
+    local total_objs=19
+    local extr_dbg=1 # note: 3 and above leave some temp files around
+
+    run_mon $dir a --osd_pool_default_size=2 || return 1
+    apply_crimson_config || return 1
+    run_mgr $dir x --mgr_stats_period=1 || return 1
+    local ceph_osd_args="--osd-scrub-interval-randomize-ratio=0 --osd-deep-scrub-randomize-ratio=0 "
+    ceph_osd_args+="--osd_scrub_backoff_ratio=0 --osd_stats_update_period_not_scrubbing=3 "
+    ceph_osd_args+="--osd_stats_update_period_scrubbing=2 --osd_op_queue=wpq --osd_scrub_auto_repair=0 "
+    for osd in $(seq 0 1)
+    do
+      run_crimson_osd $dir $osd $ceph_osd_args --osd_objectstore=seastore || return 1
+    done
+
+    create_rbd_pool || return 1
+    wait_for_clean || return 1
+
+    create_pool foo 1 || return 1
+    create_pool $poolname 1 1 || return 1
+    wait_for_clean || return 1
+
+    ceph osd pool set $poolname noscrub 1
+    ceph osd pool set $poolname nodeep-scrub 1
+
+    for i in $(seq 1 $total_objs) ; do
+        objname=ROBJ${i}
+        add_something $dir $poolname $objname || return 1
+
+        rados --pool $poolname setomapheader $objname hdr-$objname || return 1
+        rados --pool $poolname setomapval $objname key-$objname val-$objname || return 1
+    done
+
+    # Increase file 1 MB + 1KB
+    dd if=/dev/zero of=$dir/new.ROBJ19 bs=1024 count=1025
+    rados --pool $poolname put $objname $dir/new.ROBJ19 || return 1
+    rm -f $dir/new.ROBJ19
+
+    local pg=$(get_pg $poolname ROBJ0)
+    local primary=$(get_primary $poolname ROBJ0)
+
+    # Compute an old omap digest and save oi
+    CEPH_ARGS='' ceph daemon $(get_asok_path osd.0) \
+        config set osd_deep_scrub_update_digest_min_age 0
+    CEPH_ARGS='' ceph daemon $(get_asok_path osd.1) \
+        config set osd_deep_scrub_update_digest_min_age 0
+    pg_deep_scrub $pg
+
+    for i in $(seq 1 $total_objs) ; do
+        objname=ROBJ${i}
+
+        # Alternate corruption between osd.0 and osd.1
+        local osd=$(expr $i % 2)
+
+        case $i in
+        1)
+            # Size (deep scrub data_digest too)
+            local payload=UVWXYZZZ
+            echo $payload > $dir/CORRUPT
+            objectstore_tool $dir $osd $objname set-bytes $dir/CORRUPT || return 1
+            ;;
+
+        2)
+            # digest (deep scrub only)
+            local payload=UVWXYZ
+            echo $payload > $dir/CORRUPT
+            objectstore_tool $dir $osd $objname set-bytes $dir/CORRUPT || return 1
+            ;;
+
+        3)
+             # missing
+             objectstore_tool $dir $osd $objname remove || return 1
+             ;;
+
+         4)
+             # Modify omap value (deep scrub only)
+             objectstore_tool $dir $osd $objname set-omap key-$objname $dir/CORRUPT || return 1
+             ;;
+
+         5)
+            # Delete omap key (deep scrub only)
+            objectstore_tool $dir $osd $objname rm-omap key-$objname || return 1
+            ;;
+
+         6)
+            # Add extra omap key (deep scrub only)
+            echo extra > $dir/extra-val
+            objectstore_tool $dir $osd $objname set-omap key2-$objname $dir/extra-val || return 1
+            rm $dir/extra-val
+            ;;
+
+         7)
+            # Modify omap header (deep scrub only)
+            echo -n newheader > $dir/hdr
+            objectstore_tool $dir $osd $objname set-omaphdr $dir/hdr || return 1
+            rm $dir/hdr
+            ;;
+
+         8)
+            rados --pool $poolname setxattr $objname key1-$objname val1-$objname || return 1
+            rados --pool $poolname setxattr $objname key2-$objname val2-$objname || return 1
+
+            # Break xattrs
+            echo -n bad-val > $dir/bad-val
+            objectstore_tool $dir $osd $objname set-attr _key1-$objname $dir/bad-val || return 1
+            objectstore_tool $dir $osd $objname rm-attr _key2-$objname || return 1
+            echo -n val3-$objname > $dir/newval
+            objectstore_tool $dir $osd $objname set-attr _key3-$objname $dir/newval || return 1
+            rm $dir/bad-val $dir/newval
+            ;;
+
+        9)
+            objectstore_tool $dir $osd $objname get-attr _ > $dir/robj9-oi
+            echo -n D > $dir/change
+            rados --pool $poolname put $objname $dir/change
+            objectstore_tool $dir $osd $objname set-attr _ $dir/robj9-oi
+            rm $dir/oi $dir/change
+            ;;
+
+          # ROBJ10 must be handled after digests are re-computed by a deep scrub below
+          # ROBJ11 must be handled with config change before deep scrub
+          # ROBJ12 must be handled with config change before scrubs
+          # ROBJ13 must be handled before scrubs
+
+        14)
+            echo -n bad-val > $dir/bad-val
+            objectstore_tool $dir 0 $objname set-attr _ $dir/bad-val || return 1
+            objectstore_tool $dir 1 $objname rm-attr _ || return 1
+            rm $dir/bad-val
+            ;;
+
+        15)
+            objectstore_tool $dir $osd $objname rm-attr _ || return 1
+            ;;
+
+        16)
+            objectstore_tool $dir 0 $objname rm-attr snapset || return 1
+            echo -n bad-val > $dir/bad-val
+            objectstore_tool $dir 1 $objname set-attr snapset $dir/bad-val || return 1
+	    ;;
+
+	17)
+	    # Deep-scrub only (all replicas are diffent than the object info
+           local payload=ROBJ17
+           echo $payload > $dir/new.ROBJ17
+	   objectstore_tool $dir 0 $objname set-bytes $dir/new.ROBJ17 || return 1
+	   objectstore_tool $dir 1 $objname set-bytes $dir/new.ROBJ17 || return 1
+	   ;;
+
+	18)
+	    # Deep-scrub only (all replicas are diffent than the object info
+           local payload=ROBJ18
+           echo $payload > $dir/new.ROBJ18
+	   objectstore_tool $dir 0 $objname set-bytes $dir/new.ROBJ18 || return 1
+	   objectstore_tool $dir 1 $objname set-bytes $dir/new.ROBJ18 || return 1
+	   # Make one replica have a different object info, so a full repair must happen too
+	   objectstore_tool $dir $osd $objname corrupt-info || return 1
+	   ;;
+
+	19)
+	   # Set osd-max-object-size smaller than this object's size
+
+        esac
+    done
+
+    local pg=$(get_pg $poolname ROBJ0)
+
+    ceph tell osd.\* injectargs -- --osd-max-object-size=1048576
+
+    inject_eio rep data $poolname ROBJ11 $dir 0 || return 1 # shard 0 of [1, 0], osd.1
+    inject_eio rep mdata $poolname ROBJ12 $dir 1 || return 1 # shard 1 of [1, 0], osd.0
+    inject_eio rep data $poolname ROBJ13 $dir 0 || return 1 # shard 0 of [1, 0], osd.1
+
+    # first sequence: the final shallow scrub should not override any of the deep errors
+    pg_scrub $pg
+    (( extr_dbg >= 3 )) && rados list-inconsistent-obj $pg | python3 -c "$sortkeys" | jq '.'  > /tmp/WQR_1.json
+    pg_scrub $pg
+    (( extr_dbg >= 3 )) && rados list-inconsistent-obj $pg | python3 -c "$sortkeys" | jq '.'  > /tmp/WQR_1b.json
+    rados list-inconsistent-obj $pg | jq "$jqfilter" | jq '.inconsistents' | python3 -c "$sortkeys" > $dir/sh1_results.json
+    (( extr_dbg >= 3 )) && rados list-inconsistent-obj $pg | jq "$jqfilter" | jq '.inconsistents' | \
+        python3 -c "$sortkeys" > /tmp/WQR_1b_s.json
+
+    pg_deep_scrub $pg
+    (( extr_dbg >= 3 )) && rados list-inconsistent-obj $pg | python3 -c "$sortkeys" | jq '.'  > /tmp/WQR_2.json
+    rados list-inconsistent-obj $pg | jq "$jqfilter" | jq '.inconsistents' | python3 -c "$sortkeys" > $dir/dp_results.json
+    (( extr_dbg >= 3 )) && rados list-inconsistent-obj $pg | jq "$jqfilter" | jq '.inconsistents' | \
+        python3 -c "$sortkeys" > /tmp/WQR_2s.json
+
+    pg_scrub $pg
+    (( extr_dbg >= 3 )) && rados list-inconsistent-obj $pg | python3 -c "$sortkeys" | jq '.'  > /tmp/WQR_3.json
+    rados list-inconsistent-obj $pg | jq "$jqfilter" | jq '.inconsistents' | python3 -c "$sortkeys" > $dir/sh2_results.json
+    (( extr_dbg >= 3 )) && rados list-inconsistent-obj $pg | jq "$jqfilter" | jq '.inconsistents' | \
+        python3 -c "$sortkeys" > /tmp/WQR_3s.json
+
+    diff -u $dir/dp_results.json $dir/sh2_results.json || return 1
+
+    # inject a read error, which is a special case: the scrub encountering the read error
+    # would override the previously collected shard info.
+    inject_eio rep mdata $poolname ROBJ13 $dir 1 || return 1 # shard 1 of [1, 0], osd.0
+
+    pg_deep_scrub $pg
+
+    (( extr_dbg >= 3 )) && rados list-inconsistent-obj $pg | python3 -c "$sortkeys" | jq '.'  > /tmp/WQR_4.json
+    (( extr_dbg >= 3 )) && rados list-inconsistent-obj $pg | jq "$jqfilter" | jq '.inconsistents' | \
+        python3 -c "$sortkeys" > /tmp/WQR_4s_w13.json
+    (( extr_dbg >= 3 )) && rados list-inconsistent-obj $pg | jq "$jqfilter" | \
+        jq 'del(.inconsistents[] | select(.object.name == "ROBJ13"))' | \
+        jq '.inconsistents' | python3 -c "$sortkeys" > /tmp/WQR_4s_wo13.json
+
+    rados list-inconsistent-obj $pg | jq "$jqfilter" | jq '.inconsistents' | \
+        python3 -c "$sortkeys" > $dir/dpPart2_w13_results.json
+    # Remove the entry with "name":"ROBJ13" from the $dir/d*_results.json
+    rados list-inconsistent-obj $pg | jq "$jqfilter" | jq 'del(.inconsistents[] | select(.object.name == "ROBJ13"))' | \
+        jq '.inconsistents' | python3 -c "$sortkeys" > $dir/dpPart2_wo13_results.json
+    (( extr_dbg >= 3 )) && rados list-inconsistent-obj $pg | jq "$jqfilter" | jq '.inconsistents' | \
+        python3 -c "$sortkeys" > /tmp/WQR_4s.json
+
+    pg_scrub $pg
+
+    (( extr_dbg >= 3 )) && rados list-inconsistent-obj $pg | python3 -c "$sortkeys" | jq '.'  > /tmp/WQR_5.json
+    (( extr_dbg >= 3 )) && rados list-inconsistent-obj $pg | jq "$jqfilter" | jq '.inconsistents' | \
+        python3 -c "$sortkeys" > /tmp/WQR_5s_w13.json
+    (( extr_dbg >= 3 )) && rados list-inconsistent-obj $pg | jq "$jqfilter" | \
+        jq 'del(.inconsistents[] | select(.object.name == "ROBJ13"))' |\
+        jq '.inconsistents' | python3 -c "$sortkeys" > /tmp/WQR_5s_wo13.json
+
+    rados list-inconsistent-obj $pg | jq "$jqfilter" | jq '.inconsistents' | python3 -c "$sortkeys" > \
+        $dir/sh2Part2_w13_results.json
+    rados list-inconsistent-obj $pg | jq "$jqfilter" | jq 'del(.inconsistents[] | select(.object.name == "ROBJ13"))' |\
+        jq '.inconsistents' | python3 -c "$sortkeys" > $dir/shPart2_wo13_results.json
+
+    # the shallow scrub results should differ from the results of the deep
+    # scrub preceding it, but the difference should be limited to ROBJ13
+    diff -u $dir/dpPart2_w13_results.json $dir/sh2Part2_w13_results.json && return 1
+    diff -u $dir/dpPart2_wo13_results.json $dir/shPart2_wo13_results.json || return 1
+
+    ceph osd pool rm $poolname $poolname --yes-i-really-really-mean-it
+    return 0
+}
+
 
 
 main osd-scrub-repair-crimson "$@"

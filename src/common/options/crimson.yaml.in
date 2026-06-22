@@ -293,3 +293,8 @@ options:
   desc: disable osd shards changes upon restart.
   flags:
   - startup
+- name: seastore_debug_inject_read_err
+  type: bool
+  level: dev
+  default: false
+  desc: Inject read errors for testing scrub and repair functionality

@@ -240,8 +240,14 @@ public:
 
   /// Store scrub results for retrieval by rados list-inconsistent-obj
   epoch_t m_scrub_epoch{0};
-  std::vector<inconsistent_obj_wrapper> m_stored_errors;
+  // Dual-store approach matching classic OSD's shallow_db and deep_db
+  // shallow_errors: cleared on every scrub, stores filtered shallow-only errors
+  // deep_errors: cleared only on deep scrub, stores all errors
+  std::vector<inconsistent_obj_wrapper> m_shallow_errors;
+  std::vector<inconsistent_obj_wrapper> m_deep_errors;
   std::vector<inconsistent_snapset_wrapper> m_stored_snapset_errors;
+  // Track the type of the last completed scrub for proper retrieval
+  bool m_last_scrub_was_deep{false};
   
   /// Start sleep operation between chunks
   void start_chunk_sleep();

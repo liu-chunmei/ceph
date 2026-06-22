@@ -287,7 +287,7 @@ object_evaluation_t evaluate_object(
 
   object_evaluation_t ret;
   inconsistent_obj_wrapper iow{hoid};
-  
+
   // Check if we have at least one shard with the object (not missing)
   // This handles the case where primary is missing but replica has it
   bool has_valid_copy = std::any_of(
@@ -295,11 +295,18 @@ object_evaluation_t evaluate_object(
     [](const auto &eval) {
       return eval.object_info.has_value() && !eval.shard_info.has_shard_missing();
     });
+
+  // Perform comparisons if:
+  // 1. Auth has no errors at all, OR
+  // 2. Auth is missing but we have a valid copy, OR
+  // 3. Auth has ONLY deep errors (not shallow errors that would make it unreliable)
+  bool auth_has_only_deep_errors = auth_eval.has_errors() &&
+                                    (auth_eval.shard_info.errors & ~librados::err_t::DEEP_ERRORS) == 0;
   
   if (!auth_eval.has_errors() ||
-      (has_valid_copy && auth_eval.shard_info.has_shard_missing())) {
-    // Use auth_eval if it has no errors, OR if it's just missing but we have
-    // a valid copy from another shard (in which case we need to find that copy)
+      (has_valid_copy && auth_eval.shard_info.has_shard_missing()) ||
+      auth_has_only_deep_errors) {
+    // Use auth_eval if it meets one of the above conditions
     
     // If auth is missing, find the best non-missing shard
     shard_evaluation_t *actual_auth = &auth_eval;

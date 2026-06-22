@@ -281,14 +281,14 @@ bool PGScrubber::get_store_errors(const scrub_ls_arg_t& arg,
   LOG_PREFIX(PGScrubber::get_store_errors);
   
   // If no errors stored, return false
-  if (m_stored_errors.empty() && m_stored_snapset_errors.empty()) {
+  if (m_shallow_errors.empty() && m_deep_errors.empty() && m_stored_snapset_errors.empty()) {
     DEBUGDPP("No stored errors available", pg);
     return false;
   }
   
   // Encode the appropriate error type based on arg.get_snapsets
   if (arg.get_snapsets) {
-    // Return snapset errors
+    // Return snapset errors (only stored in shallow store)
     for (const auto& snapset_error : m_stored_snapset_errors) {
       if (res_inout.vals.size() >= arg.max_return) {
         break;
@@ -307,22 +307,108 @@ bool PGScrubber::get_store_errors(const scrub_ls_arg_t& arg,
       res_inout.vals.push_back(bl);
     }
   } else {
-    // Return object errors
-    for (const auto& obj_error : m_stored_errors) {
+    // Merge both stores when retrieving errors, matching classic OSD behavior
+    // The merge strategy depends on whether the last scrub was shallow or deep:
+    // - After shallow scrub: merge shallow into deep (shallow can update shard info)
+    // - After deep scrub: use deep only (deep is authoritative)
+    
+    DEBUGDPP("Retrieving errors (last scrub was {})", pg, m_last_scrub_was_deep ? "deep" : "shallow");
+    
+    std::map<std::string, const inconsistent_obj_wrapper*> shallow_map;
+    std::map<std::string, const inconsistent_obj_wrapper*> deep_map;
+    
+    for (const auto& err : m_shallow_errors) {
+      shallow_map[err.object.name] = &err;
+    }
+    for (const auto& err : m_deep_errors) {
+      deep_map[err.object.name] = &err;
+    }
+    
+    // Collect all unique object names
+    std::set<std::string> all_objects;
+    for (const auto& [name, _] : shallow_map) all_objects.insert(name);
+    for (const auto& [name, _] : deep_map) all_objects.insert(name);
+    
+    for (const auto& obj_name : all_objects) {
       if (res_inout.vals.size() >= arg.max_return) {
         break;
       }
       
       // Check if we should skip this error based on start_after
-      if (!arg.start_after.name.empty()) {
-        if (obj_error.object.name <= arg.start_after.name) {
-          continue;
+      if (!arg.start_after.name.empty() && obj_name <= arg.start_after.name) {
+        continue;
+      }
+      
+      auto deep_it = deep_map.find(obj_name);
+      auto shallow_it = shallow_map.find(obj_name);
+      
+      ceph::buffer::list bl;
+      
+      if (m_last_scrub_was_deep) {
+        // After deep scrub: return from deep store (authoritative)
+        if (deep_it != deep_map.end()) {
+          deep_it->second->encode(bl);
+        } else {
+          // Object only in shallow store (shouldn't happen after deep scrub)
+          shallow_it->second->encode(bl);
+        }
+      } else {
+        // After shallow scrub: return deep errors (preserved) with shallow updates
+        // This preserves deep-only errors while allowing shallow to update shard info
+        if (deep_it != deep_map.end()) {
+          // Object has deep errors - use them as base
+          if (shallow_it != shallow_map.end()) {
+            // Shallow scrub also found this object - check versions before merging
+            // Matching classic OSD's merge_encoded_error_wrappers() behavior (line 385)
+            const auto& dp_wrap = *deep_it->second;
+            const auto& sh_wrap = *shallow_it->second;
+            
+            if (sh_wrap.version == dp_wrap.version) {
+              // Same version - merge shallow updates into deep
+              // Matching classic OSD's merge_encoded_error_wrappers() behavior
+              inconsistent_obj_wrapper merged = dp_wrap;
+              
+              // Merge object-level errors (classic OSD line 387)
+              merged.errors |= sh_wrap.errors;
+              
+              // Don't update union_shards - keep deep version
+              // Classic OSD doesn't update union_shards during merging (ScrubStore.cc line 387-415)
+              // so it keeps the deep version with unfiltered errors
+              
+              // Update shard information with new shallow findings
+              for (const auto& [shard_id, sh_shard_info] : sh_wrap.shards) {
+                auto it = merged.shards.find(shard_id);
+                if (it != merged.shards.end()) {
+                  // Shard exists in both - update metadata only, preserve deep errors
+                  // Classic OSD line 395-397: updates selected_oi and primary,
+                  // then does |= saved_er which is a no-op (preserves deep shard errors)
+                  it->second.selected_oi = sh_shard_info.selected_oi;
+                  it->second.primary = sh_shard_info.primary;
+                  // Note: NOT merging shard errors - classic OSD preserves deep shard errors
+                } else {
+                  // Shard only in shallow - add it
+                  merged.shards[shard_id] = sh_shard_info;
+                }
+              }
+              
+              merged.encode(bl);
+            } else if (sh_wrap.version > dp_wrap.version) {
+              // Shallow has newer version - use shallow data (classic OSD line 428)
+              sh_wrap.encode(bl);
+            } else {
+              // Deep has newer version - use deep data
+              dp_wrap.encode(bl);
+            }
+          } else {
+            // Object only in deep store - preserve it
+            deep_it->second->encode(bl);
+          }
+        } else {
+          // Object only in shallow store (new error found by shallow scrub)
+          shallow_it->second->encode(bl);
         }
       }
       
-      // Encode the object error wrapper to bufferlist
-      ceph::buffer::list bl;
-      obj_error.encode(bl);
       res_inout.vals.push_back(bl);
     }
   }
@@ -860,11 +946,20 @@ void PGScrubber::notify_scrub_start(bool deep)
   m_is_deep = deep;
   update_op_mode_text();
 
-  // Clear stored errors from previous scrub
-  m_stored_errors.clear();
+  // Dual-store approach matching classic OSD:
+  // - Always clear shallow_errors (both shallow and deep scrubs recreate it)
+  // - Only clear deep_errors on deep scrub (shallow scrubs preserve it)
+  m_shallow_errors.clear();
   m_stored_snapset_errors.clear();
+  
+  if (deep) {
+    m_deep_errors.clear();
+    DEBUGDPP("Deep scrub: cleared both shallow and deep error stores at epoch {}", pg, pg.get_osdmap_epoch());
+  } else {
+    DEBUGDPP("Shallow scrub: cleared shallow errors, preserving {} deep errors at epoch {}",
+             pg, m_deep_errors.size(), pg.get_osdmap_epoch());
+  }
   m_scrub_epoch = pg.get_osdmap_epoch();
-  DEBUGDPP("Cleared stored errors, starting new scrub at epoch {}", pg, m_scrub_epoch);
 
   // Record scrub start time for duration calculation
   m_scrub_start_time = ScrubClock::now();
@@ -1225,16 +1320,34 @@ void PGScrubber::emit_chunk_result(
     }
     
     // Store errors for retrieval by rados list-inconsistent-obj
-    // Append to existing errors from previous chunks
-    m_stored_errors.insert(m_stored_errors.end(),
+    // Dual-store approach matching classic OSD's ScrubStore behavior:
+    // Deep scrub: store all errors in BOTH deep_errors and shallow_errors (unfiltered)
+    // Shallow scrub: store only filtered errors in shallow_errors, leave deep_errors unchanged
+    
+    if (m_is_deep) {
+      // Deep scrub: store unfiltered errors in deep_errors
+      m_deep_errors.insert(m_deep_errors.end(),
                            result.object_errors.begin(),
                            result.object_errors.end());
+    }
+    
+    // Both deep and shallow scrubs: store filtered errors in shallow_errors
+    // Matching classic OSD behavior: filter object-level and union_shards errors only
+    for (const auto& obj_error : result.object_errors) {
+      auto filtered_error = obj_error;
+      // Filter to keep only shallow errors at object level and union_shards level
+      filtered_error.errors &= librados::obj_err_t::SHALLOW_ERRORS;
+      filtered_error.union_shards.errors &= librados::err_t::SHALLOW_ERRORS;
+      // Note: individual shard errors are NOT filtered (matching classic OSD)
+      
+      m_shallow_errors.push_back(filtered_error);
+    }
     m_stored_snapset_errors.insert(m_stored_snapset_errors.end(),
                                    result.snapset_errors.begin(),
                                    result.snapset_errors.end());
     
-    DEBUGDPP("Stored {} object errors, total now: {}", pg,
-             result.object_errors.size(), m_stored_errors.size());
+    DEBUGDPP("Stored {} object errors, total now: shallow={} deep={}", pg,
+             result.object_errors.size(), m_shallow_errors.size(), m_deep_errors.size());
     
     // Count missing and inconsistent objects for summary message
     int missing_count = 0;
@@ -1507,6 +1620,9 @@ void PGScrubber::emit_scrub_result(
     // Save fixed_count before cleanup resets it
     int fixed_count = m_fixed_count;
     bool is_repair = m_is_repair;
+    
+    // Track the type of scrub that just completed for proper error retrieval
+    m_last_scrub_was_deep = m_is_deep;
     
     cleanup_on_finish();
     
