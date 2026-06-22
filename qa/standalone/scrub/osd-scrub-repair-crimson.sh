@@ -3692,8 +3692,66 @@ function TES_scrub_warning() {
 #
 # TEST_corrupt_snapset_scrub_rep - Crimson adaptation
 # Test corruption of snapset and scrub repair for replicated pools
+function TEST_request_scrub_priority() {
+    local dir=$1
+    local poolname=psr_pool
+    local objname=POBJ
+    local OBJECTS=64
+    local PGS=8
+
+    run_mon $dir a --osd_pool_default_size=1 --mon_allow_pool_size_one=true || return 1
+    apply_crimson_config || return 1
+    run_mgr $dir x || return 1
+    local ceph_osd_args="--osd-scrub-interval-randomize-ratio=0 --osd-deep-scrub-randomize-ratio=0 "
+    ceph_osd_args+="--osd_scrub_backoff_ratio=0"
+    run_crimson_osd $dir 0 $ceph_osd_args --osd_objectstore=seastore || return 1
+
+    create_pool $poolname $PGS $PGS || return 1
+    wait_for_clean || return 1
+
+    local osd=0
+    add_something $dir $poolname $objname noscrub || return 1
+    local primary=$(get_primary $poolname $objname)
+    local pg=$(get_pg $poolname $objname)
+    poolid=$(ceph osd dump | grep "^pool.*[']${poolname}[']" | awk '{ print $2 }')
+
+    local otherpgs
+    for i in $(seq 0 $(expr $PGS - 1))
+    do
+        opg="${poolid}.${i}"
+        if [ "$opg" = "$pg" ]; then
+          continue
+        fi
+        otherpgs="${otherpgs}${opg} "
+        local other_last_scrub=$(get_last_scrub_stamp $pg)
+        # Fake a schedule scrub
+        ceph pg $opg schedule-scrub || return 1
+    done
+
+    sleep 15
+    flush_pg_stats
+
+    # Force a shallow scrub and it will be done
+    local last_scrub=$(get_last_scrub_stamp $pg)
+    ceph pg $pg scrub || return 1
+
+    ceph osd unset noscrub || return 1
+    ceph osd unset nodeep-scrub || return 1
+
+    wait_for_scrub $pg "$last_scrub"
+
+    for opg in $otherpgs $pg
+    do
+        wait_for_scrub $opg "$other_last_scrub"
+    done
+
+    # Verify that the requested scrub ran first
+    # Crimson uses different log format: "PGScrubber::emit_scrub_result: scrub_finish"
+    grep "PGScrubber::emit_scrub_result: scrub_finish" $dir/osd.${primary}.log | head -1 | grep -q $pg || return 1
+}
+
 #
-function TEST_corrupt_snapset_scrub_rep() {
+function TES_corrupt_snapset_scrub_rep() {
     local dir=$1
     local poolname=csr_pool
     local total_objs=2
