@@ -203,8 +203,8 @@ function teardown() {
      mv $dir/*.log $TESTDIR/archive/log
  fi
     fi
-    rm -fr $dir
-    rm -rf $(get_asok_dir)
+    #rm -fr $dir
+    #rm -rf $(get_asok_dir)
     if [ "$cores" = "yes" ]; then
         echo "ERROR: Failure due to cores found"
         if [ -n "$LOCALRUN" ]; then
@@ -991,9 +991,10 @@ function activate_osd() {
                 echo "ERROR: crimson-osd binary not found for OSD $id"
                 return 1
             fi
-            # Crimson requires msgr2
+            # Crimson requires msgr2 and explicit objectstore type
             ceph_args+=" --ms-bind-msgr2=true"
             ceph_args+=" --ms-bind-msgr1=false"
+            ceph_args+=" --osd_objectstore=$osd_type"
         else
             # Classic OSD
             ceph_args+=" --debug-osd=20"

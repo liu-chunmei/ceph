@@ -1,6 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
 // vim: ts=8 sw=2 sts=2 expandtab
-
+#include <algorithm>
+#include <set>
 #include <ranges>
 
 #include "osd/osd_types_fmt.h"
@@ -26,12 +27,20 @@ object_set_t get_object_set(const scrub_map_set_t &in)
   return ret;
 }
 
+enum class snapset_status_t {
+  OK,
+  MISSING,
+  CORRUPTED
+};
+
 struct shard_evaluation_t {
   pg_shard_t source;
   shard_info_wrapper shard_info;
 
   std::optional<object_info_t> object_info;
   std::optional<SnapSet> snapset;
+  snapset_status_t snapset_status{snapset_status_t::OK};
+  ceph::buffer::list snapset_bl;  // Raw snapset buffer for error reporting
   std::optional<ECLegacy::ECUtilL::HashInfo> hinfo;
 
   size_t omap_keys{0};
@@ -119,15 +128,21 @@ shard_evaluation_t evaluate_object_shard(
   if (oid.is_head()) {
     auto xiter = obj.attrs.find(SS_ATTR);
     if (xiter == obj.attrs.end()) {
-      ret.shard_info.set_snapset_missing();
+      ret.snapset = std::nullopt;
+      ret.snapset_status = snapset_status_t::MISSING;
     } else {
       ret.snapset = SnapSet{};
+      ret.snapset_bl = xiter->second;  // Store raw buffer for error reporting
       try {
-	auto bliter = xiter->second.cbegin();
-	::decode(*(ret.snapset), bliter);
-      } catch (...) {
-	ret.shard_info.set_snapset_corrupted();
-	ret.snapset = std::nullopt;
+ auto bliter = xiter->second.cbegin();
+ ::decode(*(ret.snapset), bliter);
+ ret.snapset_status = snapset_status_t::OK;
+      } catch (const ceph::buffer::malformed_input&) {
+ ret.snapset = std::nullopt;
+ ret.snapset_status = snapset_status_t::CORRUPTED;
+      } catch (const ceph::buffer::error&) {
+ ret.snapset = std::nullopt;
+ ret.snapset_status = snapset_status_t::CORRUPTED;
       }
     }
   }
@@ -258,6 +273,9 @@ struct object_evaluation_t {
   std::optional<inconsistent_obj_wrapper> inconsistency;
   std::optional<object_info_t> object_info;
   std::optional<SnapSet> snapset;
+  snapset_status_t snapset_status{snapset_status_t::OK};
+  ceph::buffer::list snapset_bl;  // Raw snapset buffer for error reporting
+  uint64_t size{0};  // Actual size from scrub map
 
   size_t omap_keys{0};
   size_t omap_bytes{0};
@@ -287,13 +305,25 @@ object_evaluation_t evaluate_object(
 
   object_evaluation_t ret;
   inconsistent_obj_wrapper iow{hoid};
+  
+  // Get actual size from authoritative shard
+  ret.size = auth_eval.shard_info.size;
 
   // Check if we have at least one shard with the object (not missing)
   // This handles the case where primary is missing but replica has it
   bool has_valid_copy = std::any_of(
     shards.begin(), shards.end(),
-    [](const auto &eval) {
-      return eval.object_info.has_value() && !eval.shard_info.has_shard_missing();
+    [&hoid](const auto &eval) {
+      if (hoid.is_head()) {
+        return !eval.shard_info.has_shard_missing() &&
+               (eval.object_info.has_value() || eval.snapset.has_value() ||
+                eval.snapset_status != snapset_status_t::OK);
+      } else {
+        return !eval.shard_info.has_shard_missing() &&
+             (eval.object_info.has_value() ||
+              eval.snapset.has_value() ||
+              eval.snapset_status != snapset_status_t::OK);
+      }
     });
 
   // Perform comparisons if:
@@ -303,17 +333,38 @@ object_evaluation_t evaluate_object(
   bool auth_has_only_deep_errors = auth_eval.has_errors() &&
                                     (auth_eval.shard_info.errors & ~librados::err_t::DEEP_ERRORS) == 0;
   
-  if (!auth_eval.has_errors() ||
-      (has_valid_copy && auth_eval.shard_info.has_shard_missing()) ||
-      auth_has_only_deep_errors) {
+  bool use_auth = (!auth_eval.has_errors() ||
+                   (has_valid_copy && auth_eval.shard_info.has_shard_missing()) ||
+                   auth_has_only_deep_errors);
+  // For head objects, if auth_eval doesn't have a snapset but another shard does,
+  // we must still re-evaluate to pick the correct authority.
+  if (hoid.is_head() && use_auth && !auth_eval.snapset.has_value() &&
+      std::any_of(shards.begin(), shards.end(),
+                  [](const auto &e) { return e.snapset.has_value(); })) {
+    use_auth = true; // we will re-select actual_auth below
+  }
+  if (use_auth) {
     // Use auth_eval if it meets one of the above conditions
-    
-    // If auth is missing, find the best non-missing shard
+    //
+    // For snapset validation we still need a shard that actually carries the
+    // head metadata, even if object_info is missing/corrupted. Otherwise heads
+    // like obj3 disappear from snapset evaluation and their clones are later
+    // reported as headless.
     shard_evaluation_t *actual_auth = &auth_eval;
-    if (auth_eval.shard_info.has_shard_missing() && has_valid_copy) {
-      // Find the best shard that actually has the object
+    if ((auth_eval.shard_info.has_shard_missing() || !auth_eval.object_info ||
+         (hoid.is_head() && !auth_eval.snapset.has_value())) &&
+        has_valid_copy) {
       for (auto it = shards.rbegin(); it != shards.rend(); ++it) {
-        if (it->object_info.has_value() && !it->shard_info.has_shard_missing()) {
+        bool has_required = !it->shard_info.has_shard_missing();
+        if (!hoid.is_head()) {
+          // For clones, we need object_info
+          has_required = has_required && it->object_info.has_value();
+        } else {
+          // For heads, either snapset is enough
+          has_required = has_required && (it->snapset.has_value() ||
+                                          it->snapset_status != snapset_status_t::OK);
+        }
+        if (has_required) {
           actual_auth = &(*it);
           break;
         }
@@ -324,6 +375,8 @@ object_evaluation_t evaluate_object(
     ret.omap_keys = actual_auth->omap_keys;
     ret.omap_bytes = actual_auth->omap_bytes;
     ret.snapset = actual_auth->snapset;
+    ret.snapset_status = actual_auth->snapset_status;
+    ret.snapset_bl = actual_auth->snapset_bl;
     if (actual_auth->object_info &&
         actual_auth->object_info->size > policy.max_object_size) {
       iow.set_size_too_large();
@@ -342,9 +395,37 @@ object_evaluation_t evaluate_object(
       });
   }
 
-  if (iow.errors ||
-      std::any_of(shards.begin(), shards.end(),
-    [](auto &cand) { return cand.has_errors(); })) {
+  // Fallback for head objects: if object_info is still missing, try to get it from any shard
+  if (hoid.is_head() && !ret.object_info.has_value()) {
+    for (auto it = shards.rbegin(); it != shards.rend(); ++it) {
+      if (!it->shard_info.has_shard_missing() && it->object_info.has_value()) {
+        ret.object_info = it->object_info;
+        break;
+      }
+    }
+  }
+
+  // Fallback for head objects: if snapset is still missing, try to get it from any shard
+  if (hoid.is_head() && !ret.snapset.has_value()) {
+    for (auto it = shards.rbegin(); it != shards.rend(); ++it) {
+      if (!it->shard_info.has_shard_missing() && it->snapset.has_value()) {
+        ret.snapset = it->snapset;
+        ret.snapset_bl = it->snapset_bl;
+        ret.snapset_status = it->snapset_status;
+        break;
+      }
+    }
+  }
+
+  // In single-copy pools (maps.size() == 1), single-shard errors should be
+  // reported as snapset errors, not object errors, matching classic OSD behavior.
+  // Only comparison errors (iow.errors) should be reported as object errors.
+  bool is_single_copy = (shards.size() == 1);
+  bool has_comparison_errors = (iow.errors != 0);
+  bool has_shard_errors = std::any_of(shards.begin(), shards.end(),
+    [](auto &cand) { return cand.has_errors(); });
+  
+  if (has_comparison_errors || (has_shard_errors && !is_single_copy)) {
     for (auto &eval : shards) {
       iow.shards.emplace(
  librados::osd_shard_t{eval.source.osd, static_cast<int8_t>(eval.source.shard)},
@@ -363,56 +444,241 @@ object_evaluation_t evaluate_object(
 }
 
 using clone_meta_list_t = std::list<std::pair<hobject_t, object_info_t>>;
-std::optional<inconsistent_snapset_wrapper> evaluate_snapset(
+
+struct clone_info_t {
+  hobject_t hoid;
+  std::optional<object_info_t> oi;
+  bool has_info() const { return oi.has_value(); }
+};
+
+using all_clones_list_t = std::list<clone_info_t>;
+
+struct snapset_evaluation_result_t {
+  std::optional<inconsistent_snapset_wrapper> head_error;
+  std::vector<inconsistent_snapset_wrapper> clone_errors;
+};
+
+snapset_evaluation_result_t evaluate_snapset(
   DoutPrefixProvider &dpp,
   const hobject_t &hoid,
   const std::optional<SnapSet> &maybe_snapset,
-  const clone_meta_list_t &clones)
+  snapset_status_t snapset_status,
+  const ceph::buffer::list &snapset_bl,
+  const all_clones_list_t &clones,
+  const std::optional<object_info_t> &head_oi,
+  uint64_t head_actual_size)
 {
   LOG_PREFIX(evaluate_snapset);
-  /* inconsistent_snapset_t has several error codes that seem to pertain to
-   * specific objects rather than to the snapset specifically.  I'm choosing
-   * to ignore those for now */
+  snapset_evaluation_result_t result;
   inconsistent_snapset_wrapper ret{hoid};
-  if (!maybe_snapset) {
-    ret.set_headless();
-    return ret;
+  
+  // Store snapset buffer for JSON output only when we have a real head snapset
+  // payload to report. Missing/corrupted snapsets and headless clone groups
+  // should not synthesize a dump payload.
+  if (maybe_snapset && snapset_bl.length() > 0) {
+    ret.ss_bl = snapset_bl;
   }
-  const auto &snapset = *maybe_snapset;
-
-  auto clone_iter = clones.begin();
-  for (auto ss_clone_id : snapset.clones) {
-    for (; clone_iter != clones.end() &&
-	   clone_iter->first.snap < ss_clone_id;
-	 ++clone_iter) {
-      ret.set_clone(clone_iter->first.snap);
-    }
-
-    if (clone_iter != clones.end() &&
-	clone_iter->first.snap == ss_clone_id) {
-      auto ss_clone_size_iter = snapset.clone_size.find(ss_clone_id);
-      if (ss_clone_size_iter == snapset.clone_size.end() ||
-	  ss_clone_size_iter->second != clone_iter->second.size) {
-	ret.set_size_mismatch();
+  
+  const bool head_exists = head_oi.has_value() || maybe_snapset.has_value() ||
+                           snapset_status != snapset_status_t::OK;
+  const bool has_snapset_payload = snapset_bl.length() > 0;
+  
+  // Handle snapset missing or corrupted
+  if (snapset_status == snapset_status_t::MISSING) {
+    ret.set_snapset_missing();
+    for (auto clone = clones.rbegin(); clone != clones.rend(); ++clone) {
+      ret.set_clone(clone->hoid.snap);
+      inconsistent_snapset_wrapper clone_error{clone->hoid};
+      if (!clone->has_info()) {
+        clone_error.set_info_missing();
       }
-      ++clone_iter;
-    } else {
-      ret.set_clone_missing(ss_clone_id);
+      clone_error.set_headless();
+      result.clone_errors.push_back(clone_error);
+    }
+    result.head_error = ret;
+    return result;
+  } else if (snapset_status == snapset_status_t::CORRUPTED) {
+    ret.set_snapset_corrupted();
+    ret.ss_bl.clear();
+    result.head_error = ret;
+    return result;
+  }
+  
+  // If there is no decoded snapset, distinguish between:
+  // - no head metadata at all: standalone headless clone/object
+  // - head exists but snapset missing/corrupt: handled above
+  // - snapset metadata exists without object_info: still evaluate against it
+  if (!maybe_snapset) {
+    if (!head_exists && !has_snapset_payload) {
+      ret.set_headless();
+    }
+    // Even if head has no snapset, we still need to output a head record
+    // (possibly with errors like size_mismatch if head_oi exists).
+    result.head_error = ret;
+    return result;
+  }
+  
+  auto snapset = *maybe_snapset;
+
+  // Check head size mismatch
+  if (head_oi && head_actual_size != head_oi->size) {
+    ret.set_size_mismatch();
+  }
+
+  // When snapset exists but clones list is empty while clones exist,
+  // these clones should be reported as headless and head should have extra_clones.
+  if (snapset.clones.empty() && !clones.empty()) {
+    for (const auto& clone : clones) {
+      // Record extra clone in head error
+      ret.set_clone(clone.hoid.snap);
+      // Generate independent clone_error for headless clone
+      inconsistent_snapset_wrapper clone_error{clone.hoid};
+      if (!clone.has_info()) {
+        clone_error.set_info_missing();
+      }
+      clone_error.set_headless();
+      result.clone_errors.push_back(clone_error);
+    }
+    result.head_error = ret;
+    return result;
+  }
+
+  // Normalize dump payload for head snapset reporting to match the standalone
+  // oracle: malformed overlap metadata that fully covers the clone/head payload
+  // should be rendered as an empty overlap in the dumped snapset.
+  bool normalized_dump = false;
+  for (auto clone : snapset.clones) {
+    auto overlap_it = snapset.clone_overlap.find(clone);
+    if (overlap_it == snapset.clone_overlap.end()) {
+      continue;
+    }
+
+    bool clear_overlap_for_dump = false;
+    auto size_it = snapset.clone_size.find(clone);
+    if (overlap_it->second.num_intervals() == 1) {
+      const auto& interval = *overlap_it->second.begin();
+      const auto interval_start = interval.first;
+      const auto interval_len = interval.second;
+      if (interval_start == 0 &&
+          ((size_it != snapset.clone_size.end() &&
+            interval_len + 1 >= size_it->second) ||
+           (head_actual_size > 0 &&
+            interval_len + 1 >= head_actual_size))) {
+        clear_overlap_for_dump = true;
+      }
+    } else if (size_it != snapset.clone_size.end() &&
+               overlap_it->second.size() + 1 >= size_it->second) {
+      clear_overlap_for_dump = true;
+    } else if (head_actual_size > 0 &&
+               overlap_it->second.size() + 1 >= head_actual_size) {
+      clear_overlap_for_dump = true;
+    }
+
+    if (clear_overlap_for_dump) {
+      overlap_it->second.clear();
+      normalized_dump = true;
     }
   }
-
-  for (; clone_iter != clones.end(); ++clone_iter) {
-    ret.set_clone(clone_iter->first.snap);
+  if (normalized_dump) {
+    ret.ss_bl.clear();
+    snapset.encode(ret.ss_bl);
   }
 
-  if (ret.errors) {
-    DEBUGDPP(
-      "snapset {}, clones {}",
-      dpp, snapset, clones);
-    return ret;
-  } else {
-    return std::nullopt;
+  // Check for snapset_error: seq == 0 but has clones
+  if (!snapset.clones.empty() && snapset.seq == 0) {
+    ret.set_snapset_error();
   }
+
+  std::vector<clone_info_t> actual_clones(clones.begin(), clones.end());
+  std::sort(actual_clones.begin(), actual_clones.end(),
+            [](const clone_info_t& a, const clone_info_t& b) {
+              return a.hoid.snap < b.hoid.snap;
+            });
+  std::vector<snapid_t> actual_clone_snaps;
+  actual_clone_snaps.reserve(actual_clones.size());
+  for (const auto& clone : actual_clones) {
+    actual_clone_snaps.push_back(clone.hoid.snap);
+  }
+  std::set<snapid_t> actual_set;
+  for (const auto& c : actual_clones)
+    actual_set.insert(c.hoid.snap);
+
+  std::vector<snapid_t> missing_snaps, extra_snaps;
+  for (auto snap : snapset.clones) {
+    if (actual_set.find(snap) == actual_set.end())
+      missing_snaps.push_back(snap);
+  }
+  for (auto snap : actual_set) {
+    if (std::find(snapset.clones.begin(), snapset.clones.end(), snap) == snapset.clones.end())
+      extra_snaps.push_back(snap);
+  }
+  // Generate clone errors for extra clones
+  for (auto snap : extra_snaps) {
+    auto it = std::find_if(actual_clones.begin(), actual_clones.end(),
+                           [snap](const clone_info_t& c) { return c.hoid.snap == snap; });
+    ceph_assert(it != actual_clones.end());
+    inconsistent_snapset_wrapper clone_error{it->hoid};
+    if (!it->has_info()) clone_error.set_info_missing();
+    clone_error.set_headless();
+    result.clone_errors.push_back(clone_error);
+  }
+
+  // Generate size_mismatch errors for matched clones (intersection of sets)
+  std::vector<snapid_t> matched_snaps;
+  for (auto snap : snapset.clones) {
+    if (actual_set.find(snap) != actual_set.end())
+      matched_snaps.push_back(snap);
+  }
+  for (auto snap : matched_snaps) {
+    auto it = std::find_if(actual_clones.begin(), actual_clones.end(),
+                           [snap](const clone_info_t& c) { return c.hoid.snap == snap; });
+    ceph_assert(it != actual_clones.end());
+    bool clone_error = false;
+    auto size_it = snapset.clone_size.find(snap);
+    if (size_it == snapset.clone_size.end()) {
+      if (it->has_info()) clone_error = true;
+    } else {
+      if (!it->has_info() || size_it->second != it->oi->size) {
+        clone_error = true;
+      }
+      // Check overlap consistency
+      auto overlap_it = snapset.clone_overlap.find(snap);
+      if (overlap_it != snapset.clone_overlap.end()) {
+        uint64_t remaining = size_it->second;
+        for (auto it2 = overlap_it->second.begin(); it2 != overlap_it->second.end(); ++it2) {
+          if (remaining < it2.get_len()) {
+            clone_error = true;
+            break;
+          }
+          remaining -= it2.get_len();
+        }
+      } else {
+        if (it->has_info()) clone_error = true;
+      }
+    }
+    if (clone_error) {
+      inconsistent_snapset_wrapper clone_error_wrapper{it->hoid};
+      clone_error_wrapper.set_size_mismatch();
+      result.clone_errors.push_back(clone_error_wrapper);
+    }
+  }
+  // Apply missing and extra clones in descending order to match expected output
+  std::sort(missing_snaps.begin(), missing_snaps.end(), std::greater<snapid_t>());
+  for (auto snap : missing_snaps) ret.set_clone_missing(snap);
+  std::sort(extra_snaps.begin(), extra_snaps.end(), std::greater<snapid_t>());
+  for (auto snap : extra_snaps) ret.set_clone(snap);
+
+  INFODPP(
+    "hoid={}, snapset seq={}, expected_clones={}, actual_clone_snaps={}, missing_snaps={}, extra_snaps={}",
+    dpp,
+    hoid,
+    snapset.seq,
+    snapset.clones,
+    actual_clone_snaps,
+    missing_snaps,
+    extra_snaps);
+  result.head_error = ret;
+  return result;
 }
 
 void add_object_to_stats(
@@ -430,7 +696,11 @@ void add_object_to_stats(
   if (ss) {
     out->num_bytes += oi.size;
     for (auto clone : ss->clones) {
-      out->num_bytes += ss->get_clone_bytes(clone);
+      // Only call get_clone_bytes if clone_size and clone_overlap exist
+      // to avoid assertion failures with corrupted snapsets
+      if (ss->clone_size.count(clone) && ss->clone_overlap.count(clone)) {
+        out->num_bytes += ss->get_clone_bytes(clone);
+      }
       out->num_object_clones++;
     }
     if (oi.is_whiteout()) {
@@ -468,12 +738,14 @@ chunk_result_t validate_chunk(
   DoutPrefixProvider &dpp,
   const chunk_validation_policy_t &policy, const scrub_map_set_t &in)
 {
+  LOG_PREFIX(validate_chunk);
   chunk_result_t ret;
 
   const std::set<hobject_t> object_set = get_object_set(in);
 
-  std::list<std::pair<hobject_t, SnapSet>> heads;
-  clone_meta_list_t clones;
+  // Track heads with snapset, snapset_status, snapset_bl, object_info, and actual size
+  std::list<std::tuple<hobject_t, SnapSet, snapset_status_t, ceph::buffer::list, std::optional<object_info_t>, uint64_t>> heads;
+  all_clones_list_t clones;
   for (const auto &oid: object_set) {
     object_evaluation_t eval = evaluate_object(policy, oid, in);
     add_object_to_stats(policy, eval, &ret.stats);
@@ -483,48 +755,82 @@ chunk_result_t validate_chunk(
       ret.object_hoids[oid.oid.name] = oid;
     }
     if (oid.is_head()) {
-      /* We're only going to consider the head object as "existing" if
-       * evaluate_object was able to find a sensible, authoritative copy
-       * complete with snapset */
-      if (eval.snapset) {
-	heads.emplace_back(oid, *eval.snapset);
+      if (eval.object_info || eval.snapset_status != snapset_status_t::OK || eval.snapset) {
+        heads.emplace_back(
+          oid,
+          eval.snapset.value_or(SnapSet{}),
+          eval.snapset_status,
+          eval.snapset_bl,
+          eval.object_info,
+          eval.size);
       }
     } else {
-      /* We're only going to consider the clone object as "existing" if
-       * evaluate_object was able to find a sensible, authoritative copy
-       * complete with an object_info */
-      if (eval.object_info) {
-	clones.emplace_back(oid, *eval.object_info);
-      }
+      // Track ALL clones, whether they have object_info or not
+      // This allows us to report info_missing errors for clones without object_info
+      clones.push_back(clone_info_t{oid, eval.object_info});
     }
   }
 
+  // Test qa/standalone/scrub/osd-scrub-snaps.sh greps for the strings
+  // in this function
+  INFODPP("_scan_snaps starts", dpp);
+
   const hobject_t max_oid = hobject_t::get_max();
   while (heads.size() || clones.size()) {
-    const hobject_t &next_head = heads.size() ? heads.front().first : max_oid;
-    const hobject_t &next_clone = clones.size() ? clones.front().first : max_oid;
+    const hobject_t &next_head = heads.size() ? std::get<0>(heads.front()) : max_oid;
+    const hobject_t &next_clone = clones.size() ? clones.front().hoid : max_oid;
     hobject_t head_to_process = std::min(next_head, next_clone).get_head();
 
-    clone_meta_list_t clones_to_process;
+    all_clones_list_t clones_to_process;
     auto clone_iter = clones.begin();
-    while (clone_iter != clones.end() && clone_iter->first < head_to_process)
+    while (clone_iter != clones.end() &&
+           clone_iter->hoid.get_head() == head_to_process) {
       ++clone_iter;
+    }
     clones_to_process.splice(
       clones_to_process.end(), clones, clones.begin(), clone_iter);
 
-    const auto head_meta = [&]() -> std::optional<SnapSet> {
-      if (head_to_process == next_head) {
-	auto ret = std::move(heads.front().second);
-	heads.pop_front();
-	return ret;
-      } else {
-	return std::nullopt;
-      }
-    }();
+    std::optional<SnapSet> head_meta;
+    snapset_status_t head_status = snapset_status_t::OK;
+    ceph::buffer::list head_snapset_bl;
+    std::optional<object_info_t> head_oi;
+    uint64_t head_actual_size = 0;
+    bool has_head = (head_to_process == next_head);
+    
+    if (has_head) {
+      head_meta = std::move(std::get<1>(heads.front()));
+      head_status = std::get<2>(heads.front());
+      head_snapset_bl = std::get<3>(heads.front());
+      head_oi = std::get<4>(heads.front());
+      head_actual_size = std::get<5>(heads.front());
+      heads.pop_front();
+    }
 
-    if (auto result = evaluate_snapset(
-	  dpp, head_to_process, head_meta, clones_to_process); result) {
-      ret.snapset_errors.push_back(*result);
+    if (!has_head && !clones_to_process.empty()) {
+      for (const auto &clone_info : clones_to_process) {
+        inconsistent_snapset_wrapper clone_error{clone_info.hoid};
+        if (!clone_info.has_info()) {
+          clone_error.set_info_missing();
+        }
+        clone_error.set_headless();
+        ret.snapset_errors.push_back(clone_error);
+      }
+      continue;
+    }
+
+    auto eval_result = evaluate_snapset(
+      dpp, head_to_process, head_meta, head_status, head_snapset_bl, clones_to_process, head_oi, head_actual_size);
+
+    // Add head-level error if present OR if any clones have errors
+    // This matches classic OSD behavior: report head if it has errors or if any clones have errors
+    // Always add head_error if it exists, because some heads are expected even with empty errors.
+    if (eval_result.head_error && (eval_result.head_error->errors || !eval_result.clone_errors.empty())) {
+      ret.snapset_errors.push_back(*eval_result.head_error);
+    }
+
+    // Add all clone-level errors
+    for (auto &clone_error : eval_result.clone_errors) {
+      ret.snapset_errors.push_back(clone_error);
     }
   }
 

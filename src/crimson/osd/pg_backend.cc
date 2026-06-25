@@ -1194,23 +1194,19 @@ PGBackend::list_objects(
       store, coll, gstart, gend, limit, 0));
 
   std::vector<hobject_t> objects;
-  boost::copy(
-    gobjects |
-    boost::adaptors::filtered([](const ghobject_t& o) {
-      if (o.is_pgmeta()) {
-	return false;
-      } else if (o.hobj.is_temp()) {
-	return false;
-      } else if (o.is_internal_pg_local()) {
-	return false;
-      } else {
-	return o.is_no_gen();
-      }
-    }) |
-    boost::adaptors::transformed([](const ghobject_t& o) {
-      return o.hobj;
-    }),
-    std::back_inserter(objects));
+  objects.reserve(gobjects.size());
+  for (const auto& o : gobjects) {
+    if (o.is_pgmeta()) {
+      continue;
+    } else if (o.hobj.is_temp()) {
+      continue;
+    } else if (o.is_internal_pg_local()) {
+      continue;
+    } else if (!o.is_no_gen()) {
+      continue;
+    }
+    objects.push_back(o.hobj);
+  }
   co_return std::make_tuple(objects, next.hobj);
 }
 

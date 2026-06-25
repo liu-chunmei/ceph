@@ -95,9 +95,13 @@ ScrubFindRange::ifut<> ScrubFindRange::run(PG &pg)
 {
   LOG_PREFIX(ScrubFindRange::run);
   using crimson::common::local_conf;
+  
+  // Use osd_shallow_scrub_chunk_max for shallow scrubs, osd_scrub_chunk_max for deep scrubs
+  // This matches classic OSD behavior
+  const char* chunk_config = pg.scrubber.m_is_deep ? "osd_scrub_chunk_max" : "osd_shallow_scrub_chunk_max";
   auto [_, next] = co_await pg.backend->list_objects(
     begin,
-    local_conf().get_val<int64_t>("osd_scrub_chunk_max"));
+    local_conf().get_val<int64_t>(chunk_config));
 
   // We rely on seeing an entire set of snapshots in a single chunk
   auto end = next.get_max_object_boundary();

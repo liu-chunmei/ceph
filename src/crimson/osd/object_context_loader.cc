@@ -135,6 +135,16 @@ ObjectContextLoader::load_and_lock_clone(
     }
   }
 
+  // Check if objects are corrupted (missing snapset)
+  if (!manager.target_state.obc->ssc || !manager.head_state.obc->ssc) {
+    LOG_PREFIX(ObjectContextLoader::load_and_lock_clone);
+    ERRORDPP("object {} or head {} has null ssc - corrupted snapset",
+             dpp, manager.target, manager.head_state.obc->get_oid());
+    co_await load_obc_iertr::future<>(
+      crimson::ct_error::object_corrupted::make()
+    );
+  }
+
   ceph_assert(manager.target_state.obc->ssc);
   ceph_assert(manager.head_state.obc->ssc);
   releaser.cancel();

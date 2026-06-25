@@ -152,6 +152,7 @@ seastar::future<bool> StoreTool::set_omap(
     omap_values[key] = std::move(bl);
     txn.omap_setkeys(cid, oid, omap_values);
     co_await store->get_sharded_store().do_transaction(coll, std::move(txn));
+    co_await store->get_sharded_store().flush(coll);
     co_return true;
   });
 }
@@ -176,6 +177,7 @@ seastar::future<bool> StoreTool::remove_omap(
     ceph::os::Transaction txn;
     txn.omap_rmkey(cid, oid, key);
     co_await store->get_sharded_store().do_transaction(coll, std::move(txn));
+    co_await store->get_sharded_store().flush(coll);
     co_return true;
   });
 }
@@ -236,6 +238,7 @@ seastar::future<bool> StoreTool::set_omap_header(
     bl.append(header.c_str(), header.length());
     txn.omap_setheader(cid, oid, bl);
     co_await store->get_sharded_store().do_transaction(coll, std::move(txn));
+    co_await store->get_sharded_store().flush(coll);
     co_return true;
   });
 }
@@ -321,6 +324,7 @@ seastar::future<bool> StoreTool::set_bytes(
     txn.write(cid, oid, 0, data.length(), bl, 0);
 
     co_await store->get_sharded_store().do_transaction(coll, std::move(txn));
+    co_await store->get_sharded_store().flush(coll);
     co_return true;
   });
 }
@@ -413,6 +417,7 @@ seastar::future<bool> StoreTool::set_attr(
     txn.setattr(cid, oid, key, bl);
 
     co_await store->get_sharded_store().do_transaction(coll, std::move(txn));
+    co_await store->get_sharded_store().flush(coll);
     co_return true;
   });
 }
@@ -439,6 +444,7 @@ seastar::future<bool> StoreTool::remove_attr(
     txn.rmattr(cid, oid, key);
 
     co_await store->get_sharded_store().do_transaction(coll, std::move(txn));
+    co_await store->get_sharded_store().flush(coll);
     co_return true;
   });
 }
@@ -489,6 +495,10 @@ seastar::future<bool> StoreTool::remove_object(
     }
 
     co_await store->get_sharded_store().do_transaction(coll, std::move(txn));
+    
+    // Flush to ensure the transaction is persisted to disk before unmounting
+    co_await store->get_sharded_store().flush(coll);
+    
     fmt::println(std::cout, "Successfully removed object {}", oid);
     co_return true;
   });
@@ -581,6 +591,7 @@ seastar::future<bool> StoreTool::set_object_size(
     txn.truncate(cid, oid, size);
 
     co_await store->get_sharded_store().do_transaction(coll, std::move(txn));
+    co_await store->get_sharded_store().flush(coll);
     co_return true;
   });
 }
@@ -606,6 +617,7 @@ seastar::future<bool> StoreTool::clear_data_digest(
     txn.rmattr(cid, oid, "data_digest");
     
     co_await store->get_sharded_store().do_transaction(coll, std::move(txn));
+    co_await store->get_sharded_store().flush(coll);
     co_return true;
   });
 }
@@ -668,6 +680,7 @@ seastar::future<bool> StoreTool::corrupt_info(
     txn.setattr(cid, oid, OI_ATTR, new_attr_bl);
     
     co_await store->get_sharded_store().do_transaction(coll, std::move(txn));
+    co_await store->get_sharded_store().flush(coll);
     co_return true;
   });
 }
@@ -675,11 +688,11 @@ seastar::future<bool> StoreTool::corrupt_info(
 seastar::future<bool> StoreTool::clear_snapset(
   const coll_t& cid,
   const ghobject_t& oid,
-  bool corrupt)
+  const std::string& arg)
 {
   return seastar::smp::submit_to(
     shard_id,
-    [this, cid, oid, corrupt]() -> seastar::future<bool>
+    [this, cid, oid, arg]() -> seastar::future<bool>
   {
     auto coll = co_await store->get_sharded_store().open_collection(cid
     ).handle_exception([](std::exception_ptr) {
@@ -720,13 +733,31 @@ seastar::future<bool> StoreTool::clear_snapset(
       co_return false;
     }
     
-    // Clear the snapset
-    snapset.clones.clear();
-    snapset.seq = 0;
+    // Selectively clear snapset fields based on arg parameter
+    // This matches the behavior of ceph-objectstore-tool
     
-    if (corrupt) {
-      // If corrupt flag is set, also corrupt the snapset by setting invalid seq
+    // Use "corrupt" to clear entire SnapSet
+    // Use "seq" to just corrupt SnapSet.seq
+    if (arg == "corrupt" || arg == "seq")
       snapset.seq = 0;
+    // Use "snaps" to just clear SnapSet.clone_snaps
+    if (arg == "corrupt" || arg == "snaps")
+      snapset.clone_snaps.clear();
+    // By default just clear clone, clone_overlap and clone_size
+    std::string clear_arg = arg;
+    if (arg == "corrupt")
+      clear_arg = "";
+    if (clear_arg == "" || clear_arg == "clones")
+      snapset.clones.clear();
+    if (clear_arg == "" || clear_arg == "clone_overlap")
+      snapset.clone_overlap.clear();
+    if (clear_arg == "" || clear_arg == "clone_size")
+      snapset.clone_size.clear();
+    // Break all clone sizes by adding 1
+    if (clear_arg == "size") {
+      for (auto& [snap, size] : snapset.clone_size) {
+        ++size;
+      }
     }
     
     // Re-encode and write back
@@ -737,6 +768,7 @@ seastar::future<bool> StoreTool::clear_snapset(
     txn.setattr(cid, oid, SS_ATTR, new_attr_bl);
     
     co_await store->get_sharded_store().do_transaction(coll, std::move(txn));
+    co_await store->get_sharded_store().flush(coll);
     co_return true;
   });
 }

@@ -342,6 +342,7 @@ bool PGScrubber::get_store_errors(const scrub_ls_arg_t& arg,
       auto deep_it = deep_map.find(obj_name);
       auto shallow_it = shallow_map.find(obj_name);
       
+      
       ceph::buffer::list bl;
       
       if (m_last_scrub_was_deep) {
