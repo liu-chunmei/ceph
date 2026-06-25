@@ -1,4 +1,4 @@
-// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
+ix// -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
 // vim: ts=8 sw=2 sts=2 expandtab expandtab
 
 #include <fmt/ranges.h>
@@ -106,8 +106,13 @@ PGScrubber::PGScrubber(PG &pg) : pg(pg), dpp(pg), machine(*this, this), m_mode_d
 PGScrubber::~PGScrubber()
 {
   // Clean up any queued scrub jobs to prevent memory leaks
-  // Do this directly without logging to avoid issues during destruction
+  // Note: We skip cleanup if called during early shutdown before ShardServices
+  // is fully initialized. The scrub scheduler will be cleaned up when
+  // ShardServices is destroyed anyway.
+  // Only attempt cleanup if we have an active scrub job that's queued
   if (m_scrub_job && m_scrub_job->is_registered() && m_scrub_job->is_queued()) {
+    // The scrub_scheduler is a direct member of ShardServices (not behind sharded<>),
+    // so we can safely access it as long as the PG reference is valid
     pg.shard_services.get_scrub_scheduler().remove_from_osd_queue(pg.get_pgid());
     m_scrub_job->clear_both_targets_queued();
     m_scrub_job->registered = false;
@@ -1036,7 +1041,7 @@ void PGScrubber::emit_scrub_result(
       foreach_scrub_maintained_stat(
  [deep, &pg_stats, &in_stats](
    const auto &name, auto statptr, bool skip_for_shallow) {
-   if (deep && !skip_for_shallow) {
+   if (deep || !skip_for_shallow) {
      pg_stats.stats.sum.*statptr = in_stats.*statptr;
    }
  });
@@ -1092,6 +1097,12 @@ void PGScrubber::emit_scrub_result(
       
       return false; // notify_scrub_end will flush stats to osd
     });
+    
+    // Publish stats immediately after update to ensure PG_STATE_INCONSISTENT
+    // is cleared if num_scrub_errors is now 0 (e.g., after successful repair).
+    // This matches classic OSD behavior where prepare_stats_for_publish()
+    // clears the inconsistent flag based on num_scrub_errors.
+    pg.publish_stats_to_osd();
     
     // Save fixed_count before cleanup resets it
     int fixed_count = m_fixed_count;

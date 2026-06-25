@@ -102,16 +102,7 @@ OSD::OSD(int id, uint32_t nonce,
     hb_front_msgr{hb_front_msgr},
     hb_back_msgr{hb_back_msgr},
     monc{new crimson::mon::Client{*public_msgr, *this}},
-    mgrc{new crimson::mgr::Client{
-      *public_msgr,
-      *this,
-      [this](const ConfigPayload &config_payload) {
-	return set_perf_queries(config_payload);
-      },
-      [this] {
-	return get_perf_reports();
-      }
-    }},
+    mgrc{new crimson::mgr::Client{*public_msgr, *this}},
     store{store},
     pg_shard_manager{osd_singleton_state,
                      shard_services,
@@ -493,9 +484,18 @@ seastar::future<> OSD::start()
       local_service.set_container(&shard_services);
     });
   }).then([this, FNAME] {
+    // Now that shard_services is fully initialized, register the mgr client callbacks
+    DEBUG("registering mgr client performance callbacks");
+    mgrc->set_perf_queries_callback([this](const ConfigPayload &config_payload) {
+      return set_perf_queries(config_payload);
+    });
+    mgrc->set_perf_report_callback([this] {
+      return get_perf_reports();
+    });
+    
     heartbeat.reset(new Heartbeat{
-	whoami, get_shard_services(),
-	*monc, *hb_front_msgr, *hb_back_msgr});
+ whoami, get_shard_services(),
+ *monc, *hb_front_msgr, *hb_back_msgr});
     DEBUG("mounting store");
     return store.mount().handle_error(
       crimson::stateful_ec::assert_failure(fmt::format(
@@ -1157,7 +1157,9 @@ void OSD::handle_conf_change(
   for (const auto& config : scrub_configs) {
     if (changed.contains(config)) {
       INFO("Scrub config changed: {}, updating scrub schedules", config);
-      get_shard_services().get_scrub_scheduler().on_config_change();
+      if (shard_services.local_is_initialized()) {
+        get_shard_services().get_scrub_scheduler().on_config_change();
+      }
       break;
     }
   }

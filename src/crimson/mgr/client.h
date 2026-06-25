@@ -37,14 +37,16 @@ class Client : public crimson::net::Dispatcher {
     std::function<seastar::future<> (const ConfigPayload &)>;
 public:
   Client(crimson::net::Messenger& msgr,
-	 WithStats& with_stats,
-	 set_perf_queries_cb_t cb_set,
-	 get_perf_report_cb_t cb_get);
+  WithStats& with_stats,
+  set_perf_queries_cb_t cb_set = nullptr,
+  get_perf_report_cb_t cb_get = nullptr);
   seastar::future<> start();
   seastar::future<> stop();
   seastar::future<> send(MessageURef msg);
   void report();
   void update_daemon_health(std::vector<DaemonHealthMetric>&& metrics);
+  void set_perf_queries_callback(set_perf_queries_cb_t cb);
+  void set_perf_report_callback(get_perf_report_cb_t cb);
 
 private:
   std::optional<seastar::future<>> ms_dispatch(

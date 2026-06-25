@@ -33,6 +33,16 @@ Client::Client(crimson::net::Messenger& msgr,
     get_perf_report_cb(cb_get)
 {}
 
+void Client::set_perf_queries_callback(set_perf_queries_cb_t cb)
+{
+  set_perf_queries_cb = cb;
+}
+
+void Client::set_perf_report_callback(get_perf_report_cb_t cb)
+{
+  get_perf_report_cb = cb;
+}
+
 seastar::future<> Client::start()
 {
   LOG_PREFIX(Client::start);
@@ -202,8 +212,7 @@ seastar::future<> Client::handle_mgr_conf(crimson::net::ConnectionRef,
   } else {
     report_timer.cancel();
   }
-  if (!m->osd_perf_metric_queries.empty()) {
-    ceph_assert(set_perf_queries_cb);
+  if (!m->osd_perf_metric_queries.empty() && set_perf_queries_cb) {
     co_await set_perf_queries_cb(m->osd_perf_metric_queries);
   }
 }
