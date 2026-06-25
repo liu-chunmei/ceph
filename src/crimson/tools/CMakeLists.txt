@@ -38,3 +38,5 @@ target_link_libraries(crimson-objectstore-tool
   crimson
   crimson-os)
 install(TARGETS crimson-objectstore-tool DESTINATION bin)
+
+#add_subdirectory(kvstore)

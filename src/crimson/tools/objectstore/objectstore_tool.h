@@ -116,7 +116,7 @@ public:
   seastar::future<bool> clear_snapset(
     const coll_t& cid,
     const ghobject_t& oid,
-    bool corrupt = false);
+    const std::string& arg = "");
 
 private:
   seastar::shard_id shard_id = 0;

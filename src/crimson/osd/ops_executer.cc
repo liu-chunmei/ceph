@@ -1079,11 +1079,15 @@ pg_log_entry_t OpsExecuter::complete_cloning_ctx()
 void OpsExecuter::update_clone_overlap() {
   interval_set<uint64_t> *newest_overlap;
   if (cloning_ctx) {
+    if (cloning_ctx->new_snapset.clone_overlap.empty()) {
+      return;
+    }
     newest_overlap =
       &cloning_ctx->new_snapset.clone_overlap.rbegin()->second;
-  } else if (op_info.may_write() 
-    && obc->obs.exists 
-    && !obc->ssc->snapset.clones.empty()) {
+  } else if (op_info.may_write()
+    && obc->obs.exists
+    && !obc->ssc->snapset.clones.empty()
+    && !obc->ssc->snapset.clone_overlap.empty()) {
     newest_overlap =
       &obc->ssc->snapset.clone_overlap.rbegin()->second;
   } else {

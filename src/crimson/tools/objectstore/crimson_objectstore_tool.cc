@@ -379,7 +379,7 @@ static seastar::future<bool> resolve_operation_parameters(
   // 2. Handle empty object case
   if (!op.object.has_value() || op.object->empty()) {
     if (op.op == operation_type_t::LIST_OBJECTS) {
-      co_return true;  // No object resolution needed for list operation
+      co_return true;  // No object resolution needed for list-all operation
     }
     if (!op.pgid.has_value()) {
       fmt::println(std::cerr, "PG ID is required for pgmeta operations");
@@ -394,11 +394,30 @@ static seastar::future<bool> resolve_operation_parameters(
     // 3. Handle non-empty object specification
     ghobject_t parsed_obj;
     bool is_json = false;
+    std::optional<pg_t> parsed_pgid;
+    
     try {
       json_spirit::Value json_val;
       if (json_spirit::read(*op.object, json_val)) {
-        parsed_obj.decode(json_val);
-        is_json = true;
+        // Check if it's an array format: ["pgid", {object}]
+        if (json_val.type() == json_spirit::array_type) {
+          auto& arr = json_val.get_array();
+          if (arr.size() == 2) {
+            // Extract PG ID from first element
+            std::string pgid_str = arr[0].get_str();
+            pg_t pgid;
+            if (pgid.parse(pgid_str.c_str())) {
+              parsed_pgid = pgid;
+            }
+            // Extract object from second element
+            parsed_obj.decode(arr[1]);
+            is_json = true;
+          }
+        } else {
+          // Direct object JSON format
+          parsed_obj.decode(json_val);
+          is_json = true;
+        }
       }
     } catch (...) {
       is_json = false;
@@ -407,7 +426,13 @@ static seastar::future<bool> resolve_operation_parameters(
     if (is_json) {
       // JSON object specification
       config.ghobj = parsed_obj;
-      if (!op.pgid.has_value()) {
+      
+      // Use parsed pgid if available, otherwise require it from command line
+      if (parsed_pgid.has_value()) {
+        op.pgid = parsed_pgid;
+        config.pgid = spg_t(*parsed_pgid);
+        config.coll = coll_t(config.pgid);
+      } else if (!op.pgid.has_value()) {
         fmt::println(std::cerr, "PG ID is required when object is specified as JSON");
         co_return false;
       }
@@ -416,6 +441,12 @@ static seastar::future<bool> resolve_operation_parameters(
       co_return co_await find_shard_for_object(st, config, "JSON");
     } else {
       // Object name lookup
+      // For LIST_OBJECTS operation, we don't need to resolve to a single object
+      // The filtering will be done during the list operation itself
+      if (op.op == operation_type_t::LIST_OBJECTS) {
+        co_return true;  // Object name will be used for filtering during list
+      }
+      
       LookupGhobject lookup(*op.object, config.namespace_, op.head);
       co_await action_on_all_objects(st, lookup, op.pgid);
 
@@ -795,8 +826,28 @@ seastar::future<int> run_tool(StoreTool& st, objectstore_config_t& config) {
     }
 
     case operation_type_t::LIST_OBJECTS: {
-      PrintObjectAction print_action;
-      co_await action_on_all_objects(st, print_action, op.pgid);
+      // If an object name is specified, filter by that name
+      if (op.object.has_value() && !op.object->empty()) {
+        LookupGhobject lookup(*op.object, config.namespace_, op.head);
+        co_await action_on_all_objects(st, lookup, op.pgid);
+        
+        // Print the found objects
+        for (const auto& found : lookup.objects) {
+          std::stringstream ss;
+          std::unique_ptr<Formatter> obj_formatter(Formatter::create("json"));
+          obj_formatter->dump_object("obj", found.ghobj);
+          obj_formatter->flush(ss);
+          std::string obj_json = ss.str();
+          if (!obj_json.empty() && obj_json.back() == '\n') {
+            obj_json.pop_back();
+          }
+          fmt::println(std::cout, R"(["{}",{}])", get_pgid_str_from_coll(found.coll), obj_json);
+        }
+      } else {
+        // No object name specified, list all objects
+        PrintObjectAction print_action;
+        co_await action_on_all_objects(st, print_action, op.pgid);
+      }
       break;
     }
 
@@ -1060,8 +1111,7 @@ seastar::future<int> run_tool(StoreTool& st, objectstore_config_t& config) {
     }
 
     case operation_type_t::CLEAR_SNAPSET: {
-      bool corrupt = (config.arg1 == "corrupt");
-      bool success = co_await st.clear_snapset(config.coll, config.ghobj, corrupt);
+      bool success = co_await st.clear_snapset(config.coll, config.ghobj, config.arg1);
       if (success) {
         fmt::println(std::cout, "clear snapset success");
       } else {
@@ -1240,10 +1290,16 @@ int main(int argc, const char* argv[])
       pgid = *pgid_result;
     }
 
+    // Check if an object name was provided as a positional argument
+    std::optional<std::string> object_str;
+    if (vm.count("object")) {
+      object_str = config.object;
+    }
+
     config.operation = operation_params_t{
       *op_result,
       pgid,
-      std::nullopt,
+      object_str,
       config.head,
       std::nullopt,
       std::nullopt,
@@ -1330,8 +1386,21 @@ int main(int argc, const char* argv[])
                 seastar::log_level::error
               );
             }
+            // Read the store type from metadata to ensure we use the correct type
+            std::string metadata_type = config.type;
+            std::string type_file = config.data_path + "/type";
+            std::ifstream type_stream(type_file);
+            if (type_stream.good()) {
+              std::getline(type_stream, metadata_type);
+              if (!metadata_type.empty() && metadata_type != config.type) {
+                fmt::println(std::cerr,
+                  "Warning: Store type mismatch. Metadata says '{}' but --type is '{}'. Using metadata type.",
+                  metadata_type, config.type);
+              }
+            }
+            
             auto store = crimson::os::FuturizedStore::create(
-              config.type,
+              metadata_type.empty() ? config.type : metadata_type,
               config.data_path,
               local_conf().get_config_values());
             store->start().get();

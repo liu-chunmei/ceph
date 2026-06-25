@@ -930,10 +930,10 @@ SeaStore::get_objs_range(CollectionRef ch, unsigned bits)
     obj_ranges.temp_end = obj_ranges.obj_end;
   }
 
-  obj_ranges.obj_begin.generation = 0;
-  obj_ranges.obj_end.generation = 0;
-  obj_ranges.temp_begin.generation = 0;
-  obj_ranges.temp_end.generation = 0;
+  obj_ranges.obj_begin.generation = ghobject_t::NO_GEN;
+  obj_ranges.obj_end.generation = ghobject_t::NO_GEN;
+  obj_ranges.temp_begin.generation = ghobject_t::NO_GEN;
+  obj_ranges.temp_end.generation = ghobject_t::NO_GEN;
   return obj_ranges;
 }
 
@@ -2052,20 +2052,34 @@ SeaStore::Shard::_do_transaction_step(
     }
   }).handle_error_interruptible(
     tm_iertr::pass_further{},
-    crimson::ct_error::enoent::handle([op] {
+    crimson::ct_error::enoent::handle([FNAME, op, &i] {
+      using ceph::os::Transaction;
       //OMAP_CLEAR, TRUNCATE, REMOVE etc ops will tolerate absent onode.
       if (op->op == Transaction::OP_CLONERANGE ||
           op->op == Transaction::OP_CLONE ||
           op->op == Transaction::OP_CLONERANGE2 ||
           op->op == Transaction::OP_COLL_ADD ||
-          op->op == Transaction::OP_SETATTR ||
-          op->op == Transaction::OP_SETATTRS ||
-          op->op == Transaction::OP_RMATTR ||
           op->op == Transaction::OP_OMAP_SETKEYS ||
           op->op == Transaction::OP_OMAP_RMKEYS ||
           op->op == Transaction::OP_OMAP_RMKEYRANGE ||
           op->op == Transaction::OP_OMAP_SETHEADER) {
         ceph_abort_msg("unexpected enoent error");
+      }
+      // For SETATTR, SETATTRS, RMATTR operations, log error but don't abort
+      // This can happen during snapshot trimming when objects are in corrupted state
+      // We must decode and skip the operation parameters to keep the iterator in sync
+      if (op->op == Transaction::OP_SETATTR) {
+        ERROR("OP_SETATTR encountered ENOENT - object may be in corrupted state, skipping");
+        std::string name = i.decode_string();
+        ceph::bufferlist bl;
+        i.decode_bl(bl);
+      } else if (op->op == Transaction::OP_SETATTRS) {
+        ERROR("OP_SETATTRS encountered ENOENT - object may be in corrupted state, skipping");
+        std::map<std::string, bufferlist> to_set;
+        i.decode_attrset(to_set);
+      } else if (op->op == Transaction::OP_RMATTR) {
+        ERROR("OP_RMATTR encountered ENOENT - object may be in corrupted state, skipping");
+        std::string name = i.decode_string();
       }
       return seastar::now();
     }),
