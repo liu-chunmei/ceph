@@ -1159,7 +1159,9 @@ void OSD::handle_conf_change(
   for (const auto& config : scrub_configs) {
     if (changed.contains(config)) {
       INFO("Scrub config changed: {}, updating scrub schedules", config);
-      get_shard_services().get_scrub_scheduler().on_config_change();
+      if (shard_services.local_is_initialized()) {
+        get_shard_services().get_scrub_scheduler().on_config_change();
+      }
       break;
     }
   }

@@ -1513,7 +1513,7 @@ void PGScrubber::emit_scrub_result(
       foreach_scrub_maintained_stat(
  [deep, &pg_stats, &in_stats](
    const auto &name, auto statptr, bool skip_for_shallow) {
-   if (deep && !skip_for_shallow) {
+   if (deep || !skip_for_shallow) {
      pg_stats.stats.sum.*statptr = in_stats.*statptr;
    }
  });
