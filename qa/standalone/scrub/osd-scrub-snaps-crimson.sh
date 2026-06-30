@@ -118,6 +118,16 @@ function create_scenario() {
 
     JSON="$(crimson-objectstore-tool --data-path $dir/${osd} --op list obj5 | grep \"snapid\":1)"
     OBJ5SAVE="$JSON"
+    # Starts with a snapmap
+    crimson-kvstore-tool $dir/${osd} list 2> /dev/null > $dir/drk.log
+    grep SNA_ $dir/drk.log
+    grep "^[pm].*SNA_.*[.]1[.]obj5[.][.]$" $dir/drk.log || return 1
+    crimson-objectstore-tool --data-path $dir/${osd} --rmtype nosnapmap "$JSON" remove || return 1
+    # Check that snapmap is still there
+    crimson-kvstore-tool $dir/${osd} list 2> /dev/null > $dir/drk.log
+    grep SNA_ $dir/drk.log
+    grep "^[pm].*SNA_.*[.]1[.]obj5[.][.]$" $dir/drk.log || return 1
+    rm -f $dir/drk.log
 
     JSON="$(crimson-objectstore-tool --data-path $dir/${osd} --op list obj5 | grep \"snapid\":4)"
     dd if=/dev/urandom of=$TESTDATA bs=256 count=18
@@ -129,6 +139,18 @@ function create_scenario() {
 
     JSON="$(crimson-objectstore-tool --data-path $dir/${osd} --op list obj4 | grep \"snapid\":7)"
     crimson-objectstore-tool --data-path $dir/${osd} "$JSON" remove || return 1
+
+    # Starts with a snapmap
+    crimson-kvstore-tool $dir/${osd} list 2> /dev/null > $dir/drk.log
+    grep SNA_ $dir/drk.log
+    grep "^[pm].*SNA_.*[.]7[.]obj16[.][.]$" $dir/drk.log || return 1
+    JSON="$(crimson-objectstore-tool --data-path $dir/${osd} --op list obj16 | grep \"snapid\":7)"
+    crimson-objectstore-tool --data-path $dir/${osd} --rmtype snapmap "$JSON" remove || return 1
+    # Check that snapmap is now removed
+    crimson-kvstore-tool $dir/${osd} list 2> /dev/null > $dir/drk.log
+    grep SNA_ $dir/drk.log
+    ! grep "^[pm].*SNA_.*[.]7[.]obj16[.][.]$" $dir/drk.log || return 1
+    rm -f $dir/drk.log
 
     JSON="$(crimson-objectstore-tool --data-path $dir/${osd} --head --op list obj2)"
     crimson-objectstore-tool --data-path $dir/${osd} "$JSON" rm-attr snapset || return 1
@@ -495,7 +517,8 @@ EOF
     },
     {
       "missing": [
-        2
+        2,
+        1
       ],
       "extra clones": [
         7
