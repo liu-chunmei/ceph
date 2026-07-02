@@ -427,6 +427,7 @@ SnapTrimObjSubEvent::start()
     // Set error state and stop snap trimming (do not remove from snap_mapper)
     // This requires manual repair intervention
     pg->get_peering_state().state_set(PG_STATE_SNAPTRIM_ERROR);
+    pg->publish_stats_to_osd();
     logger().error("{}: snap trim encountered corrupted object {}, stopping snap trim",
                    *this, coid);
     co_return;
