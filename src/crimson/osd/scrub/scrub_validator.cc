@@ -218,14 +218,24 @@ librados::obj_err_t compare_candidate_to_authoritative(
   }
 
   if (oid.is_head()) {
-    auto aiter = auth_si.attrs.find(SS_ATTR);
-    ceph_assert(aiter != auth_si.attrs.end());
-
-    auto citer = cand_si.attrs.find(SS_ATTR);
-    if (citer == cand_si.attrs.end() ||
-	!aiter->second.contents_equal(citer->second)) {
-      ret.errors |= obj_err_t::SNAPSET_INCONSISTENCY;
+    bool auth_bad = (auth.snapset_status != snapset_status_t::OK);
+    bool cand_bad = (cand.snapset_status != snapset_status_t::OK);
+    
+    if (!auth_bad && !cand_bad) {
+      // Both successfully decoded - compare raw SS_ATTR contents
+      auto aiter = auth_si.attrs.find(SS_ATTR);
+      auto citer = cand_si.attrs.find(SS_ATTR);
+      
+      if (aiter != auth_si.attrs.end() && citer != cand_si.attrs.end()) {
+        if (!aiter->second.contents_equal(citer->second)) {
+          ret.errors |= obj_err_t::SNAPSET_INCONSISTENCY;
+        }
+      } else if ((aiter != auth_si.attrs.end()) != (citer != cand_si.attrs.end())) {
+        // One has SS_ATTR, one doesn't (shouldn't happen if both decoded OK)
+        ret.errors |= obj_err_t::SNAPSET_INCONSISTENCY;
+      }
     }
+    // If either side has missing/corrupted, skip comparison (handled elsewhere)
   }
 
   if (policy.is_ec()) {

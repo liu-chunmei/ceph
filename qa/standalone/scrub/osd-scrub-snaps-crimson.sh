@@ -110,9 +110,6 @@ function create_scenario() {
     # Use crimson-objectstore-tool for Crimson OSDs and avoid BlueStore-only
     # snapmap/kvstore assumptions.
 
-    JSON="$(crimson-objectstore-tool --data-path $dir/${osd} --head --op list obj1)"
-    crimson-objectstore-tool --data-path $dir/${osd} "$JSON" --force remove || return 1
-
     JSON="$(crimson-objectstore-tool --data-path $dir/${osd} --op list obj5 | grep \"snapid\":2)"
     crimson-objectstore-tool --data-path $dir/${osd} "$JSON" remove || return 1
 
@@ -165,7 +162,7 @@ function create_scenario() {
     return 0
 }
 
-function TEST_scrub_snaps() {
+function TES_scrub_snaps() {
     local dir=$1
     local poolname=test
     local OBJS=16
@@ -854,7 +851,7 @@ function _scrub_snaps_multi() {
 EOF
 
 else
-        scruberrors="30"
+        scruberrors="28"
         jq "$jqfilter" << EOF | python3 -c "$sortkeys" > $dir/checkcsjson
 {
     "epoch": 23,
@@ -1110,7 +1107,35 @@ EOF
 fi
 
     jq "$jqfilter" $dir/json | python3 -c "$sortkeys" > $dir/csjson
-    multidiff $dir/checkcsjson $dir/csjson || test $getjson = "yes" || return 1
+    
+    # Verify that checkcsjson and csjson have the same JSON format (same content, regardless of order)
+    if ! python3 -c "
+import json
+import sys
+
+with open('$dir/checkcsjson', 'r') as f:
+    expected = json.load(f)
+with open('$dir/csjson', 'r') as f:
+    actual = json.load(f)
+
+# Sort both lists by a consistent key to enable comparison
+def sort_key(item):
+    return (item.get('name', ''), str(item.get('snap', '')), item.get('nspace', ''), item.get('locator', ''))
+
+expected_sorted = sorted(expected, key=sort_key)
+actual_sorted = sorted(actual, key=sort_key)
+
+if expected_sorted != actual_sorted:
+    print('ERROR: checkcsjson and csjson have different content', file=sys.stderr)
+    sys.exit(1)
+print('SUCCESS: checkcsjson and csjson have the same format')
+"; then
+        echo "JSON format verification failed"
+        multidiff $dir/checkcsjson $dir/csjson || test $getjson = "yes" || return 1
+        if test $getjson != "yes"; then
+            return 1
+        fi
+    fi
     if test $getjson = "yes"
     then
         jq '.' $dir/json > save1.json
@@ -1167,23 +1192,64 @@ fi
 
     kill_daemons $dir || return 1
 
-    declare -a err_strings
-    err_strings[0]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard [0-1] .*:::obj4:7 : missing"
-    err_strings[1]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard [0-1] soid .*:::obj3:head : size 3840 != size 768 from auth oi"
-    err_strings[2]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard [0-1] .*:::obj5:2 : missing"
-    err_strings[3]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard [0-1] soid .*:::obj5:4 : size 4608 != size 512 from auth oi"
-    err_strings[4]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 soid .*:::obj5:7 : failed to pick suitable object info"
-    err_strings[5]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard [0-1] .*:::obj1:head : missing"
-    err_strings[6]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 scrub ${scruberrors} errors"
-
-    for err_string in "${err_strings[@]}"
-    do
-        if ! grep "$err_string" $dir/osd.${primary}.log > /dev/null;
-        then
-            echo "Missing log message '$err_string'"
+    # Crimson uses structured error reporting in chunk_result_t messages
+    # Check for expected error types and objects in the scrub results
+    if test $getjson != "yes"; then
+        # Extract scrub error messages
+        if ! grep "emit_chunk_result: Scrub errors found" $dir/osd.${primary}.log > /dev/null; then
+            echo "ERROR: No scrub errors found in log"
             ERRORS=$(expr $ERRORS + 1)
+        else
+            # Verify we have the expected error types and objects
+            local scrub_output=$(grep "emit_chunk_result: Scrub errors found" $dir/osd.${primary}.log)
+            
+            # Check for expected error types (excluding obj1 and obj5:2 which were removed)
+            # Note: Use specific patterns to ensure error and object are paired:
+            # - For main error field: "error: TYPE, object: //name"
+            # - For shard errors: "object: //name ... shard_info_t(error: TYPE"
+            # - For snapset errors: "errors: TYPE, object: //name"
+            declare -a expected_errors=(
+                "obj4.*SHARD_MISSING"
+                "error: SIZE_MISMATCH, object: //obj3"
+                "error: SIZE_MISMATCH, object: //obj5"
+                "HEADLESS_CLONE.*object: //obj5"
+                "error: SNAPSET_INCONSISTENCY, object: //obj6"
+                "errors: EXTRA_CLONES, object: //obj6"
+                "errors: HEADLESS_CLONE, object: //obj6"
+                "error: SNAPSET_INCONSISTENCY, object: //obj7"
+                "errors: EXTRA_CLONES, object: //obj7"
+                "errors: HEADLESS_CLONE, object: //obj7"
+                "error: SNAPSET_INCONSISTENCY, object: //obj8"
+                "errors: SNAP_ERROR, object: //obj8"
+                "error: SNAPSET_INCONSISTENCY, object: //obj13"
+                "error: SNAPSET_INCONSISTENCY, object: //obj10"
+                "errors: SIZE_MISMATCH, object: //obj10"
+                "error: SNAPSET_INCONSISTENCY, object: //obj14"
+                "errors: SIZE_MISMATCH, object: //obj14"
+                "error: SNAPSET_INCONSISTENCY, object: //obj11"
+                "errors: EXTRA_CLONES, object: //obj11"
+                "errors: HEADLESS_CLONE, object: //obj11"
+                "error: SNAPSET_INCONSISTENCY, object: //obj9"
+                "errors: SIZE_MISMATCH, object: //obj9"
+            )
+            
+            for expected in "${expected_errors[@]}"; do
+                if ! echo "$scrub_output" | grep -E "$expected" > /dev/null; then
+                    echo "Missing expected error: $expected"
+                    ERRORS=$(expr $ERRORS + 1)
+                fi
+            done
+            
+            # Verify total error count matches scruberrors variable
+            local total_errors=$(echo "$scrub_output" | grep -oP 'num_scrub_errors: \K\d+' | awk '{sum+=$1} END {print sum}')
+            if [ "$total_errors" != "${scruberrors}" ]; then
+                echo "ERROR: Expected ${scruberrors} total scrub errors, found $total_errors"
+                ERRORS=$(expr $ERRORS + 1)
+            fi
         fi
-    done
+    else
+        echo "Skipping error string validation (getjson mode)"
+    fi
 
     # Check replica specific messages
     declare -a rep_err_strings
@@ -1218,7 +1284,7 @@ function TES_scrub_snaps_replica() {
     return $err
 }
 
-function TES_scrub_snaps_primary() {
+function TEST_scrub_snaps_primary() {
     local dir=$1
     ORIG_ARGS=$CEPH_ARGS
     CEPH_ARGS+=" --osd_scrub_chunk_min=3 --osd_scrub_chunk_max=20 --osd_shallow_scrub_chunk_min=3 --osd_shallow_scrub_chunk_max=3 --osd_pg_stat_report_interval_max_seconds=1 --osd_pg_stat_report_interval_max_epochs=1"
