@@ -110,6 +110,9 @@ function create_scenario() {
     # Use crimson-objectstore-tool for Crimson OSDs and avoid BlueStore-only
     # snapmap/kvstore assumptions.
 
+    JSON="$(crimson-objectstore-tool --data-path $dir/${osd} --head --op list obj1)"
+    crimson-objectstore-tool --data-path $dir/${osd} "$JSON" --force remove || return 1
+
     JSON="$(crimson-objectstore-tool --data-path $dir/${osd} --op list obj5 | grep \"snapid\":2)"
     crimson-objectstore-tool --data-path $dir/${osd} "$JSON" remove || return 1
 
@@ -162,7 +165,7 @@ function create_scenario() {
     return 0
 }
 
-function TES_scrub_snaps() {
+function TEST_scrub_snaps() {
     local dir=$1
     local poolname=test
     local OBJS=16
@@ -851,7 +854,7 @@ function _scrub_snaps_multi() {
 EOF
 
 else
-        scruberrors="28"
+        scruberrors="29"
         jq "$jqfilter" << EOF | python3 -c "$sortkeys" > $dir/checkcsjson
 {
     "epoch": 23,

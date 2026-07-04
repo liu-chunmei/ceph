@@ -203,8 +203,8 @@ function teardown() {
      mv $dir/*.log $TESTDIR/archive/log
  fi
     fi
-    #rm -fr $dir
-    #rm -rf $(get_asok_dir)
+    rm -fr $dir
+    rm -rf $(get_asok_dir)
     if [ "$cores" = "yes" ]; then
         echo "ERROR: Failure due to cores found"
         if [ -n "$LOCALRUN" ]; then

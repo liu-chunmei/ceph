@@ -156,10 +156,10 @@ ScrubScan::ifut<> ScrubScan::run(PG &pg)
 
   DEBUGDPP("begin: {}, end: {}", pg, begin, end);
   auto [objects, _] = co_await pg.backend->list_objects(begin, end);
-
   // Test qa/standalone/scrub/osd-scrub-snaps-crimson.sh greps for this string
   INFODPP("_scan_snaps start", pg);
-  
+
+
   DEBUGDPP("listed {} objects", pg, objects);
   for (const auto &object: objects) {
     co_await scan_object(

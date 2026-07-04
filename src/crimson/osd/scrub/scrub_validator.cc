@@ -748,7 +748,6 @@ chunk_result_t validate_chunk(
   DoutPrefixProvider &dpp,
   const chunk_validation_policy_t &policy, const scrub_map_set_t &in)
 {
-  LOG_PREFIX(validate_chunk);
   chunk_result_t ret;
 
   const std::set<hobject_t> object_set = get_object_set(in);
@@ -783,7 +782,6 @@ chunk_result_t validate_chunk(
 
   // Test qa/standalone/scrub/osd-scrub-snaps.sh greps for the strings
   // in this function
-  INFODPP("_scan_snaps starts", dpp);
 
   const hobject_t max_oid = hobject_t::get_max();
   while (heads.size() || clones.size()) {
