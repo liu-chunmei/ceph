@@ -1315,8 +1315,12 @@ void PGScrubber::emit_chunk_result(
       log_object_errors(obj_error);
     }
     
-    // Log snapset errors
+    // Log snapset errors (primary-shard errors, stored + counted)
     for (const auto& snapset_error : result.snapset_errors) {
+      log_snapset_errors(snapset_error);
+    }
+    // Log replica-shard snapset errors (logged only, not stored)
+    for (const auto& snapset_error : result.replica_snapset_errors) {
       log_snapset_errors(snapset_error);
     }
     

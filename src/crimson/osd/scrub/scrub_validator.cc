@@ -218,6 +218,8 @@ librados::obj_err_t compare_candidate_to_authoritative(
   }
 
   if (oid.is_head()) {
+    // Compare snapsets between shards for SNAPSET_INCONSISTENCY in object_errors
+    // This is separate from snapshot validation which adds errors to snapset_errors
     bool auth_bad = (auth.snapset_status != snapset_status_t::OK);
     bool cand_bad = (cand.snapset_status != snapset_status_t::OK);
     
@@ -746,100 +748,200 @@ void add_object_to_stats(
 
 chunk_result_t validate_chunk(
   DoutPrefixProvider &dpp,
-  const chunk_validation_policy_t &policy, const scrub_map_set_t &in)
+  const chunk_validation_policy_t &policy,
+  const scrub_map_set_t &in)
 {
   chunk_result_t ret;
 
   const std::set<hobject_t> object_set = get_object_set(in);
 
-  // Track heads with snapset, snapset_status, snapset_bl, object_info, and actual size
-  std::list<std::tuple<hobject_t, SnapSet, snapset_status_t, ceph::buffer::list, std::optional<object_info_t>, uint64_t>> heads;
-  all_clones_list_t clones;
+  // Evaluate every object (object_errors + stats) and cache the results.
+  // We also need the per-head snapset/object_info for snapshot validation below.
+  std::map<hobject_t, object_evaluation_t> evals;
   for (const auto &oid: object_set) {
     object_evaluation_t eval = evaluate_object(policy, oid, in);
     add_object_to_stats(policy, eval, &ret.stats);
     if (eval.inconsistency) {
       ret.object_errors.push_back(*eval.inconsistency);
-      // Store the hobject_t for repair - it has the correct hash
       ret.object_hoids[oid.oid.name] = oid;
     }
-    if (oid.is_head()) {
-      if (eval.object_info || eval.snapset_status != snapset_status_t::OK || eval.snapset) {
-        heads.emplace_back(
-          oid,
-          eval.snapset.value_or(SnapSet{}),
-          eval.snapset_status,
-          eval.snapset_bl,
-          eval.object_info,
-          eval.size);
-      }
-    } else {
-      // Track ALL clones, whether they have object_info or not
-      // This allows us to report info_missing errors for clones without object_info
-      clones.push_back(clone_info_t{oid, eval.object_info});
-    }
+    evals.emplace(oid, std::move(eval));
   }
 
-  // Test qa/standalone/scrub/osd-scrub-snaps.sh greps for the strings
-  // in this function
+  // Snapshot validation: for every head object and every shard, call
+  // evaluate_snapset() with that shard's own SnapSet against the clone objects
+  // present on that shard.  This catches SnapSet corruptions on any shard
+  // (primary or replica).  Results from all shards are merged, deduplicating
+  // identical errors so that a consistent corruption is only reported once.
 
-  const hobject_t max_oid = hobject_t::get_max();
-  while (heads.size() || clones.size()) {
-    const hobject_t &next_head = heads.size() ? std::get<0>(heads.front()) : max_oid;
-    const hobject_t &next_clone = clones.size() ? clones.front().hoid : max_oid;
-    hobject_t head_to_process = std::min(next_head, next_clone).get_head();
-
-    all_clones_list_t clones_to_process;
-    auto clone_iter = clones.begin();
-    while (clone_iter != clones.end() &&
-           clone_iter->hoid.get_head() == head_to_process) {
-      ++clone_iter;
-    }
-    clones_to_process.splice(
-      clones_to_process.end(), clones, clones.begin(), clone_iter);
-
-    std::optional<SnapSet> head_meta;
-    snapset_status_t head_status = snapset_status_t::OK;
-    ceph::buffer::list head_snapset_bl;
-    std::optional<object_info_t> head_oi;
-    uint64_t head_actual_size = 0;
-    bool has_head = (head_to_process == next_head);
-    
-    if (has_head) {
-      head_meta = std::move(std::get<1>(heads.front()));
-      head_status = std::get<2>(heads.front());
-      head_snapset_bl = std::get<3>(heads.front());
-      head_oi = std::get<4>(heads.front());
-      head_actual_size = std::get<5>(heads.front());
-      heads.pop_front();
-    }
-
-    if (!has_head && !clones_to_process.empty()) {
-      for (const auto &clone_info : clones_to_process) {
-        inconsistent_snapset_wrapper clone_error{clone_info.hoid};
-        if (!clone_info.has_info()) {
-          clone_error.set_info_missing();
-        }
-        clone_error.set_headless();
-        ret.snapset_errors.push_back(clone_error);
-      }
+  for (const auto &oid : object_set) {
+    if (!oid.is_head()) {
       continue;
     }
 
-    auto eval_result = evaluate_snapset(
-      dpp, head_to_process, head_meta, head_status, head_snapset_bl, clones_to_process, head_oi, head_actual_size);
+    // Primary-shard errors go into snapset_errors (stored + counted).
+    // Replica-shard errors go into replica_snapset_errors (logged only).
+    // Deduplication sets prevent the same (name, snap) pair being reported
+    // twice when iterating multiple shards.
+    std::set<std::string> emitted_primary_head;
+    std::set<std::pair<std::string, uint64_t>> emitted_primary_clone;
+    std::set<std::string> emitted_replica_head;
+    std::set<std::pair<std::string, uint64_t>> emitted_replica_clone;
 
-    // Add head-level error if present OR if any clones have errors
-    // This matches classic OSD behavior: report head if it has errors or if any clones have errors
-    // Always add head_error if it exists, because some heads are expected even with empty errors.
-    if (eval_result.head_error && (eval_result.head_error->errors || !eval_result.clone_errors.empty())) {
-      ret.snapset_errors.push_back(*eval_result.head_error);
-    }
+    for (const auto &[shard, scrub_map] : in) {
+      const bool is_primary = (shard == policy.primary);
 
-    // Add all clone-level errors
-    for (auto &clone_error : eval_result.clone_errors) {
-      ret.snapset_errors.push_back(clone_error);
+      // Obtain SnapSet, OI, and size for the head object on this shard.
+      // For the primary shard we reuse the already-computed eval (which applied
+      // authoritative-shard selection) to guarantee identical results to the
+      // pre-replica-fix code path.  For replica shards we decode directly from
+      // the raw scrub map because the replica may carry a different SnapSet.
+      std::optional<SnapSet> shard_snapset;
+      snapset_status_t shard_snapset_status = snapset_status_t::OK;
+      ceph::buffer::list shard_snapset_bl;
+      std::optional<object_info_t> shard_head_oi;
+      uint64_t shard_head_size = 0;
+
+      if (is_primary) {
+        // Use the cached eval for the primary — same data the old code used.
+        const auto &head_eval = evals.at(oid);
+        shard_snapset        = head_eval.snapset;
+        shard_snapset_status = head_eval.snapset_status;
+        shard_snapset_bl     = head_eval.snapset_bl;
+        shard_head_oi        = head_eval.object_info;
+        shard_head_size      = head_eval.size;
+      } else {
+        // Replica shard: decode directly from this shard's scrub map.
+        auto head_it = scrub_map.objects.find(oid);
+        if (head_it == scrub_map.objects.end()) {
+          continue;  // Head missing on this replica shard — skip.
+        }
+        const auto &head_obj = head_it->second;
+        shard_head_size = head_obj.size;
+
+        auto oi_it = head_obj.attrs.find(OI_ATTR);
+        if (oi_it != head_obj.attrs.end()) {
+          try {
+            auto blp = oi_it->second.cbegin();
+            shard_head_oi = object_info_t{};
+            decode(*shard_head_oi, blp);
+          } catch (...) {
+            shard_head_oi = std::nullopt;
+          }
+        }
+
+        auto ss_it = head_obj.attrs.find(SS_ATTR);
+        if (ss_it == head_obj.attrs.end()) {
+          shard_snapset_status = snapset_status_t::MISSING;
+        } else {
+          shard_snapset_bl = ss_it->second;
+          try {
+            auto blp = ss_it->second.cbegin();
+            shard_snapset = SnapSet{};
+            decode(*shard_snapset, blp);
+            shard_snapset_status = snapset_status_t::OK;
+          } catch (...) {
+            shard_snapset = std::nullopt;
+            shard_snapset_status = snapset_status_t::CORRUPTED;
+          }
+        }
+      }
+
+      // Collect clones present on this shard for this head.
+      // For the primary, reuse cached evals (same as old code); for replicas,
+      // only include clones actually present in the replica's scrub map.
+      all_clones_list_t shard_clones;
+      for (const auto &coid : object_set) {
+        if (!coid.is_snap() || coid.get_head() != oid.get_head()) {
+          continue;
+        }
+        if (is_primary) {
+          // Only include clones present on the primary's scrub map (not from
+          // other shards), but use the cached eval OI for authoritative data.
+          if (scrub_map.objects.find(coid) == scrub_map.objects.end()) {
+            continue;
+          }
+          const auto &clone_eval = evals.at(coid);
+          shard_clones.push_back(clone_info_t{coid, clone_eval.object_info});
+        } else {
+          // Replica: only include clones present on this shard.
+          auto clone_it = scrub_map.objects.find(coid);
+          if (clone_it == scrub_map.objects.end()) {
+            continue;
+          }
+          clone_info_t ci;
+          ci.hoid = coid;
+          auto oi_it = clone_it->second.attrs.find(OI_ATTR);
+          if (oi_it != clone_it->second.attrs.end()) {
+            try {
+              auto blp = oi_it->second.cbegin();
+              ci.oi = object_info_t{};
+              decode(*ci.oi, blp);
+            } catch (...) {
+              ci.oi = std::nullopt;
+            }
+          }
+          shard_clones.push_back(std::move(ci));
+        }
+      }
+
+      auto result = evaluate_snapset(
+        dpp,
+        oid,
+        shard_snapset,
+        shard_snapset_status,
+        shard_snapset_bl,
+        shard_clones,
+        shard_head_oi,
+        shard_head_size);
+
+      // Route errors: primary shard → snapset_errors (stored + counted);
+      //               replica shards → replica_snapset_errors (logged only).
+      auto &head_seen = is_primary ? emitted_primary_head : emitted_replica_head;
+      auto &clone_seen = is_primary ? emitted_primary_clone : emitted_replica_clone;
+      auto &dest_head = is_primary ? ret.snapset_errors : ret.replica_snapset_errors;
+      auto &dest_clone = is_primary ? ret.snapset_errors : ret.replica_snapset_errors;
+
+      // Emit head entry if it has errors OR if any clone errors exist
+      // (the head entry carries the snapset payload needed for reporting).
+      if (result.head_error &&
+          (result.head_error->errors || !result.clone_errors.empty())) {
+        if (head_seen.find(oid.oid.name) == head_seen.end()) {
+          dest_head.push_back(std::move(*result.head_error));
+          head_seen.insert(oid.oid.name);
+        }
+      }
+      for (auto &ce : result.clone_errors) {
+        if (ce.errors) {
+          auto key = std::make_pair(ce.object.name, uint64_t{ce.object.snap});
+          if (clone_seen.find(key) == clone_seen.end()) {
+            clone_seen.insert(key);
+            dest_clone.push_back(std::move(ce));
+          }
+        }
+      }
     }
+  }
+
+  // Detect orphan clones: snap objects whose head is absent from object_set.
+  // These are headless clones that were missed by the head-based loop above.
+  // Emit errors only for the primary shard (same as old !has_head branch).
+  for (const auto &oid : object_set) {
+    if (!oid.is_snap()) {
+      continue;
+    }
+    hobject_t head = oid.get_head();
+    if (object_set.count(head)) {
+      continue;  // Head exists; handled by the head-based loop above.
+    }
+    // Orphan clone: its head is not in any shard's scrub map.
+    inconsistent_snapset_wrapper clone_error{oid};
+    const auto &eval = evals.at(oid);
+    if (!eval.object_info) {
+      clone_error.set_info_missing();
+    }
+    clone_error.set_headless();
+    ret.snapset_errors.push_back(clone_error);
   }
 
   for (const auto &i: ret.object_errors) {

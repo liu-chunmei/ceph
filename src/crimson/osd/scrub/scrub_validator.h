@@ -62,13 +62,21 @@ struct chunk_result_t {
   // detected errors
   std::vector<inconsistent_snapset_wrapper> snapset_errors;
   std::vector<inconsistent_obj_wrapper> object_errors;
-  
+
+  // Snapset errors detected from non-primary shard SnapSet evaluation.
+  // These are logged (for visibility/debugging) but NOT stored into
+  // m_stored_snapset_errors and NOT counted in num_scrub_errors, because
+  // replica-side SnapSet corruptions are already captured as
+  // SNAPSET_INCONSISTENCY in object_errors.
+  std::vector<inconsistent_snapset_wrapper> replica_snapset_errors;
+
   // Map from object name to hobject_t for repair
   // This preserves the correct hash value for each inconsistent object
   std::map<std::string, hobject_t> object_hoids;
 
   bool has_errors() const {
-    return !snapset_errors.empty() || !object_errors.empty();
+    return !snapset_errors.empty() || !object_errors.empty() ||
+           !replica_snapset_errors.empty();
   }
 };
 
@@ -80,7 +88,8 @@ struct chunk_result_t {
  */
 chunk_result_t validate_chunk(
   DoutPrefixProvider &dpp,
-  const chunk_validation_policy_t &policy, const scrub_map_set_t &in);
+  const chunk_validation_policy_t &policy,
+  const scrub_map_set_t &in);
 
 /**
  * iterate_scrub_checked_stats
@@ -173,11 +182,14 @@ struct fmt::formatter<crimson::osd::scrub::chunk_result_t> {
       "chunk_result_t("
       "num_scrub_errors: {}, "
       "num_deep_scrub_errors: {}, "
-      "snapset_errors: [{}], "
+      "snapset_errors: [{}{}{}], "
       "object_errors: [{}])",
       result.stats.num_scrub_errors,
       result.stats.num_deep_scrub_errors,
       result.snapset_errors,
+      (!result.snapset_errors.empty() && !result.replica_snapset_errors.empty())
+        ? ", " : "",
+      result.replica_snapset_errors,
       result.object_errors
     );
   }

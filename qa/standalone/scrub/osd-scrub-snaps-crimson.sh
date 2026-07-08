@@ -787,7 +787,7 @@ function _scrub_snaps_multi() {
     run_mgr $dir x || return 1
     for osd in $(seq 0 $(expr $OSDS - 1))
     do
-      run_crimson_osd $dir $osd --osd_objectstore=seastore || return 1
+      run_crimson_osd $dir $osd --osd_objectstore=seastore --debug || return 1
     done
 
     # All scrubs done manually.  Don't want any unexpected scheduled scrubs.
@@ -845,7 +845,7 @@ function _scrub_snaps_multi() {
     # Since all of the snapshots on the primary is consistent there are no errors here
     if [ $which = "replica" ];
     then
-        scruberrors="17"
+        scruberrors="14"
         jq "$jqfilter" << EOF | python3 -c "$sortkeys" > $dir/checkcsjson
 {
     "epoch": 23,
@@ -1277,7 +1277,7 @@ print('SUCCESS: checkcsjson and csjson have the same format')
     return 0
 }
 
-function TES_scrub_snaps_replica() {
+function TEST_scrub_snaps_replica() {
     local dir=$1
     ORIG_ARGS=$CEPH_ARGS
     CEPH_ARGS+=" --osd_scrub_chunk_min=3 --osd_scrub_chunk_max=20 --osd_shallow_scrub_chunk_min=3 --osd_shallow_scrub_chunk_max=3 --osd_pg_stat_report_interval_max_seconds=1 --osd_pg_stat_report_interval_max_epochs=1"
