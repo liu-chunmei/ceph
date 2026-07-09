@@ -403,18 +403,21 @@ PGRecovery::on_local_recover(
   }
 
   return RecoveryBackend::interruptor::async(
-    [soid, &recovery_info, is_delete, &t, is_repair, this] {
+    [soid, &recovery_info, is_delete, &t, is_repair, FNAME, this] {
     if (soid.is_snap()) {
       OSDriver::OSTransaction _t(pg->get_osdriver().get_transaction(&t));
       [[maybe_unused]] int r = pg->get_snap_mapper().remove_oid(soid, &_t);
       assert(r == 0 || r == -ENOENT);
 
       if (!is_delete) {
-	set<snapid_t> snaps;
-	auto p = recovery_info.ss.clone_snaps.find(soid.snap);
-	assert(p != recovery_info.ss.clone_snaps.end());
-	snaps.insert(p->second.begin(), p->second.end());
-	pg->get_snap_mapper().add_oid(recovery_info.soid, snaps, &_t);
+ set<snapid_t> snaps;
+ auto p = recovery_info.ss.clone_snaps.find(soid.snap);
+ if (p != recovery_info.ss.clone_snaps.end()) {
+   snaps.insert(p->second.begin(), p->second.end());
+   pg->get_snap_mapper().add_oid(recovery_info.soid, snaps, &_t);
+ } else {
+   ERRORDPP("{} had no clone_snaps", *pg->get_dpp(), soid);
+ }
       }
     }
 
