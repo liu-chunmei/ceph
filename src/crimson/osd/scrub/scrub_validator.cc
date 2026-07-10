@@ -393,7 +393,27 @@ object_evaluation_t evaluate_object(
         actual_auth->object_info->size > policy.max_object_size) {
       iow.set_size_too_large();
     }
-    actual_auth->shard_info.selected_oi = true;
+    // Only mark selected_oi when the authoritative shard has no errors that
+    // would prevent it from being selected as auth in classic OSD's
+    // possible_auth_shard() — specifically read_error and shallow errors
+    // (stat_error, info_missing, etc.).  Deep-only errors like
+    // data_digest_mismatch_info do NOT block auth selection in classic and
+    // must not block it here either.
+    //
+    // This matches classic be_select_auth_object(): a shard with read_error
+    // (or any shallow error) returns not_usable and is never promoted to auth,
+    // so selected_oi stays false for it.  After a subsequent shallow scrub the
+    // same object's auth shard is error-free (no deep scan → no read_error),
+    // the merge then updates selected_oi to true, making sh2Part2 differ from
+    // dpPart2 exactly as the test expects.
+    {
+      const bool has_blocking_errors =
+        actual_auth->shard_info.has_read_error() ||
+        (actual_auth->shard_info.errors & librados::err_t::SHALLOW_ERRORS);
+      if (!has_blocking_errors) {
+        actual_auth->shard_info.selected_oi = true;
+      }
+    }
     
     // Compare all other shards against the authoritative one
     std::for_each(

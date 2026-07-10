@@ -335,79 +335,6 @@ function corrupt_and_repair_one() {
     diff $dir/ORIGINAL $dir/COPY || return 1
 }
 
-function corrupt_and_repair_erasure_coded() {
-    local dir=$1
-    local poolname=$2
-
-    add_something $dir $poolname || return 1
-
-    local primary=$(get_primary $poolname SOMETHING)
-    local -a osds=($(get_osds $poolname SOMETHING | sed -e "s/$primary//"))
-    local not_primary_first=${osds[0]}
-    local not_primary_second=${osds[1]}
-
-    # Reproduces http://tracker.ceph.com/issues/10017
-    corrupt_and_repair_one $dir $poolname $primary  || return 1
-    # Reproduces http://tracker.ceph.com/issues/10409
-    corrupt_and_repair_one $dir $poolname $not_primary_first || return 1
-    corrupt_and_repair_two $dir $poolname $not_primary_first $not_primary_second || return 1
-    corrupt_and_repair_two $dir $poolname $primary $not_primary_first || return 1
-
-}
-
-function auto_repair_erasure_coded() {
-    local dir=$1
-    local allow_overwrites=$2
-    local poolname=ecpool
-
-    # Launch a cluster with 5 seconds scrub interval
-    run_mon $dir a || return 1
-    apply_crimson_config || return 1
-    run_mgr $dir x || return 1
-    local ceph_osd_args="--osd_objectstore=seastore \
-            --osd-scrub-auto-repair=true \
-            --osd-deep-scrub-interval=5 \
-            --osd-scrub-max-interval=5 \
-            --osd-scrub-min-interval=5 \
-            --osd-scrub-interval-randomize-ratio=0"
-    for id in $(seq 0 2) ; do
-        run_crimson_osd $dir $id $ceph_osd_args --debug || return 1
-    done
-    create_rbd_pool || return 1
-    wait_for_clean || return 1
-
-    # Create an EC pool
-    create_ec_pool $poolname $allow_overwrites k=2 m=1 || return 1
-
-    # Put an object
-    local payload=ABCDEF
-    echo $payload > $dir/ORIGINAL
-    rados --pool $poolname put SOMETHING $dir/ORIGINAL || return 1
-
-    # Remove the object from one shard physically
-    # Restarted osd get $ceph_osd_args passed
-    objectstore_tool $dir $(get_not_primary $poolname SOMETHING) SOMETHING remove || return 1
-    # Wait for auto repair
-    local pgid=$(get_pg $poolname SOMETHING)
-    wait_for_scrub $pgid "$(get_last_scrub_stamp $pgid)"
-    wait_for_clean || return 1
-    # Verify - the file should be back
-    # Restarted osd get $ceph_osd_args passed
-    objectstore_tool $dir $(get_not_primary $poolname SOMETHING) SOMETHING list-attrs || return 1
-    rados --pool $poolname get SOMETHING $dir/COPY || return 1
-    diff $dir/ORIGINAL $dir/COPY || return 1
-}
-
-function TES_auto_repair_erasure_coded_appends() {
-    auto_repair_erasure_coded $1 false
-}
-
-function TES_auto_repair_erasure_coded_overwrites() {
-    if [ "$use_ec_overwrite" = "true" ]; then
-        auto_repair_erasure_coded $1 true
-    fi
-}
-
 # initiate a scrub, then check for the (expected) 'scrubbing' and the
 # (not expected until an error was identified) 'repair'
 # Arguments: osd#, pg, sleep time
@@ -4015,7 +3942,7 @@ EOF
 # TEST_dual_store_replicated_cluster - Crimson adaptation
 # Copied from osd-scrub-repair.sh with Crimson-specific modifications
 #
-function TES_dual_store_replicated_cluster() {
+function TEST_dual_store_replicated_cluster() {
     local dir=$1
     local poolname=csr_pool
     local total_objs=19

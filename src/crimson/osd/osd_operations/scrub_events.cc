@@ -203,7 +203,7 @@ ScrubScan::ifut<> ScrubScan::scan_object(
       pg.get_collection_ref(),
       obj,
       0)
-  ).then_interruptible([FNAME, &pg, &obj, &entry](struct stat obj_stat) {
+  ).safe_then_interruptible([FNAME, &pg, &obj, &entry](struct stat obj_stat) {
     DEBUGDPP("obj: {}, stat complete, size {}", pg, obj, obj_stat.st_size);
     entry.size = obj_stat.st_size;
     return crimson::os::with_store<&crimson::os::FuturizedStore::Shard::get_attrs>(
