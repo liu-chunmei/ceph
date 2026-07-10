@@ -55,10 +55,8 @@ struct shard_evaluation_t {
   }
 
   std::weak_ordering operator<=>(const shard_evaluation_t &rhs) const {
-    // Match classic OSD behavior: primary is always preferred
-    // See src/osd/scrubber/scrub_backend.cc:459 where primary is pushed to front
-    return std::make_tuple(is_primary(), !has_errors()) <=>
-      std::make_tuple(rhs.is_primary(), !rhs.has_errors());
+    return std::make_tuple(!has_errors(), is_primary()) <=>
+      std::make_tuple(!rhs.has_errors(), rhs.is_primary());
   }
 };
 shard_evaluation_t evaluate_object_shard(
@@ -858,7 +856,11 @@ chunk_result_t validate_chunk(
           continue;
         }
         if (is_primary) {
-          // Use the cached eval's OI — identical to old code's clone_info path.
+          // Only include clones present on the primary's scrub map (not from
+          // other shards), but use the cached eval OI for authoritative data.
+          if (scrub_map.objects.find(coid) == scrub_map.objects.end()) {
+            continue;
+          }
           const auto &clone_eval = evals.at(coid);
           shard_clones.push_back(clone_info_t{coid, clone_eval.object_info});
         } else {
