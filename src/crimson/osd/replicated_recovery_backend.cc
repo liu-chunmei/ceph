@@ -826,7 +826,9 @@ ReplicatedRecoveryBackend::handle_pull(Ref<MOSDPGPull> m)
       [FNAME, this, from](auto& pull_op) {
       const hobject_t& soid = pull_op.soid;
       DEBUGDPP("{}", pg, soid);
-      return backend->stat(coll, ghobject_t(soid)).then_interruptible(
+      return backend->stat(coll, ghobject_t(soid)).handle_error_interruptible(
+        crimson::ct_error::assert_all{"stat failed during recovery push"}
+      ).then_interruptible(
         [this, &pull_op](auto st) {
         ObjectRecoveryInfo &recovery_info = pull_op.recovery_info;
         ObjectRecoveryProgress &progress = pull_op.recovery_progress;
@@ -1265,7 +1267,8 @@ ReplicatedRecoveryBackend::prep_push_target(
   // clone overlap content in local object if using a new object
   auto st = co_await interruptor::make_interruptible(
     crimson::os::with_store<&crimson::os::FuturizedStore::Shard::stat>(
-      store, coll, ghobject_t(recovery_info.soid), 0));
+      store, coll, ghobject_t(recovery_info.soid), 0).handle_error(
+      crimson::ct_error::assert_all{"stat failed during recovery clone"}));
 
   // TODO: pg num bytes counting
   uint64_t local_size = std::min(recovery_info.size, (uint64_t)st.st_size);

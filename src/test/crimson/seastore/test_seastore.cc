@@ -569,7 +569,9 @@ struct seastore_test_t :
     void check_size(SeaStoreShard &sharded_seastore) {
       auto st = sharded_seastore.stat(
 	coll,
-	oid).get();
+	oid).handle_error(
+	SeaStoreShard::stat_ertr::assert_all{"stat failed in check_size"}
+      ).get();
       EXPECT_EQ(contents.length(), st.st_size);
     }
 

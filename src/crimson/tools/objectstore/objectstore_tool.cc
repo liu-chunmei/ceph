@@ -260,7 +260,9 @@ seastar::future<std::string> StoreTool::get_bytes(
       co_return std::string();
     }
 
-    auto stat_result = co_await store->get_sharded_store().stat(coll, oid);
+    auto stat_result = co_await store->get_sharded_store().stat(coll, oid).handle_error(
+      crimson::os::FuturizedStore::Shard::stat_ertr::assert_all{"stat failed in get_bytes"}
+    );
     uint64_t total_size = stat_result.st_size;
 
     if (total_size == 0) {
@@ -470,11 +472,14 @@ seastar::future<bool> StoreTool::remove_object(
     }
     
     // First check if the object exists
-    try {
-      [[maybe_unused]] auto stat_result = co_await store->get_sharded_store().stat(coll, oid);
-      // Object exists, proceed with removal
-    } catch (const std::exception& e) {
-      fmt::println(std::cerr, "Object {} does not exist or stat failed: {}", oid, e.what());
+    auto stat_result = co_await store->get_sharded_store().stat(coll, oid).handle_error(
+      crimson::os::FuturizedStore::Shard::stat_ertr::all_same_way(
+        []() -> struct stat {
+          return {};  // zero st_nlink signals object-not-found or IO error
+        })
+    );
+    if (stat_result.st_nlink == 0) {
+      fmt::println(std::cerr, "Object {} does not exist or stat failed", oid);
       co_return false;
     }
     
