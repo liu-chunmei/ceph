@@ -775,7 +775,6 @@ chunk_result_t validate_chunk(
   // present on that shard.  This catches SnapSet corruptions on any shard
   // (primary or replica).  Results from all shards are merged, deduplicating
   // identical errors so that a consistent corruption is only reported once.
-  LOG_PREFIX(validate_chunk);
 
   for (const auto &oid : object_set) {
     if (!oid.is_head()) {
@@ -784,12 +783,12 @@ chunk_result_t validate_chunk(
 
     // Primary-shard errors go into snapset_errors (stored + counted).
     // Replica-shard errors go into replica_snapset_errors (logged only).
-    // Deduplication sets prevent the same object name being reported twice
-    // within each category.
+    // Deduplication sets prevent the same (name, snap) pair being reported
+    // twice when iterating multiple shards.
     std::set<std::string> emitted_primary_head;
-    std::set<std::string> emitted_primary_clone;
+    std::set<std::pair<std::string, uint64_t>> emitted_primary_clone;
     std::set<std::string> emitted_replica_head;
-    std::set<std::string> emitted_replica_clone;
+    std::set<std::pair<std::string, uint64_t>> emitted_replica_clone;
 
     for (const auto &[shard, scrub_map] : in) {
       const bool is_primary = (shard == policy.primary);
@@ -882,7 +881,10 @@ chunk_result_t validate_chunk(
       auto &dest_head = is_primary ? ret.snapset_errors : ret.replica_snapset_errors;
       auto &dest_clone = is_primary ? ret.snapset_errors : ret.replica_snapset_errors;
 
-      if (result.head_error && result.head_error->errors) {
+      // Emit head entry if it has errors OR if any clone errors exist
+      // (the head entry carries the snapset payload needed for reporting).
+      if (result.head_error &&
+          (result.head_error->errors || !result.clone_errors.empty())) {
         if (head_seen.find(oid.oid.name) == head_seen.end()) {
           dest_head.push_back(std::move(*result.head_error));
           head_seen.insert(oid.oid.name);
@@ -890,13 +892,35 @@ chunk_result_t validate_chunk(
       }
       for (auto &ce : result.clone_errors) {
         if (ce.errors) {
-          if (clone_seen.find(ce.object.name) == clone_seen.end()) {
-            clone_seen.insert(ce.object.name);
+          auto key = std::make_pair(ce.object.name, uint64_t{ce.object.snap});
+          if (clone_seen.find(key) == clone_seen.end()) {
+            clone_seen.insert(key);
             dest_clone.push_back(std::move(ce));
           }
         }
       }
     }
+  }
+
+  // Detect orphan clones: snap objects whose head is absent from object_set.
+  // These are headless clones that were missed by the head-based loop above.
+  // Emit errors only for the primary shard (same as old !has_head branch).
+  for (const auto &oid : object_set) {
+    if (!oid.is_snap()) {
+      continue;
+    }
+    hobject_t head = oid.get_head();
+    if (object_set.count(head)) {
+      continue;  // Head exists; handled by the head-based loop above.
+    }
+    // Orphan clone: its head is not in any shard's scrub map.
+    inconsistent_snapset_wrapper clone_error{oid};
+    const auto &eval = evals.at(oid);
+    if (!eval.object_info) {
+      clone_error.set_info_missing();
+    }
+    clone_error.set_headless();
+    ret.snapset_errors.push_back(clone_error);
   }
 
   for (const auto &i: ret.object_errors) {
