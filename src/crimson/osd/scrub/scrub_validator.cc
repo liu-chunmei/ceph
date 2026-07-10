@@ -793,19 +793,34 @@ chunk_result_t validate_chunk(
     for (const auto &[shard, scrub_map] : in) {
       const bool is_primary = (shard == policy.primary);
 
-      // Decode the SnapSet from this shard's copy of the head object.
+      // Obtain SnapSet, OI, and size for the head object on this shard.
+      // For the primary shard we reuse the already-computed eval (which applied
+      // authoritative-shard selection) to guarantee identical results to the
+      // pre-replica-fix code path.  For replica shards we decode directly from
+      // the raw scrub map because the replica may carry a different SnapSet.
       std::optional<SnapSet> shard_snapset;
       snapset_status_t shard_snapset_status = snapset_status_t::OK;
       ceph::buffer::list shard_snapset_bl;
       std::optional<object_info_t> shard_head_oi;
       uint64_t shard_head_size = 0;
 
-      auto head_it = scrub_map.objects.find(oid);
-      if (head_it != scrub_map.objects.end()) {
+      if (is_primary) {
+        // Use the cached eval for the primary — same data the old code used.
+        const auto &head_eval = evals.at(oid);
+        shard_snapset        = head_eval.snapset;
+        shard_snapset_status = head_eval.snapset_status;
+        shard_snapset_bl     = head_eval.snapset_bl;
+        shard_head_oi        = head_eval.object_info;
+        shard_head_size      = head_eval.size;
+      } else {
+        // Replica shard: decode directly from this shard's scrub map.
+        auto head_it = scrub_map.objects.find(oid);
+        if (head_it == scrub_map.objects.end()) {
+          continue;  // Head missing on this replica shard — skip.
+        }
         const auto &head_obj = head_it->second;
         shard_head_size = head_obj.size;
 
-        // Decode object_info
         auto oi_it = head_obj.attrs.find(OI_ATTR);
         if (oi_it != head_obj.attrs.end()) {
           try {
@@ -817,7 +832,6 @@ chunk_result_t validate_chunk(
           }
         }
 
-        // Decode snapset
         auto ss_it = head_obj.attrs.find(SS_ATTR);
         if (ss_it == head_obj.attrs.end()) {
           shard_snapset_status = snapset_status_t::MISSING;
@@ -833,35 +847,40 @@ chunk_result_t validate_chunk(
             shard_snapset_status = snapset_status_t::CORRUPTED;
           }
         }
-      } else {
-        // Head is missing on this shard — nothing to validate for this shard.
-        continue;
       }
 
       // Collect clones present on this shard for this head.
+      // For the primary, reuse cached evals (same as old code); for replicas,
+      // only include clones actually present in the replica's scrub map.
       all_clones_list_t shard_clones;
       for (const auto &coid : object_set) {
         if (!coid.is_snap() || coid.get_head() != oid.get_head()) {
           continue;
         }
-        auto clone_it = scrub_map.objects.find(coid);
-        if (clone_it == scrub_map.objects.end()) {
-          continue;
-        }
-        clone_info_t ci;
-        ci.hoid = coid;
-        // Decode object_info from this shard's clone entry
-        auto oi_it = clone_it->second.attrs.find(OI_ATTR);
-        if (oi_it != clone_it->second.attrs.end()) {
-          try {
-            auto blp = oi_it->second.cbegin();
-            ci.oi = object_info_t{};
-            decode(*ci.oi, blp);
-          } catch (...) {
-            ci.oi = std::nullopt;
+        if (is_primary) {
+          // Use the cached eval's OI — identical to old code's clone_info path.
+          const auto &clone_eval = evals.at(coid);
+          shard_clones.push_back(clone_info_t{coid, clone_eval.object_info});
+        } else {
+          // Replica: only include clones present on this shard.
+          auto clone_it = scrub_map.objects.find(coid);
+          if (clone_it == scrub_map.objects.end()) {
+            continue;
           }
+          clone_info_t ci;
+          ci.hoid = coid;
+          auto oi_it = clone_it->second.attrs.find(OI_ATTR);
+          if (oi_it != clone_it->second.attrs.end()) {
+            try {
+              auto blp = oi_it->second.cbegin();
+              ci.oi = object_info_t{};
+              decode(*ci.oi, blp);
+            } catch (...) {
+              ci.oi = std::nullopt;
+            }
+          }
+          shard_clones.push_back(std::move(ci));
         }
-        shard_clones.push_back(std::move(ci));
       }
 
       auto result = evaluate_snapset(
