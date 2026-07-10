@@ -928,6 +928,34 @@ chunk_result_t validate_chunk(
         emittable_clones.push_back(&ce);
       }
 
+      // For the primary path, strip extra-clone references from the head entry
+      // that correspond to replica-only clones (not in primary_local_clones).
+      // If all extra clones were replica-only, clear EXTRA_CLONES from errors.
+      if (is_primary && result.head_error &&
+          (result.head_error->errors &
+           librados::inconsistent_snapset_t::EXTRA_CLONES)) {
+        auto &extra = result.head_error->clones;
+        extra.erase(
+          std::remove_if(extra.begin(), extra.end(),
+            [&](uint64_t s) {
+              auto it = std::find_if(
+                object_set.begin(), object_set.end(),
+                [&](const hobject_t &h) {
+                  return h.oid.name == oid.oid.name &&
+                         h.snap == snapid_t{s} &&
+                         h.nspace == oid.nspace;
+                });
+              return it != object_set.end() &&
+                     !primary_local_clones.count(*it);
+            }),
+          extra.end());
+        if (extra.empty()) {
+          result.head_error->errors &=
+            ~static_cast<uint64_t>(
+              librados::inconsistent_snapset_t::EXTRA_CLONES);
+        }
+      }
+
       // Emit head entry if it has own errors OR if there are non-suppressed
       // clone errors (head carries the snapset payload for reporting).
       if (result.head_error &&
