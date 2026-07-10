@@ -847,22 +847,25 @@ chunk_result_t validate_chunk(
         }
       }
 
-      // Collect clones present on this shard for this head.
-      // For the primary, reuse cached evals (same as old code); for replicas,
-      // only include clones actually present in the replica's scrub map.
+      // Collect clones for this head.
+      // For the primary: include all clones from object_set (mirrors old code),
+      // using the cached eval OI. Track which clones are present on the
+      // primary's own scrub map so we can suppress errors for replica-only ones.
+      // For replicas: only include clones present on the replica's scrub map.
       all_clones_list_t shard_clones;
+      std::set<hobject_t> primary_local_clones;  // clones in primary's scrub map
       for (const auto &coid : object_set) {
         if (!coid.is_snap() || coid.get_head() != oid.get_head()) {
           continue;
         }
         if (is_primary) {
-          // Only include clones present on the primary's scrub map (not from
-          // other shards), but use the cached eval OI for authoritative data.
-          if (scrub_map.objects.find(coid) == scrub_map.objects.end()) {
-            continue;
-          }
+          // Include all clones (with eval OI) — same as old code.
           const auto &clone_eval = evals.at(coid);
           shard_clones.push_back(clone_info_t{coid, clone_eval.object_info});
+          // Track whether this clone is locally present on the primary.
+          if (scrub_map.objects.count(coid)) {
+            primary_local_clones.insert(coid);
+          }
         } else {
           // Replica: only include clones present on this shard.
           auto clone_it = scrub_map.objects.find(coid);
@@ -902,22 +905,43 @@ chunk_result_t validate_chunk(
       auto &dest_head = is_primary ? ret.snapset_errors : ret.replica_snapset_errors;
       auto &dest_clone = is_primary ? ret.snapset_errors : ret.replica_snapset_errors;
 
-      // Emit head entry if it has errors OR if any clone errors exist
-      // (the head entry carries the snapset payload needed for reporting).
+      // Collect clone errors, suppressing replica-only ones for the primary path.
+      std::vector<inconsistent_snapset_wrapper*> emittable_clones;
+      for (auto &ce : result.clone_errors) {
+        if (!ce.errors) continue;
+        if (is_primary) {
+          // Suppress errors for clones absent from the primary's scrub map.
+          // Those are replica-only objects; their cross-shard difference is
+          // already captured in object_errors.
+          auto hoid_it = std::find_if(
+            object_set.begin(), object_set.end(),
+            [&ce](const hobject_t &h) {
+              return h.oid.name == ce.object.name &&
+                     h.snap == snapid_t{ce.object.snap} &&
+                     h.nspace == ce.object.nspace;
+            });
+          if (hoid_it != object_set.end() &&
+              !primary_local_clones.count(*hoid_it)) {
+            continue;  // Clone only on replica; skip for primary path.
+          }
+        }
+        emittable_clones.push_back(&ce);
+      }
+
+      // Emit head entry if it has own errors OR if there are non-suppressed
+      // clone errors (head carries the snapset payload for reporting).
       if (result.head_error &&
-          (result.head_error->errors || !result.clone_errors.empty())) {
+          (result.head_error->errors || !emittable_clones.empty())) {
         if (head_seen.find(oid.oid.name) == head_seen.end()) {
           dest_head.push_back(std::move(*result.head_error));
           head_seen.insert(oid.oid.name);
         }
       }
-      for (auto &ce : result.clone_errors) {
-        if (ce.errors) {
-          auto key = std::make_pair(ce.object.name, uint64_t{ce.object.snap});
-          if (clone_seen.find(key) == clone_seen.end()) {
-            clone_seen.insert(key);
-            dest_clone.push_back(std::move(ce));
-          }
+      for (auto *ce : emittable_clones) {
+        auto key = std::make_pair(ce->object.name, uint64_t{ce->object.snap});
+        if (clone_seen.find(key) == clone_seen.end()) {
+          clone_seen.insert(key);
+          dest_clone.push_back(std::move(*ce));
         }
       }
     }
