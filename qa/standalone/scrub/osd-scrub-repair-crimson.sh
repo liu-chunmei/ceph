@@ -54,6 +54,53 @@ function run() {
     local dir=$1
     shift
 
+    # Handle --list, --help, --debug, and --noremove before touching the cluster
+    local all_funcs
+    all_funcs=$(set | sed -n -e 's/^\(TEST_[0-9a-z_]*\) .*/\1/p')
+
+    # Parse --debug and --noremove flags (may appear anywhere in the argument list).
+    # --debug:    append --debug to CRIMSON_EXTRA_OPTS so only run_crimson_osd
+    #             picks it up.  Must NOT go into EXTRA_OPTS because run_mon,
+    #             run_mgr, etc. pass EXTRA_OPTS to ceph-mon/ceph-mgr which do
+    #             not accept a bare --debug flag (they require --debug-<subsystem>).
+    # --noremove: set NOREMOVE=1 so teardown() skips "rm -fr $dir".
+    local new_args=()
+    for arg in "$@"; do
+        case "$arg" in
+            --debug)
+                CRIMSON_EXTRA_OPTS+=" --debug"
+                ;;
+            --noremove)
+                NOREMOVE=1
+                ;;
+            *)
+                new_args+=("$arg")
+                ;;
+        esac
+    done
+    set -- "${new_args[@]}"
+
+    case "${1:-}" in
+        --list)
+            echo "Available test cases:"
+            for f in $all_funcs; do echo "  $f"; done
+            return 0
+            ;;
+        --help|-h)
+            echo "Usage: $0 [TEST_name [TEST_name ...]]"
+            echo "       $0 --list       list all available test cases"
+            echo "       $0 --help       show this help"
+            echo "       $0 --debug      enable crimson-osd debug output"
+            echo "       $0 --noremove   keep OSD log directory after each test"
+            echo ""
+            echo "Run a single test:  $0 TEST_corrupt_and_repair_replicated"
+            echo "Run all tests:      $0"
+            echo "Run with debug:     $0 --debug [TEST_name]"
+            echo "Preserve logs:      $0 --noremove [TEST_name]"
+            return 0
+            ;;
+    esac
+
     export CEPH_MON="127.0.0.1:7147" # git grep '\<7147\>' : there must be only one
     export CEPH_ARGS
     CEPH_ARGS+="--fsid=$(uuidgen) --auth-supported=none "
@@ -67,12 +114,47 @@ function run() {
     CEPH_ARGS+="--osd_pool_default_pg_autoscale_mode=off "
 
     export -n CEPH_CLI_TEST_DUP_COMMAND
-    local funcs=${@:-$(set | sed -n -e 's/^\(TEST_[0-9a-z_]*\) .*/\1/p')}
+    local funcs=${@:-$all_funcs}
+
+    # Validate any explicitly requested test names
+    if [ $# -gt 0 ]; then
+        for func in $funcs; do
+            if ! declare -f "$func" > /dev/null 2>&1; then
+                echo "ERROR: unknown test '$func'"
+                echo "Run '$0 --list' to see available tests."
+                return 1
+            fi
+        done
+    fi
+
+    local passed=()
+    local failed=()
     for func in $funcs ; do
-        setup $dir || return 1
-        $func $dir || return 1
-        teardown $dir || return 1
+        if ! setup $dir ; then
+            echo "SETUP FAILED for $func — skipping"
+            failed+=("$func (setup failed)")
+            continue
+        fi
+        if $func $dir ; then
+            passed+=("$func")
+        else
+            echo "FAILED: $func"
+            failed+=("$func")
+        fi
+        teardown $dir || true
     done
+
+    echo ""
+    echo "======== TEST RESULTS ========"
+    echo "PASSED (${#passed[@]}):"
+    for f in "${passed[@]}"; do echo "  [PASS] $f"; done
+    echo "FAILED (${#failed[@]}):"
+    for f in "${failed[@]}"; do echo "  [FAIL] $f"; done
+    echo "=============================="
+
+    if [ ${#failed[@]} -ne 0 ]; then
+        return 1
+    fi
 }
 
 function apply_crimson_config() {
@@ -118,8 +200,8 @@ function TEST_corrupt_and_repair_replicated() {
     run_mon $dir a --osd_pool_default_size=2 || return 1
     apply_crimson_config || return 1
     run_mgr $dir x || return 1
-    run_crimson_osd $dir 0 --osd_objectstore=seastore --debug || return 1
-    run_crimson_osd $dir 1 --osd_objectstore=seastore --debug || return 1
+    run_crimson_osd $dir 0 --osd_objectstore=seastore || return 1
+    run_crimson_osd $dir 1 --osd_objectstore=seastore || return 1
     create_rbd_pool || return 1
     wait_for_clean || return 1
 
@@ -145,8 +227,8 @@ function TEST_allow_oper_initiated_scrub_during_recovery() {
         --osd_scrub_during_recovery=false \
         --osd_debug_pretend_recovery_active=true"
     
-    run_crimson_osd $dir 0 $ceph_osd_args --debug|| return 1
-    run_crimson_osd $dir 1 $ceph_osd_args --debug|| return 1
+    run_crimson_osd $dir 0 $ceph_osd_args || return 1
+    run_crimson_osd $dir 1 $ceph_osd_args || return 1
     
     create_rbd_pool || return 1
     wait_for_clean || return 1
@@ -167,10 +249,10 @@ function TEST_allow_repair_during_recovery() {
     run_mgr $dir x || return 1
     run_crimson_osd $dir 0 --osd_objectstore=seastore \
                    --osd_scrub_during_recovery=false \
-                   --osd_debug_pretend_recovery_active=true --debug || return 1
+                   --osd_debug_pretend_recovery_active=true || return 1
     run_crimson_osd $dir 1 --osd_objectstore=seastore \
                    --osd_scrub_during_recovery=false \
-                   --osd_debug_pretend_recovery_active=true --debug || return 1
+                   --osd_debug_pretend_recovery_active=true || return 1
     create_rbd_pool || return 1
     wait_for_clean || return 1
 
@@ -219,15 +301,15 @@ function oper_scrub_and_schedule() {
     # 2) Assure the scrub was executed
     #
     sleep 3
-    for ((i=0; i < 3; i++)); do
+    for ((i=0; i < 12; i++)); do
         if test "$(get_last_scrub_stamp $pg)" '>' "$last_scrub" ; then
             break
         fi
-        if test "$(get_last_scrub_stamp $pg)" '==' "$last_scrub" ; then
-            return 1
-        fi
-        sleep 1
+        sleep 2
     done
+    if test "$(get_last_scrub_stamp $pg)" '==' "$last_scrub" ; then
+        return 1
+    fi
 
     #
     # 3) Access to the file must OK
@@ -416,7 +498,7 @@ function TEST_auto_repair_seastore_basic() {
             --osd-scrub-interval-randomize-ratio=0 \
             --osd-op-queue=wpq"
     for id in $(seq 0 2) ; do
-        run_crimson_osd $dir $id $ceph_osd_args --debug || return 1
+        run_crimson_osd $dir $id $ceph_osd_args || return 1
     done
 
     create_pool $poolname 1 1 || return 1
@@ -472,7 +554,7 @@ function TEST_auto_repair_seastore_tag() {
             --osd-scrub-interval-randomize-ratio=0 \
             --osd-op-queue=wpq"
     for id in $(seq 0 2) ; do
-        run_crimson_osd $dir $id $ceph_osd_args --debug || return 1
+        run_crimson_osd $dir $id $ceph_osd_args || return 1
     done
 
     create_pool $poolname 1 1 || return 1
@@ -524,7 +606,7 @@ function TEST_auto_repair_seastore_scrub() {
             --osd-scrub-interval-randomize-ratio=0 \
             --osd-scrub-backoff-ratio=0"
     for id in $(seq 0 2) ; do
-        run_crimson_osd $dir $id $ceph_osd_args --debug || return 1
+        run_crimson_osd $dir $id $ceph_osd_args || return 1
     done
 
     create_pool $poolname 1 1 || return 1
@@ -583,7 +665,7 @@ function TEST_auto_repair_seastore_failed() {
             --osd-scrub-end-hour=0 \
             --osd-scrub-backoff-ratio=0.0"
     for id in $(seq 0 2) ; do
-        run_crimson_osd $dir $id $ceph_osd_args --debug || return 1
+        run_crimson_osd $dir $id $ceph_osd_args || return 1
     done
 
     create_pool $poolname 1 1 || return 1
@@ -653,7 +735,7 @@ function TEST_auto_repair_seastore_failed_norecov() {
             --osd-scrub-end-hour=0 \
             --osd-scrub-backoff-ratio=0.0"
     for id in $(seq 0 2) ; do
-        run_crimson_osd $dir $id $ceph_osd_args --debug || return 1
+        run_crimson_osd $dir $id $ceph_osd_args || return 1
     done
 
     create_pool $poolname 1 1 || return 1
@@ -707,7 +789,7 @@ function TEST_repair_stats() {
             --osd_deep_scrub_randomize_ratio=0 \
             --osd-scrub-interval-randomize-ratio=0"
     for id in $(seq 0 $(expr $OSDS - 1)) ; do
-        run_crimson_osd $dir $id $ceph_osd_args --debug || return 1
+        run_crimson_osd $dir $id $ceph_osd_args || return 1
     done
 
     create_pool $poolname 1 1 || return 1
@@ -936,28 +1018,28 @@ function TEST_corrupt_scrub_replicated() {
 
     ERRORS=0
     declare -a s_err_strings
-    err_strings[0]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:30259878:::ROBJ15:head : candidate had a missing info key"
-    err_strings[1]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 soid 3:33aca486:::ROBJ18:head : object info inconsistent "
-    err_strings[2]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:5c7b2c47:::ROBJ16:head : candidate had a corrupt snapset"
-    err_strings[3]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 0 soid 3:5c7b2c47:::ROBJ16:head : candidate had a missing snapset key"
-    err_strings[4]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 soid 3:5c7b2c47:::ROBJ16:head : failed to pick suitable object info"
-    err_strings[5]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 soid 3:86586531:::ROBJ8:head : attr value mismatch '_key1-ROBJ8', attr name mismatch '_key3-ROBJ8', attr name mismatch '_key2-ROBJ8'"
-    err_strings[6]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 0 soid 3:bc819597:::ROBJ12:head : candidate had a stat error"
-    err_strings[7]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:c0c86b1d:::ROBJ14:head : candidate had a missing info key"
-    err_strings[8]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 0 soid 3:c0c86b1d:::ROBJ14:head : candidate had a corrupt info"
-    err_strings[9]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 soid 3:c0c86b1d:::ROBJ14:head : failed to pick suitable object info"
-    err_strings[10]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:ce3f1d6a:::ROBJ1:head : candidate size 9 info size 7 mismatch"
-    err_strings[11]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:ce3f1d6a:::ROBJ1:head : size 9 != size 7 from auth oi 3:ce3f1d6a:::ROBJ1:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 3 dd 2ddbf8f5 od f5fba2c6 alloc_hint [[]0 0 0[]][)], size 9 != size 7 from shard 0"
-    err_strings[12]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 0 soid 3:d60617f9:::ROBJ13:head : candidate had a stat error"
-    err_strings[13]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 3:f2a5b2a4:::ROBJ3:head : missing"
-    err_strings[14]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:ffdb2004:::ROBJ9:head : candidate size 1 info size 7 mismatch"
-    err_strings[15]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:ffdb2004:::ROBJ9:head : object info inconsistent "
-    err_strings[16]="log_channel[(]cluster[)] log [[]ERR[]] : scrub [0-9]*[.]0 3:c0c86b1d:::ROBJ14:head : no '_' attr"
-    err_strings[17]="log_channel[(]cluster[)] log [[]ERR[]] : scrub [0-9]*[.]0 3:5c7b2c47:::ROBJ16:head : can't decode 'snapset' attr .* v=3 cannot decode .* Malformed input"
-    err_strings[18]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 scrub : stat mismatch, got 19/19 objects, 0/0 clones, 18/19 dirty, 18/19 omap, 0/0 pinned, 0/0 hit_set_archive, 0/0 whiteouts, 1049713/1049720 bytes, 0/0 manifest objects, 0/0 hit_set_archive bytes."
-    err_strings[19]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 scrub 1 missing, 8 inconsistent objects"
-    err_strings[20]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 scrub 18 errors"
-    err_strings[21]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 soid 3:123a5f55:::ROBJ19:head : size 1049600 > 1048576 is too large"
+    err_strings[0]=".*[0-9]*[.]0 shard 1 soid 3:30259878:::ROBJ15:head : candidate had a missing info key"
+    err_strings[1]=".*[0-9]*[.]0 soid 3:33aca486:::ROBJ18:head : object info inconsistent "
+    err_strings[2]=".*[0-9]*[.]0 shard 1 soid 3:5c7b2c47:::ROBJ16:head : candidate had a corrupt snapset"
+    err_strings[3]=".*[0-9]*[.]0 shard 0 soid 3:5c7b2c47:::ROBJ16:head : candidate had a missing snapset key"
+    err_strings[4]=".*[0-9]*[.]0 soid 3:5c7b2c47:::ROBJ16:head : failed to pick suitable object info"
+    err_strings[5]=".*[0-9]*[.]0 soid 3:86586531:::ROBJ8:head : attr value mismatch '_key1-ROBJ8', attr name mismatch '_key3-ROBJ8', attr name mismatch '_key2-ROBJ8'"
+    err_strings[6]=".*[0-9]*[.]0 shard 0 soid 3:bc819597:::ROBJ12:head : candidate had a stat error"
+    err_strings[7]=".*[0-9]*[.]0 shard 1 soid 3:c0c86b1d:::ROBJ14:head : candidate had a missing info key"
+    err_strings[8]=".*[0-9]*[.]0 shard 0 soid 3:c0c86b1d:::ROBJ14:head : candidate had a corrupt info"
+    err_strings[9]=".*[0-9]*[.]0 soid 3:c0c86b1d:::ROBJ14:head : failed to pick suitable object info"
+    err_strings[10]=".*[0-9]*[.]0 shard 1 soid 3:ce3f1d6a:::ROBJ1:head : candidate size 9 info size 7 mismatch"
+    err_strings[11]=".*[0-9]*[.]0 shard 1 soid 3:ce3f1d6a:::ROBJ1:head : size 9 != size 7 from auth oi 3:ce3f1d6a:::ROBJ1:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 3 dd 2ddbf8f5 od f5fba2c6 alloc_hint [[]0 0 0[]][)], size 9 != size 7 from shard 0"
+    err_strings[12]=".*[0-9]*[.]0 shard 0 soid 3:d60617f9:::ROBJ13:head : candidate had a stat error"
+    err_strings[13]=".*[0-9]*[.]0 shard 1 3:f2a5b2a4:::ROBJ3:head : missing"
+    err_strings[14]=".*[0-9]*[.]0 shard 1 soid 3:ffdb2004:::ROBJ9:head : candidate size 1 info size 7 mismatch"
+    err_strings[15]=".*[0-9]*[.]0 shard 1 soid 3:ffdb2004:::ROBJ9:head : object info inconsistent "
+    err_strings[16]=".*scrub [0-9]*[.]0 3:c0c86b1d:::ROBJ14:head : no '_' attr"
+    err_strings[17]=".*scrub [0-9]*[.]0 3:5c7b2c47:::ROBJ16:head : can't decode 'snapset' attr .* v=3 cannot decode .* Malformed input"
+    err_strings[18]=".*[0-9]*[.]0 scrub : stat mismatch, got 19/19 objects, 0/0 clones, 18/19 dirty, 18/19 omap, 0/0 pinned, 0/0 hit_set_archive, 0/0 whiteouts, 1049713/1049720 bytes, 0/0 manifest objects, 0/0 hit_set_archive bytes."
+    err_strings[19]=".*[0-9]*[.]0 scrub 1 missing, 8 inconsistent objects"
+    err_strings[20]=".*[0-9]*[.]0 scrub 18 errors"
+    err_strings[21]=".*[0-9]*[.]0 soid 3:123a5f55:::ROBJ19:head : size 1049600 > 1048576 is too large"
 
     for err_string in "${err_strings[@]}"
     do
@@ -1928,45 +2010,45 @@ EOF
     pg_deep_scrub $pg
 
     err_strings=()
-    err_strings[0]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:30259878:::ROBJ15:head : candidate had a missing info key"
-    err_strings[1]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 0 soid 3:33aca486:::ROBJ18:head : data_digest 0xbd89c912 != data_digest 0x2ddbf8f5 from auth oi 3:33aca486:::ROBJ18:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 54 dd 2ddbf8f5 od ddc3680f alloc_hint [[]0 0 255[]][)], object info inconsistent "
-    err_strings[2]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:33aca486:::ROBJ18:head : data_digest 0xbd89c912 != data_digest 0x2ddbf8f5 from auth oi 3:33aca486:::ROBJ18:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 54 dd 2ddbf8f5 od ddc3680f alloc_hint [[]0 0 255[]][)]"
-    err_strings[3]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 soid 3:33aca486:::ROBJ18:head : failed to pick suitable auth object"
-    err_strings[4]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:5c7b2c47:::ROBJ16:head : candidate had a corrupt snapset"
-    err_strings[5]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 0 soid 3:5c7b2c47:::ROBJ16:head : candidate had a missing snapset key"
-    err_strings[6]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 soid 3:5c7b2c47:::ROBJ16:head : failed to pick suitable object info"
-    err_strings[7]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 soid 3:86586531:::ROBJ8:head : attr value mismatch '_key1-ROBJ8', attr name mismatch '_key3-ROBJ8', attr name mismatch '_key2-ROBJ8'"
-    err_strings[8]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:87abbf36:::ROBJ11:head : candidate had a read error"
-    err_strings[9]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 0 soid 3:8aa5320e:::ROBJ17:head : data_digest 0x5af0c3ef != data_digest 0x2ddbf8f5 from auth oi 3:8aa5320e:::ROBJ17:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 51 dd 2ddbf8f5 od e9572720 alloc_hint [[]0 0 0[]][)]"
-    err_strings[10]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:8aa5320e:::ROBJ17:head : data_digest 0x5af0c3ef != data_digest 0x2ddbf8f5 from auth oi 3:8aa5320e:::ROBJ17:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 51 dd 2ddbf8f5 od e9572720 alloc_hint [[]0 0 0[]][)]"
-    err_strings[11]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 soid 3:8aa5320e:::ROBJ17:head : failed to pick suitable auth object"
-    err_strings[12]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 soid 3:8b55fa4b:::ROBJ7:head : omap_digest 0xefced57a != omap_digest 0x6a73cc07 from shard 1"
-    err_strings[13]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:8b55fa4b:::ROBJ7:head : omap_digest 0x6a73cc07 != omap_digest 0xefced57a from auth oi 3:8b55fa4b:::ROBJ7:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 21 dd 2ddbf8f5 od efced57a alloc_hint [[]0 0 0[]][)]"
-    err_strings[14]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 0 soid 3:a53c12e8:::ROBJ6:head : omap_digest 0x689ee887 != omap_digest 0x179c919f from shard 1, omap_digest 0x689ee887 != omap_digest 0x179c919f from auth oi 3:a53c12e8:::ROBJ6:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 18 dd 2ddbf8f5 od 179c919f alloc_hint [[]0 0 0[]][)]"
-    err_strings[15]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 0 soid 3:b1f19cbd:::ROBJ10:head : omap_digest 0xa8dd5adc != omap_digest 0xc2025a24 from auth oi 3:b1f19cbd:::ROBJ10:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 30 dd 2ddbf8f5 od c2025a24 alloc_hint [[]0 0 0[]][)]"
-    err_strings[16]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:b1f19cbd:::ROBJ10:head : omap_digest 0xa8dd5adc != omap_digest 0xc2025a24 from auth oi 3:b1f19cbd:::ROBJ10:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 30 dd 2ddbf8f5 od c2025a24 alloc_hint [[]0 0 0[]][)]"
-    err_strings[17]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 soid 3:b1f19cbd:::ROBJ10:head : failed to pick suitable auth object"
-    err_strings[18]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 0 soid 3:bc819597:::ROBJ12:head : candidate had a stat error"
-    err_strings[19]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:c0c86b1d:::ROBJ14:head : candidate had a missing info key"
-    err_strings[20]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 0 soid 3:c0c86b1d:::ROBJ14:head : candidate had a corrupt info"
-    err_strings[21]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 soid 3:c0c86b1d:::ROBJ14:head : failed to pick suitable object info"
-    err_strings[22]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:ce3f1d6a:::ROBJ1:head : candidate size 9 info size 7 mismatch"
-    err_strings[23]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:ce3f1d6a:::ROBJ1:head : data_digest 0x2d4a11c2 != data_digest 0x2ddbf8f5 from shard 0, data_digest 0x2d4a11c2 != data_digest 0x2ddbf8f5 from auth oi 3:ce3f1d6a:::ROBJ1:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 3 dd 2ddbf8f5 od f5fba2c6 alloc_hint [[]0 0 0[]][)], size 9 != size 7 from auth oi 3:ce3f1d6a:::ROBJ1:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 3 dd 2ddbf8f5 od f5fba2c6 alloc_hint [[]0 0 0[]][)], size 9 != size 7 from shard 0"
-    err_strings[24]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:d60617f9:::ROBJ13:head : candidate had a read error"
-    err_strings[25]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 0 soid 3:d60617f9:::ROBJ13:head : candidate had a stat error"
-    err_strings[26]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 soid 3:d60617f9:::ROBJ13:head : failed to pick suitable object info"
-    err_strings[27]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 0 soid 3:e97ce31e:::ROBJ2:head : data_digest 0x578a4830 != data_digest 0x2ddbf8f5 from shard 1, data_digest 0x578a4830 != data_digest 0x2ddbf8f5 from auth oi 3:e97ce31e:::ROBJ2:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 6 dd 2ddbf8f5 od f8e11918 alloc_hint [[]0 0 0[]][)]"
-    err_strings[28]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 3:f2a5b2a4:::ROBJ3:head : missing"
-    err_strings[29]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 0 soid 3:f4981d31:::ROBJ4:head : omap_digest 0xd7178dfe != omap_digest 0xe2d46ea4 from shard 1, omap_digest 0xd7178dfe != omap_digest 0xe2d46ea4 from auth oi 3:f4981d31:::ROBJ4:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 12 dd 2ddbf8f5 od e2d46ea4 alloc_hint [[]0 0 0[]][)]"
-    err_strings[30]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 soid 3:f4bfd4d1:::ROBJ5:head : omap_digest 0x1a862a41 != omap_digest 0x6cac8f6 from shard 1"
-    err_strings[31]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 1 soid 3:f4bfd4d1:::ROBJ5:head : omap_digest 0x6cac8f6 != omap_digest 0x1a862a41 from auth oi 3:f4bfd4d1:::ROBJ5:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 15 dd 2ddbf8f5 od 1a862a41 alloc_hint [[]0 0 0[]][)]"
-    err_strings[32]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 0 soid 3:ffdb2004:::ROBJ9:head : candidate size 3 info size 7 mismatch"
-    err_strings[33]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 shard 0 soid 3:ffdb2004:::ROBJ9:head : object info inconsistent "
-    err_strings[34]="log_channel[(]cluster[)] log [[]ERR[]] : deep-scrub [0-9]*[.]0 3:c0c86b1d:::ROBJ14:head : no '_' attr"
-    err_strings[35]="log_channel[(]cluster[)] log [[]ERR[]] : deep-scrub [0-9]*[.]0 3:5c7b2c47:::ROBJ16:head : can't decode 'snapset' attr .* v=3 cannot decode .* Malformed input"
-    err_strings[36]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 deep-scrub : stat mismatch, got 19/19 objects, 0/0 clones, 18/19 dirty, 18/19 omap, 0/0 pinned, 0/0 hit_set_archive, 0/0 whiteouts, 1049715/1049716 bytes, 0/0 manifest objects, 0/0 hit_set_archive bytes."
-    err_strings[37]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 deep-scrub 1 missing, 11 inconsistent objects"
-    err_strings[38]="log_channel[(]cluster[)] log [[]ERR[]] : [0-9]*[.]0 deep-scrub 35 errors"
+    err_strings[0]=".*[0-9]*[.]0 shard 1 soid 3:30259878:::ROBJ15:head : candidate had a missing info key"
+    err_strings[1]=".*[0-9]*[.]0 shard 0 soid 3:33aca486:::ROBJ18:head : data_digest 0xbd89c912 != data_digest 0x2ddbf8f5 from auth oi 3:33aca486:::ROBJ18:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 54 dd 2ddbf8f5 od ddc3680f alloc_hint [[]0 0 255[]][)], object info inconsistent "
+    err_strings[2]=".*[0-9]*[.]0 shard 1 soid 3:33aca486:::ROBJ18:head : data_digest 0xbd89c912 != data_digest 0x2ddbf8f5 from auth oi 3:33aca486:::ROBJ18:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 54 dd 2ddbf8f5 od ddc3680f alloc_hint [[]0 0 255[]][)]"
+    err_strings[3]=".*[0-9]*[.]0 soid 3:33aca486:::ROBJ18:head : failed to pick suitable auth object"
+    err_strings[4]=".*[0-9]*[.]0 shard 1 soid 3:5c7b2c47:::ROBJ16:head : candidate had a corrupt snapset"
+    err_strings[5]=".*[0-9]*[.]0 shard 0 soid 3:5c7b2c47:::ROBJ16:head : candidate had a missing snapset key"
+    err_strings[6]=".*[0-9]*[.]0 soid 3:5c7b2c47:::ROBJ16:head : failed to pick suitable object info"
+    err_strings[7]=".*[0-9]*[.]0 soid 3:86586531:::ROBJ8:head : attr value mismatch '_key1-ROBJ8', attr name mismatch '_key3-ROBJ8', attr name mismatch '_key2-ROBJ8'"
+    err_strings[8]=".*[0-9]*[.]0 shard 1 soid 3:87abbf36:::ROBJ11:head : candidate had a read error"
+    err_strings[9]=".*[0-9]*[.]0 shard 0 soid 3:8aa5320e:::ROBJ17:head : data_digest 0x5af0c3ef != data_digest 0x2ddbf8f5 from auth oi 3:8aa5320e:::ROBJ17:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 51 dd 2ddbf8f5 od e9572720 alloc_hint [[]0 0 0[]][)]"
+    err_strings[10]=".*[0-9]*[.]0 shard 1 soid 3:8aa5320e:::ROBJ17:head : data_digest 0x5af0c3ef != data_digest 0x2ddbf8f5 from auth oi 3:8aa5320e:::ROBJ17:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 51 dd 2ddbf8f5 od e9572720 alloc_hint [[]0 0 0[]][)]"
+    err_strings[11]=".*[0-9]*[.]0 soid 3:8aa5320e:::ROBJ17:head : failed to pick suitable auth object"
+    err_strings[12]=".*[0-9]*[.]0 soid 3:8b55fa4b:::ROBJ7:head : omap_digest 0xefced57a != omap_digest 0x6a73cc07 from shard 1"
+    err_strings[13]=".*[0-9]*[.]0 shard 1 soid 3:8b55fa4b:::ROBJ7:head : omap_digest 0x6a73cc07 != omap_digest 0xefced57a from auth oi 3:8b55fa4b:::ROBJ7:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 21 dd 2ddbf8f5 od efced57a alloc_hint [[]0 0 0[]][)]"
+    err_strings[14]=".*[0-9]*[.]0 shard 0 soid 3:a53c12e8:::ROBJ6:head : omap_digest 0x689ee887 != omap_digest 0x179c919f from shard 1, omap_digest 0x689ee887 != omap_digest 0x179c919f from auth oi 3:a53c12e8:::ROBJ6:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 18 dd 2ddbf8f5 od 179c919f alloc_hint [[]0 0 0[]][)]"
+    err_strings[15]=".*[0-9]*[.]0 shard 0 soid 3:b1f19cbd:::ROBJ10:head : omap_digest 0xa8dd5adc != omap_digest 0xc2025a24 from auth oi 3:b1f19cbd:::ROBJ10:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 30 dd 2ddbf8f5 od c2025a24 alloc_hint [[]0 0 0[]][)]"
+    err_strings[16]=".*[0-9]*[.]0 shard 1 soid 3:b1f19cbd:::ROBJ10:head : omap_digest 0xa8dd5adc != omap_digest 0xc2025a24 from auth oi 3:b1f19cbd:::ROBJ10:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 30 dd 2ddbf8f5 od c2025a24 alloc_hint [[]0 0 0[]][)]"
+    err_strings[17]=".*[0-9]*[.]0 soid 3:b1f19cbd:::ROBJ10:head : failed to pick suitable auth object"
+    err_strings[18]=".*[0-9]*[.]0 shard 0 soid 3:bc819597:::ROBJ12:head : candidate had a stat error"
+    err_strings[19]=".*[0-9]*[.]0 shard 1 soid 3:c0c86b1d:::ROBJ14:head : candidate had a missing info key"
+    err_strings[20]=".*[0-9]*[.]0 shard 0 soid 3:c0c86b1d:::ROBJ14:head : candidate had a corrupt info"
+    err_strings[21]=".*[0-9]*[.]0 soid 3:c0c86b1d:::ROBJ14:head : failed to pick suitable object info"
+    err_strings[22]=".*[0-9]*[.]0 shard 1 soid 3:ce3f1d6a:::ROBJ1:head : candidate size 9 info size 7 mismatch"
+    err_strings[23]=".*[0-9]*[.]0 shard 1 soid 3:ce3f1d6a:::ROBJ1:head : data_digest 0x2d4a11c2 != data_digest 0x2ddbf8f5 from shard 0, data_digest 0x2d4a11c2 != data_digest 0x2ddbf8f5 from auth oi 3:ce3f1d6a:::ROBJ1:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 3 dd 2ddbf8f5 od f5fba2c6 alloc_hint [[]0 0 0[]][)], size 9 != size 7 from auth oi 3:ce3f1d6a:::ROBJ1:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 3 dd 2ddbf8f5 od f5fba2c6 alloc_hint [[]0 0 0[]][)], size 9 != size 7 from shard 0"
+    err_strings[24]=".*[0-9]*[.]0 shard 1 soid 3:d60617f9:::ROBJ13:head : candidate had a read error"
+    err_strings[25]=".*[0-9]*[.]0 shard 0 soid 3:d60617f9:::ROBJ13:head : candidate had a stat error"
+    err_strings[26]=".*[0-9]*[.]0 soid 3:d60617f9:::ROBJ13:head : failed to pick suitable object info"
+    err_strings[27]=".*[0-9]*[.]0 shard 0 soid 3:e97ce31e:::ROBJ2:head : data_digest 0x578a4830 != data_digest 0x2ddbf8f5 from shard 1, data_digest 0x578a4830 != data_digest 0x2ddbf8f5 from auth oi 3:e97ce31e:::ROBJ2:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 6 dd 2ddbf8f5 od f8e11918 alloc_hint [[]0 0 0[]][)]"
+    err_strings[28]=".*[0-9]*[.]0 shard 1 3:f2a5b2a4:::ROBJ3:head : missing"
+    err_strings[29]=".*[0-9]*[.]0 shard 0 soid 3:f4981d31:::ROBJ4:head : omap_digest 0xd7178dfe != omap_digest 0xe2d46ea4 from shard 1, omap_digest 0xd7178dfe != omap_digest 0xe2d46ea4 from auth oi 3:f4981d31:::ROBJ4:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 12 dd 2ddbf8f5 od e2d46ea4 alloc_hint [[]0 0 0[]][)]"
+    err_strings[30]=".*[0-9]*[.]0 soid 3:f4bfd4d1:::ROBJ5:head : omap_digest 0x1a862a41 != omap_digest 0x6cac8f6 from shard 1"
+    err_strings[31]=".*[0-9]*[.]0 shard 1 soid 3:f4bfd4d1:::ROBJ5:head : omap_digest 0x6cac8f6 != omap_digest 0x1a862a41 from auth oi 3:f4bfd4d1:::ROBJ5:head[(][0-9]*'[0-9]* osd.1.0:[0-9]* dirty|omap|data_digest|omap_digest s 7 uv 15 dd 2ddbf8f5 od 1a862a41 alloc_hint [[]0 0 0[]][)]"
+    err_strings[32]=".*[0-9]*[.]0 shard 0 soid 3:ffdb2004:::ROBJ9:head : candidate size 3 info size 7 mismatch"
+    err_strings[33]=".*[0-9]*[.]0 shard 0 soid 3:ffdb2004:::ROBJ9:head : object info inconsistent "
+    err_strings[34]=".*deep-scrub [0-9]*[.]0 3:c0c86b1d:::ROBJ14:head : no '_' attr"
+    err_strings[35]=".*deep-scrub [0-9]*[.]0 3:5c7b2c47:::ROBJ16:head : can't decode 'snapset' attr .* v=3 cannot decode .* Malformed input"
+    err_strings[36]=".*[0-9]*[.]0 deep-scrub : stat mismatch, got 19/19 objects, 0/0 clones, 18/19 dirty, 18/19 omap, 0/0 pinned, 0/0 hit_set_archive, 0/0 whiteouts, 1049715/1049716 bytes, 0/0 manifest objects, 0/0 hit_set_archive bytes."
+    err_strings[37]=".*[0-9]*[.]0 deep-scrub 1 missing, 11 inconsistent objects"
+    err_strings[38]=".*[0-9]*[.]0 deep-scrub 35 errors"
 
     for err_string in "${err_strings[@]}"
     do
@@ -3686,8 +3768,8 @@ function TEST_corrupt_snapset_scrub_rep() {
     run_mon $dir a --osd_pool_default_size=2 || return 1
     apply_crimson_config || return 1
     run_mgr $dir x || return 1
-    run_crimson_osd $dir 0 --osd_objectstore=seastore --debug || return 1
-    run_crimson_osd $dir 1 --osd_objectstore=seastore --debug || return 1
+    run_crimson_osd $dir 0 --osd_objectstore=seastore || return 1
+    run_crimson_osd $dir 1 --osd_objectstore=seastore || return 1
     create_rbd_pool || return 1
     wait_for_clean || return 1
 

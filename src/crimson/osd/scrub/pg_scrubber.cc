@@ -1784,8 +1784,6 @@ bool PGScrubber::should_abort() const
     return false;
   }
   
-  // Check for deep scrub abort conditions
-  // Note: deep scrubs are allowed even if 'noscrub' is set (but not 'nodeep-scrub')
   if (m_is_deep) {
     if (pg.get_osdmap()->test_flag(CEPH_OSDMAP_NODEEP_SCRUB) ||
         pg.get_pgpool().info.has_flag(pg_pool_t::FLAG_NODEEP_SCRUB)) {
