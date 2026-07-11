@@ -203,7 +203,11 @@ function teardown() {
      mv $dir/*.log $TESTDIR/archive/log
  fi
     fi
-    rm -fr $dir
+    if [ "${NOREMOVE:-0}" = "1" ]; then
+        echo "NOREMOVE set: preserving log directory $dir"
+    else
+        rm -fr $dir
+    fi
     rm -rf $(get_asok_dir)
     if [ "$cores" = "yes" ]; then
         echo "ERROR: Failure due to cores found"
@@ -730,6 +734,7 @@ function run_crimson_osd() {
     ceph_args+=" --osd-journal=${osd_data}/journal"
     ceph_args+=" --chdir="
     ceph_args+=$EXTRA_OPTS
+    ceph_args+=${CRIMSON_EXTRA_OPTS:+" $CRIMSON_EXTRA_OPTS"}
     ceph_args+=" --run-dir=$dir"
     ceph_args+=" --admin-socket=$(get_asok_path)"
     ceph_args+=" --log-file=$dir/\$name.log"

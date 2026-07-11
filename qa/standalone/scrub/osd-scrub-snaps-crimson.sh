@@ -27,6 +27,22 @@ function run() {
     local dir=$1
     shift
 
+    # Parse --debug and --noremove flags (may appear anywhere in the argument list).
+    # --debug:    append --debug to CRIMSON_EXTRA_OPTS so only run_crimson_osd
+    #             picks it up.  Must NOT go into EXTRA_OPTS because run_mon,
+    #             run_mgr, etc. pass EXTRA_OPTS to ceph-mon/ceph-mgr which do
+    #             not accept a bare --debug flag (they require --debug-<subsystem>).
+    # --noremove: set NOREMOVE=1 so teardown() in ceph-helpers.sh skips "rm -fr $dir".
+    local new_args=()
+    for arg in "$@"; do
+        case "$arg" in
+            --debug)    CRIMSON_EXTRA_OPTS+=" --debug" ;;
+            --noremove) NOREMOVE=1 ;;
+            *)          new_args+=("$arg") ;;
+        esac
+    done
+    set -- "${new_args[@]}"
+
     export CEPH_MON="127.0.0.1:7121" # git grep '\<7121\>' : there must be only one
     export CEPH_ARGS
     CEPH_ARGS+="--fsid=$(uuidgen) --auth-supported=none "
@@ -39,11 +55,35 @@ function run() {
 
     export -n CEPH_CLI_TEST_DUP_COMMAND
     local funcs=${@:-$(set | sed -n -e 's/^\(TEST_[0-9a-z_]*\) .*/\1/p')}
+
+    local passed=()
+    local failed=()
     for func in $funcs ; do
-        setup $dir || return 1
-        $func $dir || return 1
-        teardown $dir || return 1
+        if ! setup $dir ; then
+            echo "SETUP FAILED for $func — skipping"
+            failed+=("$func (setup failed)")
+            continue
+        fi
+        if $func $dir ; then
+            passed+=("$func")
+        else
+            echo "FAILED: $func"
+            failed+=("$func")
+        fi
+        teardown $dir || true
     done
+
+    echo ""
+    echo "======== TEST RESULTS ========"
+    echo "PASSED (${#passed[@]}):"
+    for f in "${passed[@]}"; do echo "  [PASS] $f"; done
+    echo "FAILED (${#failed[@]}):"
+    for f in "${failed[@]}"; do echo "  [FAIL] $f"; done
+    echo "=============================="
+
+    if [ ${#failed[@]} -ne 0 ]; then
+        return 1
+    fi
 }
 
 function apply_crimson_config() {
@@ -178,7 +218,7 @@ function TEST_scrub_snaps() {
     run_mgr $dir x || return 1
     for osd in $(seq 0 $(expr $OSDS - 1))
     do
-      run_crimson_osd $dir $osd --osd_objectstore=seastore --debug || return 1
+      run_crimson_osd $dir $osd --osd_objectstore=seastore || return 1
     done
 
     # All scrubs done manually.  Don't want any unexpected scheduled scrubs.
@@ -787,7 +827,7 @@ function _scrub_snaps_multi() {
     run_mgr $dir x || return 1
     for osd in $(seq 0 $(expr $OSDS - 1))
     do
-      run_crimson_osd $dir $osd --osd_objectstore=seastore --debug || return 1
+      run_crimson_osd $dir $osd --osd_objectstore=seastore || return 1
     done
 
     # All scrubs done manually.  Don't want any unexpected scheduled scrubs.

@@ -23,6 +23,22 @@ function run() {
     local dir=$1
     shift
 
+    # Parse --debug and --noremove flags (may appear anywhere in the argument list).
+    # --debug:    append --debug to CRIMSON_EXTRA_OPTS so only run_crimson_osd
+    #             picks it up.  Must NOT go into EXTRA_OPTS because run_mon,
+    #             run_mgr, etc. pass EXTRA_OPTS to ceph-mon/ceph-mgr which do
+    #             not accept a bare --debug flag (they require --debug-<subsystem>).
+    # --noremove: set NOREMOVE=1 so teardown() in ceph-helpers.sh skips "rm -fr $dir".
+    local new_args=()
+    for arg in "$@"; do
+        case "$arg" in
+            --debug)    CRIMSON_EXTRA_OPTS+=" --debug" ;;
+            --noremove) NOREMOVE=1 ;;
+            *)          new_args+=("$arg") ;;
+        esac
+    done
+    set -- "${new_args[@]}"
+
     export CEPH_MON="127.0.0.1:7138" # git grep '\<7138\>' : there must be only one
     export CEPH_ARGS
     CEPH_ARGS+="--fsid=$(uuidgen) --auth-supported=none "
@@ -36,15 +52,39 @@ function run() {
 
     export -n CEPH_CLI_TEST_DUP_COMMAND
     local funcs=${@:-$(set | sed -n -e 's/^\(TEST_[0-9a-z_]*\) .*/\1/p')}
+
+    local passed=()
+    local failed=()
     for func in $funcs ; do
         echo "-------------- Prepare Test $func -------------------"
-        setup $dir || return 1
+        if ! setup $dir ; then
+            echo "SETUP FAILED for $func — skipping"
+            failed+=("$func (setup failed)")
+            continue
+        fi
         echo "-------------- Run Test $func -----------------------"
-        $func $dir || return 1
+        if $func $dir ; then
+            passed+=("$func")
+        else
+            echo "FAILED: $func"
+            failed+=("$func")
+        fi
         echo "-------------- Teardown Test $func ------------------"
-        teardown $dir || return 1
+        teardown $dir || true
         echo "-------------- Complete Test $func ------------------"
     done
+
+    echo ""
+    echo "======== TEST RESULTS ========"
+    echo "PASSED (${#passed[@]}):"
+    for f in "${passed[@]}"; do echo "  [PASS] $f"; done
+    echo "FAILED (${#failed[@]}):"
+    for f in "${failed[@]}"; do echo "  [FAIL] $f"; done
+    echo "=============================="
+
+    if [ ${#failed[@]} -ne 0 ]; then
+        return 1
+    fi
 }
 
 function dump_scrub_metrics() {
@@ -496,7 +536,7 @@ function TEST_pg_dump_objects_scrubbed() {
     run_mgr $dir x --mgr_stats_period=1 || return 1
     for osd in $(seq 0 $(expr $OSDS - 1))
     do
-      run_crimson_osd $dir $osd --osd_objectstore=seastore --debug || return 1
+      run_crimson_osd $dir $osd --osd_objectstore=seastore || return 1
     done
 
     # Create a pool with a single pg
@@ -644,7 +684,7 @@ function TEST_dump_scrub_schedule() {
 
     for osd in $(seq 0 $(expr $OSDS - 1))
     do
-      run_crimson_osd $dir $osd $ceph_osd_args --debug || return 1
+      run_crimson_osd $dir $osd $ceph_osd_args || return 1
     done
 
     # Create a pool with a single pg
@@ -779,7 +819,7 @@ function crimson_standard_scrub_wpq_cluster() {
     
     for osd in $(seq 0 $(expr $OSDS - 1))
     do
-      run_crimson_osd $dir $osd $ceph_osd_args --debug || return 1
+      run_crimson_osd $dir $osd $ceph_osd_args || return 1
     done
     
     if [[ "$poolname" != "nopool" ]]; then
