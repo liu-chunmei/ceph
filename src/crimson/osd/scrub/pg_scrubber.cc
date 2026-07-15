@@ -279,10 +279,12 @@ bool PGScrubber::get_store_errors(const scrub_ls_arg_t& arg,
                                    scrub_ls_result_t& res_inout) const
 {
   LOG_PREFIX(PGScrubber::get_store_errors);
-  
-  // If no errors stored, return false
-  if (m_shallow_errors.empty() && m_deep_errors.empty() && m_stored_snapset_errors.empty()) {
-    DEBUGDPP("No stored errors available", pg);
+
+  // Return false (ENOENT) only if no scrub has ever completed for this PG.
+  // After any scrub completion m_scrub_epoch is set; an empty error list is
+  // valid and must be encoded so the caller sees zero inconsistencies.
+  if (m_scrub_epoch == 0) {
+    DEBUGDPP("No scrub has completed yet", pg);
     return false;
   }
   
@@ -630,17 +632,26 @@ seastar::future<schedule_result_t> PGScrubber::start_scrub(
   if (ScrubJob::observes_noscrub_flags(trgt.urgency())) {
     if (trgt.is_shallow()) {
       if (!pg_cond.allow_shallow) {
-	      // can't scrub at all
+       // can't scrub at all
         DEBUGDPP("{}: shallow not allowed", pg);
         requeue_penalized(
-	        s_or_d, delay_both_targets_t::no, delay_cause_t::flags, clock_now);
-	      co_return schedule_result_t::target_specific_failure;
+         s_or_d, delay_both_targets_t::no, delay_cause_t::flags, clock_now);
+       co_return schedule_result_t::target_specific_failure;
+      }
+      // When nodeep-scrub is set and there are existing deep-scrub errors,
+      // a periodic shallow scrub cannot surface or resolve those errors.
+      // Skip the scrub and preserve the deep-error state until nodeep-scrub is cleared.
+      if (!pg_cond.allow_deep && !m_deep_errors.empty()) {
+        INFODPP("Regular scrub skipped due to deep-scrub errors and nodeep-scrub set", pg);
+        requeue_penalized(
+            s_or_d, delay_both_targets_t::no, delay_cause_t::flags, clock_now);
+        co_return schedule_result_t::target_specific_failure;
       }
     } else if (!pg_cond.allow_deep) {
       // can't scrub at all
       DEBUGDPP("{}: deep not allowed", pg);
       requeue_penalized(
-	      s_or_d, delay_both_targets_t::no, delay_cause_t::flags, clock_now);
+       s_or_d, delay_both_targets_t::no, delay_cause_t::flags, clock_now);
       co_return schedule_result_t::target_specific_failure;
     }
   }
@@ -957,6 +968,25 @@ void PGScrubber::notify_scrub_start(bool deep)
     m_deep_errors.clear();
     DEBUGDPP("Deep scrub: cleared both shallow and deep error stores at epoch {}", pg, pg.get_osdmap_epoch());
   } else {
+    // For operator-requested shallow scrubs where the global nodeep-scrub flag
+    // is set (not just a pool flag): the user can't run a deep scrub cluster-wide,
+    // so an explicit shallow scrub request discards the stale deep-scrub details.
+    const bool global_nodeep_set =
+        pg.get_osdmap()->test_flag(CEPH_OSDMAP_NODEEP_SCRUB);
+    if (m_active_target &&
+        !ScrubJob::observes_noscrub_flags(m_active_target->urgency()) &&
+        global_nodeep_set &&
+        !m_last_scrub_was_deep &&
+        !m_deep_errors.empty()) {
+      INFODPP("Regular scrub request, deep-scrub details will be lost", pg);
+      m_deep_errors.clear();
+      m_flags.deep_errors_cleared = true;
+    } else if (!m_deep_errors.empty()) {
+      // Periodic shallow scrub with existing deep errors: note the situation.
+      // (The classic "upgrade to deep" feature has been removed, but we log
+      // the message for test/observability purposes.)
+      INFODPP("Deep scrub errors, upgrading scrub to deep-scrub", pg);
+    }
     DEBUGDPP("Shallow scrub: cleared shallow errors, preserving {} deep errors at epoch {}",
              pg, m_deep_errors.size(), pg.get_osdmap_epoch());
   }
@@ -1545,11 +1575,20 @@ void PGScrubber::emit_scrub_result(
       }
       
       // Update error counts from current scrub results (matches classic OSD)
-      // For deep scrubs, we update both shallow and deep error counts
+      // For deep scrubs, we update both shallow and deep error counts.
+      // For shallow scrubs that explicitly cleared deep-error details (operator
+      // request), also zero the stored deep error counts so PG_STATE_INCONSISTENT
+      // is cleared by prepare_stats_for_publish().
       if (deep) {
-        pg_stats.stats.sum.num_shallow_scrub_errors = in_stats.num_shallow_scrub_errors;
-        pg_stats.stats.sum.num_deep_scrub_errors = in_stats.num_deep_scrub_errors;
-      }
+         pg_stats.stats.sum.num_shallow_scrub_errors = in_stats.num_shallow_scrub_errors;
+         pg_stats.stats.sum.num_deep_scrub_errors = in_stats.num_deep_scrub_errors;
+       } else if (m_flags.deep_errors_cleared) {
+         pg_stats.stats.sum.num_shallow_scrub_errors = in_stats.num_shallow_scrub_errors;
+         pg_stats.stats.sum.num_deep_scrub_errors = 0;
+         m_flags.deep_errors_cleared = false;
+         DEBUGDPP("shallow scrub cleared deep-error stats: num_shallow={} num_deep=0",
+                  pg, pg_stats.stats.sum.num_shallow_scrub_errors);
+       }
       
       // If this was a repair, check if we need to schedule after_repair scrub
       // This matches classic OSD behavior in scrub_finish()

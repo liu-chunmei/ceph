@@ -57,6 +57,10 @@ struct scrub_flags_t {
 
   /// checked at the end of the scrub, to possibly initiate a deep-scrub
   bool deep_scrub_on_error{false};
+
+  /// set when an operator-requested shallow scrub discards the stored deep-scrub
+  /// error details; used to also zero the pg-stat error counters at scrub end
+  bool deep_errors_cleared{false};
 };
 
 class PGScrubber : public crimson::BlockerT<PGScrubber>, ScrubContext {
