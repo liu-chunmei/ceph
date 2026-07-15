@@ -48,7 +48,7 @@ walk(if type == "object" then del(.mtime) else . end)
 | walk(if type == "object" then del(.version) else . end)
 | walk(if type == "object" then del(.prior_version) else . end)'
 
-sortkeys='import json; import sys ; JSON=sys.stdin.read() ; ud = json.loads(JSON) ; print(json.dumps(ud, sort_keys=True, indent=2))'
+sortkeys='import json; import sys ; JSON=sys.stdin.read() ; ud = json.loads(JSON) ; normalize = lambda value: sorted((normalize(item) for item in value), key=lambda item: json.dumps(item, sort_keys=True)) if isinstance(value, list) else {key: normalize(item) for key, item in value.items()} if isinstance(value, dict) else value ; print(json.dumps(normalize(ud), sort_keys=True, indent=2))'
 
 function run() {
     local dir=$1
@@ -1019,7 +1019,7 @@ function TEST_corrupt_scrub_replicated() {
     ERRORS=0
     declare -a s_err_strings
     err_strings[0]=".*[0-9]*[.]0 shard 1 soid 3:30259878:::ROBJ15:head : candidate had a missing info key"
-    err_strings[1]=".*[0-9]*[.]0 soid 3:33aca486:::ROBJ18:head : object info inconsistent "
+    err_strings[1]=".*[0-9]*[.]0 shard 0 soid 3:33aca486:::ROBJ18:head : object info inconsistent "
     err_strings[2]=".*[0-9]*[.]0 shard 1 soid 3:5c7b2c47:::ROBJ16:head : candidate had a corrupt snapset"
     err_strings[3]=".*[0-9]*[.]0 shard 0 soid 3:5c7b2c47:::ROBJ16:head : candidate had a missing snapset key"
     err_strings[4]=".*[0-9]*[.]0 soid 3:5c7b2c47:::ROBJ16:head : failed to pick suitable object info"
@@ -1037,8 +1037,8 @@ function TEST_corrupt_scrub_replicated() {
     err_strings[16]=".*scrub [0-9]*[.]0 3:c0c86b1d:::ROBJ14:head : no '_' attr"
     err_strings[17]=".*scrub [0-9]*[.]0 3:5c7b2c47:::ROBJ16:head : can't decode 'snapset' attr .* v=3 cannot decode .* Malformed input"
     err_strings[18]=".*[0-9]*[.]0 scrub : stat mismatch, got 19/19 objects, 0/0 clones, 18/19 dirty, 18/19 omap, 0/0 pinned, 0/0 hit_set_archive, 0/0 whiteouts, 1049713/1049720 bytes, 0/0 manifest objects, 0/0 hit_set_archive bytes."
-    err_strings[19]=".*[0-9]*[.]0 scrub 1 missing, 8 inconsistent objects"
-    err_strings[20]=".*[0-9]*[.]0 scrub 18 errors"
+    err_strings[19]=".*[0-9]*[.]0 scrub 1 missing, 10 inconsistent objects"
+    err_strings[20]=".*[0-9]*[.]0 scrub 11 errors"
     err_strings[21]=".*[0-9]*[.]0 soid 3:123a5f55:::ROBJ19:head : size 1049600 > 1048576 is too large"
 
     for err_string in "${err_strings[@]}"
@@ -2047,8 +2047,8 @@ EOF
     err_strings[34]=".*deep-scrub [0-9]*[.]0 3:c0c86b1d:::ROBJ14:head : no '_' attr"
     err_strings[35]=".*deep-scrub [0-9]*[.]0 3:5c7b2c47:::ROBJ16:head : can't decode 'snapset' attr .* v=3 cannot decode .* Malformed input"
     err_strings[36]=".*[0-9]*[.]0 deep-scrub : stat mismatch, got 19/19 objects, 0/0 clones, 18/19 dirty, 18/19 omap, 0/0 pinned, 0/0 hit_set_archive, 0/0 whiteouts, 1049715/1049716 bytes, 0/0 manifest objects, 0/0 hit_set_archive bytes."
-    err_strings[37]=".*[0-9]*[.]0 deep-scrub 1 missing, 11 inconsistent objects"
-    err_strings[38]=".*[0-9]*[.]0 deep-scrub 35 errors"
+    err_strings[37]=".*[0-9]*[.]0 deep-scrub 1 missing, 9 inconsistent objects"
+    err_strings[38]=".*[0-9]*[.]0 deep-scrub 21 errors"
 
     for err_string in "${err_strings[@]}"
     do
@@ -3996,12 +3996,12 @@ EOF
     ERRORS=0
     declare -a err_strings
     # Crimson uses ERRORDPP format instead of log_channel format
-    err_strings[0]="ERROR.*PGScrubber::log_object_errors: 3.0 soid ROBJ1 : snapset inconsistent"
-    err_strings[1]="ERROR.*PGScrubber::log_object_errors: 3.0 soid ROBJ2 : snapset inconsistent"
+    err_strings[0]="ERROR.*PGScrubber::log_object_errors: 3.0 soid [0-9]*:.*:::ROBJ1:head : snapset inconsistent"
+    err_strings[1]="ERROR.*PGScrubber::log_object_errors: 3.0 soid [0-9]*:.*:::ROBJ2:head : snapset inconsistent"
     err_strings[2]="ERROR.*PGScrubber::log_snapset_errors: scrub 3.0 [0-9]*:.*:::ROBJ1:1 : is an unexpected clone"
-    err_strings[3]="ERROR.*PGScrubber::emit_scrub_result: stat mismatch"
-    err_strings[4]="ERROR.*PGScrubber::emit_chunk_result: 3.0 scrub 0 missing, [0-9]* inconsistent objects"
-    err_strings[5]="ERROR.*PGScrubber::emit_chunk_result: scrub [0-9]* errors"
+    err_strings[3]="ERROR.*PGScrubber::emit_scrub_result: 3.0 scrub : stat mismatch, got 3/4 objects, 1/2 clones, 3/4 dirty, 3/4 omap, 0/0 pinned, 0/0 hit_set_archive, 0/0 whiteouts, 49/56 bytes, 0/0 manifest objects, 0/0 hit_set_archive bytes."
+    err_strings[4]="ERROR.*PGScrubber::emit_scrub_result: 3.0 scrub 0 missing, 2 inconsistent objects"
+    err_strings[5]="ERROR.*PGScrubber::emit_scrub_result: 3.0 scrub 4 errors"
 
     for err_string in "${err_strings[@]}"
     do

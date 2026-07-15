@@ -1878,21 +1878,22 @@ bool PG::should_send_op(
      // 1. peer_info.last_backfill has passed "hoid"
      // 2. last_backfill_started has passed "hoid"
      hoid <= peering_state.get_peer_info(peer).last_backfill ||
-     (has_backfill_state() && hoid <= get_last_backfill_started())) &&
-    !is_missing_on_peer(peer, hoid);
+     (has_backfill_state() && hoid <= get_last_backfill_started()));
   if (unlikely(!should_send)) {
-    if (peering_state.is_async_recovery_target(peer)) {
-      logger().info("{}: {} shipping empty opt to osd.{}, object {}"
-                    " which is pending recovery in async_recovery_targets",
-                   *this, __func__, peer, hoid);
-    } else {
-      ceph_assert(is_backfill_target(peer));
-      logger().debug("{} issue_repop shipping empty opt to osd."
-                     "{}, object {} beyond std::max(last_backfill_started, "
-                     "peer_info[peer].last_backfill {})",
-                     __func__, peer, hoid,
-                     peering_state.get_peer_info(peer).last_backfill);
-    }
+    ceph_assert(is_backfill_target(peer));
+    logger().debug("{} issue_repop shipping empty opt to osd."
+                   "{}, object {} beyond std::max(last_backfill_started, "
+                   "peer_info[peer].last_backfill {})",
+                   __func__, peer, hoid,
+                   peering_state.get_peer_info(peer).last_backfill);
+    return should_send;
+  }
+  if (peering_state.is_async_recovery_target(peer) &&
+      peering_state.get_peer_missing(peer).get_items().count(hoid)) {
+    should_send = false;
+    logger().info("{}: {} shipping empty opt to osd.{}, object {}"
+                  " which is pending recovery in async_recovery_targets",
+                  *this, __func__, peer, hoid);
   }
   return should_send;
 }

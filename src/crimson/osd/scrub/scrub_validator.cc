@@ -97,10 +97,24 @@ shard_evaluation_t evaluate_object_shard(
 
   if (obj.read_error) {
     ret.shard_info.set_read_error();
+    // A read error means data/omap were not actually read; clear any digest
+    // fields that set_object() may have copied from the ScrubMap so they are
+    // not emitted in the JSON output (matches classic OSD behaviour where
+    // digest_present stays false when the read fails).
+    ret.shard_info.data_digest_present = false;
+    ret.shard_info.omap_digest_present = false;
   }
 
   if (obj.stat_error) {
     ret.shard_info.set_stat_error();
+    // Classic OSD stops processing a shard once stat_error is set.
+    // Return early to avoid spuriously setting info_missing on top of it.
+    // Also clear any digest fields copied by set_object() — a stat_error
+    // means the object was not accessible so the digests are meaningless
+    // and must not appear in the JSON output.
+    ret.shard_info.data_digest_present = false;
+    ret.shard_info.omap_digest_present = false;
+    return ret;
   }
 
   {
@@ -122,6 +136,9 @@ shard_evaluation_t evaluate_object_shard(
   ret.shard_info.size = obj.size;
   if (ret.object_info &&
       obj.size != policy.logical_to_ondisk_size(ret.object_info->size)) {
+    // OBJ_SIZE_INFO_MISMATCH: this shard's physical size doesn't match its own OI size.
+    // SIZE_MISMATCH_INFO is only set during cross-shard comparison (when the
+    // candidate's physical size differs from the auth's physical size).
     ret.shard_info.set_obj_size_info_mismatch();
   }
 
@@ -130,6 +147,9 @@ shard_evaluation_t evaluate_object_shard(
     if (xiter == obj.attrs.end()) {
       ret.snapset = std::nullopt;
       ret.snapset_status = snapset_status_t::MISSING;
+      // Propagate snapset errors into shard_info so evaluate_object() can
+      // detect them via has_errors() and include this object in object_errors.
+      ret.shard_info.set_snapset_missing();
     } else {
       ret.snapset = SnapSet{};
       ret.snapset_bl = xiter->second;  // Store raw buffer for error reporting
@@ -140,9 +160,11 @@ shard_evaluation_t evaluate_object_shard(
       } catch (const ceph::buffer::malformed_input&) {
  ret.snapset = std::nullopt;
  ret.snapset_status = snapset_status_t::CORRUPTED;
+ ret.shard_info.set_snapset_corrupted();
       } catch (const ceph::buffer::error&) {
  ret.snapset = std::nullopt;
  ret.snapset_status = snapset_status_t::CORRUPTED;
+ ret.shard_info.set_snapset_corrupted();
       }
     }
   }
@@ -163,19 +185,6 @@ shard_evaluation_t evaluate_object_shard(
     }
   }
 
-  if (ret.object_info) {
-    if (ret.shard_info.data_digest_present &&
- ret.object_info->is_data_digest() &&
- (ret.object_info->data_digest != ret.shard_info.data_digest)) {
-      ret.shard_info.set_data_digest_mismatch_info();
-    }
-    if (ret.shard_info.omap_digest_present &&
- ret.object_info->is_omap_digest() &&
- (ret.object_info->omap_digest != ret.shard_info.omap_digest)) {
-      ret.shard_info.set_omap_digest_mismatch_info();
-    }
-  }
-
   return ret;
 }
 
@@ -188,10 +197,15 @@ librados::obj_err_t compare_candidate_to_authoritative(
   using namespace librados;
   obj_err_t ret;
 
-  // If candidate is missing, we can't compare attributes/digests, but the
-  // SHARD_MISSING error in cand.shard_info will be picked up by evaluate_object()
-  // which checks std::any_of(shards, [](auto &s) { return s.has_errors(); })
-  if (cand.shard_info.has_shard_missing()) {
+  // If candidate is missing, has a stat error, or has a read error, comparison
+  // is meaningless: the shard-level error bit(s) will already be propagated by
+  // evaluate_object().  Classic scrub_backend.cc returns early for missing
+  // (line 1535) and stat_error (lines 1555-1559).  For read_error the raw
+  // ScrubMap::object has digest_present=false so the digest comparisons at
+  // lines 1504 and 1529 never fire — mimic that by skipping entirely here.
+  if (cand.shard_info.has_shard_missing() ||
+      cand.shard_info.has_stat_error() ||
+      cand.shard_info.has_read_error()) {
     return ret;
   }
 
@@ -206,13 +220,40 @@ librados::obj_err_t compare_candidate_to_authoritative(
     ret.errors |= obj_err_t::OMAP_DIGEST_MISMATCH;
   }
 
-  {
+  // data_digest_mismatch_info / omap_digest_mismatch_info: the candidate's
+  // freshly-computed digest differs from the authoritative OI's recorded digest.
+  // This matches classic scrub_backend.cc compare_obj_details() lines 1529-1549:
+  //   if (auth_oi.is_data_digest() && candidate.digest_present &&
+  //       auth_oi.data_digest != candidate.digest)
+  //     shard_result.set_data_digest_mismatch_info();
+  // Note: we use auth OI (not the candidate's own OI) as the reference, so a
+  // candidate whose own OI is stale but whose data is correct is not flagged.
+  if (auth.object_info) {
+    if (cand_si.data_digest_present &&
+        auth.object_info->is_data_digest() &&
+        auth.object_info->data_digest != cand_si.data_digest) {
+      cand_si.set_data_digest_mismatch_info();
+    }
+    if (cand_si.omap_digest_present &&
+        auth.object_info->is_omap_digest() &&
+        auth.object_info->omap_digest != cand_si.omap_digest) {
+      cand_si.set_omap_digest_mismatch_info();
+    }
+  }
+
+  // Only compare OI attrs when the candidate has a valid, readable info.
+  // If the candidate is missing or corrupted, there is nothing to compare and
+  // reporting OBJECT_INFO_INCONSISTENCY would be spurious (the shard-level
+  // error bits already capture the problem).  This matches classic
+  // scrub_backend.cc which guards its OI comparison at line 1564:
+  //   if (!shard_result.has_info_missing() && !shard_result.has_info_corrupted())
+  if (!cand_si.has_info_missing() && !cand_si.has_info_corrupted()) {
     auto aiter = auth_si.attrs.find(OI_ATTR);
     ceph_assert(aiter != auth_si.attrs.end());
 
     auto citer = cand_si.attrs.find(OI_ATTR);
     if (citer == cand_si.attrs.end() ||
-	!aiter->second.contents_equal(citer->second)) {
+ !aiter->second.contents_equal(citer->second)) {
       ret.errors |= obj_err_t::OBJECT_INFO_INCONSISTENCY;
     }
   }
@@ -253,10 +294,17 @@ librados::obj_err_t compare_candidate_to_authoritative(
 
   if (auth_si.size != cand_si.size) {
     ret.errors |= obj_err_t::SIZE_MISMATCH;
+    // SIZE_MISMATCH_INFO: candidate's physical size differs from auth's physical size.
+    cand_si.set_size_mismatch_info();
   }
 
+  // "omap_header" is a seastore-specific xattr used internally to store the
+  // omap header (seastore_types.h: OMAP_HEADER_XATTR_KEY).  Exclude it from
+  // user-attr comparisons to avoid spurious ATTR_VALUE_MISMATCH when the omap
+  // header differs between shards in a shallow scrub.
   auto is_sys_attr = [&policy](const auto &str) {
     return str == OI_ATTR || str == SS_ATTR ||
+      str == "omap_header" ||
       (policy.is_ec() && str == ECLegacy::ECUtilL::get_hinfo_key());
   };
   for (auto aiter = auth_si.attrs.begin(); aiter != auth_si.attrs.end(); ++aiter) {
@@ -291,12 +339,23 @@ struct object_evaluation_t {
 
   size_t omap_keys{0};
   size_t omap_bytes{0};
+
+  // Digests from the authoritative shard's scan — used by validate_chunk
+  // to populate chunk_result_t::missing_digest when they differ from oi.
+  bool auth_data_digest_present{false};
+  uint32_t auth_data_digest{0};
+  bool auth_omap_digest_present{false};
+  uint32_t auth_omap_digest{0};
 };
 object_evaluation_t evaluate_object(
   const chunk_validation_policy_t &policy,
   const hobject_t &hoid,
   const scrub_map_set_t &maps)
 {
+  auto digest_count = [](const object_info_t& oi) {
+    return (oi.is_data_digest() ? 1 : 0) + (oi.is_omap_digest() ? 1 : 0);
+  };
+
   ceph_assert(maps.size() > 0);
   using evaluation_vec_t = std::vector<shard_evaluation_t>;
   evaluation_vec_t shards;
@@ -313,7 +372,47 @@ object_evaluation_t evaluate_object(
 
   std::sort(shards.begin(), shards.end());
 
-  auto &auth_eval = shards.back();
+  auto &fallback_auth = shards.back();
+
+  // Digest mismatches are checked after selecting the authoritative copy.
+  // They must not make an otherwise valid shard ineligible as the source for
+  // repair; classic scrub force-fixes the recorded digest in repair mode.
+  const auto has_auth_blocking_errors = [](const auto& shard_info) {
+    constexpr uint64_t digest_errors =
+      librados::err_t::DATA_DIGEST_MISMATCH_INFO |
+      librados::err_t::OMAP_DIGEST_MISMATCH_INFO;
+    return (shard_info.errors & ~digest_errors) != 0;
+  };
+
+  // Match classic scrub_backend::select_auth_object(): choose authoritative
+  // shard among error-free candidates by highest object_info version, then by
+  // digest richness as a tie-breaker.
+  shard_evaluation_t* preferred_auth = nullptr;
+  for (auto& cand : shards) {
+    if (has_auth_blocking_errors(cand.shard_info) ||
+      !cand.object_info.has_value()) {
+      continue;
+    }
+    if (!preferred_auth) {
+      preferred_auth = &cand;
+      continue;
+    }
+    const bool newer_version =
+      cand.object_info->version > preferred_auth->object_info->version;
+    const bool richer_digest =
+      cand.object_info->version == preferred_auth->object_info->version &&
+      digest_count(*cand.object_info) > digest_count(*preferred_auth->object_info);
+    const bool prefer_primary_on_full_tie =
+      cand.object_info->version == preferred_auth->object_info->version &&
+      digest_count(*cand.object_info) == digest_count(*preferred_auth->object_info) &&
+      cand.is_primary() && !preferred_auth->is_primary();
+
+    if (newer_version || richer_digest || prefer_primary_on_full_tie) {
+      preferred_auth = &cand;
+    }
+  }
+
+  auto& auth_eval = preferred_auth ? *preferred_auth : fallback_auth;
 
   object_evaluation_t ret;
   inconsistent_obj_wrapper iow{hoid};
@@ -338,16 +437,9 @@ object_evaluation_t evaluate_object(
       }
     });
 
-  // Perform comparisons if:
-  // 1. Auth has no errors at all, OR
-  // 2. Auth is missing but we have a valid copy, OR
-  // 3. Auth has ONLY deep errors (not shallow errors that would make it unreliable)
-  bool auth_has_only_deep_errors = auth_eval.has_errors() &&
-                                    (auth_eval.shard_info.errors & ~librados::err_t::DEEP_ERRORS) == 0;
-  
-  bool use_auth = (!auth_eval.has_errors() ||
-                   (has_valid_copy && auth_eval.shard_info.has_shard_missing()) ||
-                   auth_has_only_deep_errors);
+  // Match classic behavior: only an error-free shard is eligible as
+  // authoritative source. If no such shard exists, comparisons are skipped.
+  bool use_auth = !has_auth_blocking_errors(auth_eval.shard_info);
   // For head objects, if auth_eval doesn't have a snapset but another shard does,
   // we must still re-evaluate to pick the correct authority.
   if (hoid.is_head() && use_auth && !auth_eval.snapset.has_value() &&
@@ -393,28 +485,43 @@ object_evaluation_t evaluate_object(
         actual_auth->object_info->size > policy.max_object_size) {
       iow.set_size_too_large();
     }
-    // Only mark selected_oi when the authoritative shard has no errors that
-    // would prevent it from being selected as auth in classic OSD's
-    // possible_auth_shard() — specifically read_error and shallow errors
-    // (stat_error, info_missing, etc.).  Deep-only errors like
-    // data_digest_mismatch_info do NOT block auth selection in classic and
-    // must not block it here either.
-    //
-    // This matches classic be_select_auth_object(): a shard with read_error
-    // (or any shallow error) returns not_usable and is never promoted to auth,
-    // so selected_oi stays false for it.  After a subsequent shallow scrub the
-    // same object's auth shard is error-free (no deep scan → no read_error),
-    // the merge then updates selected_oi to true, making sh2Part2 differ from
-    // dpPart2 exactly as the test expects.
-    {
-      const bool has_blocking_errors =
-        actual_auth->shard_info.has_read_error() ||
-        (actual_auth->shard_info.errors & librados::err_t::SHALLOW_ERRORS);
-      if (!has_blocking_errors) {
-        actual_auth->shard_info.selected_oi = true;
+    // Classic selects auth only from error-free candidates.
+    if (!has_auth_blocking_errors(actual_auth->shard_info)) {
+      actual_auth->shard_info.selected_oi = true;
+    }
+
+    // Record auth shard's computed digests so validate_chunk can decide
+    // whether to write them back to the object_info_t (missing_digest).
+    if (actual_auth->shard_info.data_digest_present) {
+      ret.auth_data_digest_present = true;
+      ret.auth_data_digest = actual_auth->shard_info.data_digest;
+    }
+    if (actual_auth->shard_info.omap_digest_present) {
+      ret.auth_omap_digest_present = true;
+      ret.auth_omap_digest = actual_auth->shard_info.omap_digest;
+    }
+
+    // Check the auth shard itself against its own OI-recorded digest.
+    // Classic match_in_shards() calls compare_obj_details() for every shard
+    // including the auth shard (compare_obj_details line 1529-1537), so the
+    // auth shard can also receive data_digest_mismatch_info when its recorded
+    // digest differs from its own freshly-computed data (e.g. ROBJ17 where
+    // all replicas have identical corrupted data so the primary is selected
+    // as auth but its OI digest is stale).
+    if (actual_auth->object_info) {
+      auto &auth_si = actual_auth->shard_info;
+      if (auth_si.data_digest_present &&
+          actual_auth->object_info->is_data_digest() &&
+          actual_auth->object_info->data_digest != auth_si.data_digest) {
+        auth_si.set_data_digest_mismatch_info();
+      }
+      if (auth_si.omap_digest_present &&
+          actual_auth->object_info->is_omap_digest() &&
+          actual_auth->object_info->omap_digest != auth_si.omap_digest) {
+        auth_si.set_omap_digest_mismatch_info();
       }
     }
-    
+
     // Compare all other shards against the authoritative one
     std::for_each(
       shards.begin(), shards.end(),
@@ -425,6 +532,19 @@ object_evaluation_t evaluate_object(
           iow.merge(err);
         }
       });
+  } else if (maps.size() == 1) {
+    // Comparison is intentionally skipped when auth has blocking shallow errors.
+    // For single-copy pools, preserve auth shard metadata so snapshot validation
+    // can still report SNAPSET_MISSING/SNAPSET_CORRUPTED and related clone errors.
+    // For replicated pools, keep legacy behavior and let fallback select a
+    // usable shard, avoiding extra object-error counting for replica-local
+    // snapset corruption in multi-shard scenarios.
+    ret.object_info = auth_eval.object_info;
+    ret.omap_keys = auth_eval.omap_keys;
+    ret.omap_bytes = auth_eval.omap_bytes;
+    ret.snapset = auth_eval.snapset;
+    ret.snapset_status = auth_eval.snapset_status;
+    ret.snapset_bl = auth_eval.snapset_bl;
   }
 
   // Fallback for head objects: if object_info is still missing, try to get it from any shard
@@ -451,13 +571,38 @@ object_evaluation_t evaluate_object(
 
   // In single-copy pools (maps.size() == 1), single-shard errors should be
   // reported as snapset errors, not object errors, matching classic OSD behavior.
-  // Only comparison errors (iow.errors) should be reported as object errors.
-  bool is_single_copy = (shards.size() == 1);
+  // For replicated pools, snapset-only shard state should still surface as an
+  // object inconsistency entry so list-inconsistent-obj reports it.
+  bool is_single_copy = (maps.size() == 1);
   bool has_comparison_errors = (iow.errors != 0);
-  bool has_shard_errors = std::any_of(shards.begin(), shards.end(),
-    [](auto &cand) { return cand.has_errors(); });
-  
-  if (has_comparison_errors || (has_shard_errors && !is_single_copy)) {
+  bool has_selected_auth = std::any_of(
+    shards.begin(), shards.end(),
+    [](const auto &cand) { return cand.shard_info.selected_oi; });
+  bool has_snapset_shard_errors = std::any_of(
+    shards.begin(), shards.end(),
+    [](const auto &cand) {
+      const auto shard_errors = cand.shard_info.errors;
+      const auto snapset_mask =
+        static_cast<uint64_t>(librados::err_t::SNAPSET_MISSING) |
+        static_cast<uint64_t>(librados::err_t::SNAPSET_CORRUPTED);
+      return (shard_errors & snapset_mask) != 0;
+    });
+  bool has_reportable_shard_errors = std::any_of(
+    shards.begin(), shards.end(),
+    [](const auto &cand) {
+      const auto shard_errors = cand.shard_info.errors;
+      const auto snapset_mask =
+        static_cast<uint64_t>(librados::err_t::SNAPSET_MISSING) |
+        static_cast<uint64_t>(librados::err_t::SNAPSET_CORRUPTED);
+      return (shard_errors & ~snapset_mask) != 0;
+    });
+  bool should_promote_snapset_only_error =
+    !is_single_copy && has_snapset_shard_errors && !has_selected_auth &&
+    !has_reportable_shard_errors;
+
+  if (has_comparison_errors ||
+      should_promote_snapset_only_error ||
+      (has_reportable_shard_errors && !is_single_copy)) {
     for (auto &eval : shards) {
       iow.shards.emplace(
  librados::osd_shard_t{eval.source.osd, static_cast<int8_t>(eval.source.shard)},
@@ -480,6 +625,7 @@ using clone_meta_list_t = std::list<std::pair<hobject_t, object_info_t>>;
 struct clone_info_t {
   hobject_t hoid;
   std::optional<object_info_t> oi;
+  std::optional<uint64_t> size;
   bool has_info() const { return oi.has_value(); }
 };
 
@@ -531,7 +677,6 @@ snapset_evaluation_result_t evaluate_snapset(
     return result;
   } else if (snapset_status == snapset_status_t::CORRUPTED) {
     ret.set_snapset_corrupted();
-    ret.ss_bl.clear();
     result.head_error = ret;
     return result;
   }
@@ -670,7 +815,13 @@ snapset_evaluation_result_t evaluate_snapset(
     if (size_it == snapset.clone_size.end()) {
       if (it->has_info()) clone_error = true;
     } else {
-      if (!it->has_info() || size_it->second != it->oi->size) {
+      // Prefer observed clone size from scrub map. This catches data-size
+      // corruption even when object_info still carries the old logical size.
+      if (it->size.has_value()) {
+        if (size_it->second != *it->size) {
+          clone_error = true;
+        }
+      } else if (!it->has_info() || size_it->second != it->oi->size) {
         clone_error = true;
       }
       // Check overlap consistency
@@ -715,32 +866,48 @@ snapset_evaluation_result_t evaluate_snapset(
 
 void add_object_to_stats(
   const chunk_validation_policy_t &policy,
+  const hobject_t &oid,
   const object_evaluation_t &eval,
+  const std::optional<SnapSet> &head_snapset,
   object_stat_sum_t *out)
 {
-  auto &ss = eval.snapset;
+  ceph_assert(out);
+  out->num_objects++;
+
+  if (oid.nspace == policy.hitset_namespace) {
+    out->num_objects_hit_set_archive++;
+  }
+  if (oid.is_snap()) {
+    out->num_object_clones++;
+  }
+
   if (!eval.object_info) {
     return;
   }
   auto &oi = *eval.object_info;
-  ceph_assert(out);
-  out->num_objects++;
-  if (ss) {
+
+  if (oid.is_snap()) {
+    // A clone's size comes from the head's snapset, not from its own oi.
+    if (head_snapset &&
+        head_snapset->clone_size.count(oid.snap) &&
+        head_snapset->clone_overlap.count(oid.snap)) {
+      out->num_bytes += head_snapset->get_clone_bytes(oid.snap);
+    }
+  } else {
     out->num_bytes += oi.size;
-    for (auto clone : ss->clones) {
-      // Only call get_clone_bytes if clone_size and clone_overlap exist
-      // to avoid assertion failures with corrupted snapsets
-      if (ss->clone_size.count(clone) && ss->clone_overlap.count(clone)) {
-        out->num_bytes += ss->get_clone_bytes(clone);
-      }
-      out->num_object_clones++;
-    }
-    if (oi.is_whiteout()) {
-      out->num_whiteouts++;
-    }
   }
+  if (oid.nspace == policy.hitset_namespace) {
+    out->num_bytes_hit_set_archive += oi.size;
+  }
+
   if (oi.is_dirty()) {
     out->num_objects_dirty++;
+  }
+  if (oi.is_whiteout()) {
+    out->num_whiteouts++;
+  }
+  if (oi.is_omap()) {
+    out->num_objects_omap++;
   }
   if (oi.is_cache_pinned()) {
     out->num_objects_pinned++;
@@ -749,16 +916,8 @@ void add_object_to_stats(
     out->num_objects_manifest++;
   }
 
-  if (eval.omap_keys > 0) {
-    out->num_objects_omap++;
-  }
   out->num_omap_keys += eval.omap_keys;
   out->num_omap_bytes += eval.omap_bytes;
-
-  if (oi.soid.nspace == policy.hitset_namespace) {
-    out->num_objects_hit_set_archive++;
-    out->num_bytes_hit_set_archive += oi.size;
-  }
 
   if (eval.omap_keys > policy.omap_key_limit ||
       eval.omap_bytes > policy.omap_bytes_limit) {
@@ -780,11 +939,37 @@ chunk_result_t validate_chunk(
   std::map<hobject_t, object_evaluation_t> evals;
   for (const auto &oid: object_set) {
     object_evaluation_t eval = evaluate_object(policy, oid, in);
-    add_object_to_stats(policy, eval, &ret.stats);
     if (eval.inconsistency) {
       ret.object_errors.push_back(*eval.inconsistency);
       ret.object_hoids[oid.oid.name] = oid;
     }
+
+    // Check whether we need to write back computed digests to oi.
+    // Matches classic ScrubBackend::should_fix_digest / missing_digest logic:
+    // if the deep scan produced a digest that the stored oi doesn't have (or
+    // has a different value), record it so emit_chunk_result can write it back.
+    if (eval.object_info) {
+      digest_update_t du;
+      du.oid = oid;
+      bool needs_update = false;
+
+      if (eval.auth_data_digest_present &&
+          (!eval.object_info->is_data_digest() ||
+           eval.object_info->data_digest != eval.auth_data_digest)) {
+        du.data_digest = eval.auth_data_digest;
+        needs_update = true;
+      }
+      if (eval.auth_omap_digest_present &&
+          (!eval.object_info->is_omap_digest() ||
+           eval.object_info->omap_digest != eval.auth_omap_digest)) {
+        du.omap_digest = eval.auth_omap_digest;
+        needs_update = true;
+      }
+      if (needs_update) {
+        ret.missing_digest.push_back(std::move(du));
+      }
+    }
+
     evals.emplace(oid, std::move(eval));
   }
 
@@ -881,7 +1066,8 @@ chunk_result_t validate_chunk(
         if (is_primary) {
           // Include all clones (with eval OI) — same as old code.
           const auto &clone_eval = evals.at(coid);
-          shard_clones.push_back(clone_info_t{coid, clone_eval.object_info});
+          shard_clones.push_back(
+            clone_info_t{coid, clone_eval.object_info, clone_eval.size});
           // Track whether this clone is locally present on the primary.
           if (scrub_map.objects.count(coid)) {
             primary_local_clones.insert(coid);
@@ -904,6 +1090,7 @@ chunk_result_t validate_chunk(
               ci.oi = std::nullopt;
             }
           }
+          ci.size = clone_it->second.size;
           shard_clones.push_back(std::move(ci));
         }
       }
@@ -1014,6 +1201,37 @@ chunk_result_t validate_chunk(
     }
     clone_error.set_headless();
     ret.snapset_errors.push_back(clone_error);
+  }
+
+  // Accumulate stats last: classic scrub skips an unexpected (headless) clone
+  // entirely rather than counting it against the pg's object stats.
+  std::set<hobject_t> headless_clones;
+  for (const auto &se : ret.snapset_errors) {
+    if (!se.headless()) {
+      continue;
+    }
+    for (const auto &oid : object_set) {
+      if (oid.is_snap() &&
+          oid.oid.name == se.object.name &&
+          oid.nspace == se.object.nspace &&
+          oid.snap == snapid_t{se.object.snap}) {
+        headless_clones.insert(oid);
+      }
+    }
+  }
+
+  for (const auto &oid : object_set) {
+    if (headless_clones.count(oid)) {
+      continue;
+    }
+    std::optional<SnapSet> head_snapset;
+    if (oid.is_snap()) {
+      auto head_it = evals.find(oid.get_head());
+      if (head_it != evals.end()) {
+        head_snapset = head_it->second.snapset;
+      }
+    }
+    add_object_to_stats(policy, oid, evals.at(oid), head_snapset, &ret.stats);
   }
 
   for (const auto &i: ret.object_errors) {

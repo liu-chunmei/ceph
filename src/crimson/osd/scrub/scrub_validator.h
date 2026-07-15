@@ -41,6 +41,17 @@ struct chunk_validation_policy_t {
 
 using scrub_map_set_t = std::map<pg_shard_t, ScrubMap>;
 
+/**
+ * Digest values computed during deep scrub that need to be written back
+ * to the object's object_info_t attribute.  Mirrors classic OSD's
+ * ScrubBackend::missing_digest / PrimaryLogScrub::submit_digest_fixes.
+ */
+struct digest_update_t {
+  hobject_t oid;
+  std::optional<uint32_t> data_digest;  ///< nullopt → no update
+  std::optional<uint32_t> omap_digest;  ///< nullopt → no update
+};
+
 struct chunk_result_t {
   /* Scrub interacts with stats in two ways:
    * 1. scrub accumulates a subset of object_stat_sum_t members to
@@ -62,6 +73,10 @@ struct chunk_result_t {
   // detected errors
   std::vector<inconsistent_snapset_wrapper> snapset_errors;
   std::vector<inconsistent_obj_wrapper> object_errors;
+
+  // Digests computed during deep scrub that must be written back to oi.
+  // Populated when auth shard has omap/data digest present but oi does not.
+  std::vector<digest_update_t> missing_digest;
 
   // Snapset errors detected from non-primary shard SnapSet evaluation.
   // These are logged (for visibility/debugging) but NOT stored into
@@ -183,14 +198,16 @@ struct fmt::formatter<crimson::osd::scrub::chunk_result_t> {
       "num_scrub_errors: {}, "
       "num_deep_scrub_errors: {}, "
       "snapset_errors: [{}{}{}], "
-      "object_errors: [{}])",
+      "object_errors: [{}], "
+      "missing_digest: {})",
       result.stats.num_scrub_errors,
       result.stats.num_deep_scrub_errors,
       result.snapset_errors,
       (!result.snapset_errors.empty() && !result.replica_snapset_errors.empty())
         ? ", " : "",
       result.replica_snapset_errors,
-      result.object_errors
+      result.object_errors,
+      result.missing_digest.size()
     );
   }
 };

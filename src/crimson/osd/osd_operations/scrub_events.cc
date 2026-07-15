@@ -8,7 +8,9 @@
 #include "messages/MOSDRepScrubMap.h"
 #include "scrub_events.h"
 #include "crimson/os/futurized_store.h"
+#include "osd/osd_types.h"
 #include <seastar/core/sleep.hh>
+#include <seastar/util/defer.hh>
 
 SET_SUBSYS(osd);
 
@@ -79,6 +81,21 @@ ScrubMessage::ifut<> ScrubMessage::handle_event(PG &pg)
 
 template class RemoteScrubEventBaseT<ScrubRequested>;
 template class RemoteScrubEventBaseT<ScrubMessage>;
+
+} // namespace crimson::osd
+
+namespace crimson {
+
+template <>
+struct EventBackendRegistry<osd::ScrubDigestUpdate> {
+  static std::tuple<> get_backends() {
+    return {};
+  }
+};
+
+} // namespace crimson
+
+namespace crimson::osd {
 
 template <typename T>
 ScrubAsyncOpT<T>::ScrubAsyncOpT(Ref<PG> pg) : pg(pg) {}
@@ -396,6 +413,127 @@ ScrubScan::ifut<> ScrubScan::deep_scan_object(
 }
 
 template class ScrubAsyncOpT<ScrubScan>;
+
+ScrubDigestUpdate::ifut<> ScrubDigestUpdate::run(PG &pg)
+{
+  LOG_PREFIX(ScrubDigestUpdate::run);
+  DEBUGDPP("oid: {}", pg, oid);
+
+  // Use a fresh orderer scoped to this operation
+  auto obc_orderer = pg.obc_loader.get_obc_orderer(oid);
+  auto obc_manager = pg.obc_loader.get_obc_manager(
+    obc_orderer, oid, false /* resolve_clone */);
+
+  bool load_failed = false;
+  co_await pg.obc_loader.load_and_lock(
+    obc_manager, RWState::RWWRITE
+  ).handle_error_interruptible(
+    crimson::ct_error::enoent::handle([&load_failed] {
+      load_failed = true;
+      return seastar::now();
+    }),
+    crimson::ct_error::object_corrupted::handle([&load_failed] {
+      load_failed = true;
+      return seastar::now();
+    })
+  );
+
+  if (load_failed) {
+    ERRORDPP("failed to load obc for {}, skipping digest update", pg, oid);
+    co_return;
+  }
+
+  auto obc = obc_manager.get_obc();
+  if (!obc->obs.exists) {
+    DEBUGDPP("object {} no longer exists, skipping digest update", pg, oid);
+    co_return;
+  }
+  const auto& soid = obc->obs.oi.soid;
+  if (soid != oid) {
+    DEBUGDPP("digest update oid remapped from {} to {}", pg, oid, soid);
+  }
+  const std::vector<snapid_t>* clone_snaps = nullptr;
+  if (soid.snap < CEPH_MAXSNAP) {
+    auto it = obc->ssc->snapset.clone_snaps.find(soid.snap);
+    if (it == obc->ssc->snapset.clone_snaps.end() || it->second.empty()) {
+      ERRORDPP("missing clone snap mapping for {}, skipping digest update", pg, soid);
+      co_return;
+    }
+    clone_snaps = &it->second;
+  }
+
+  // Hold submit_lock around version assignment + transaction submission
+  co_await interruptor::make_interruptible(pg.submit_lock.lock());
+  auto unlock_submit = seastar::defer([&pg] {
+    pg.submit_lock.unlock();
+  });
+
+  // Apply the digest updates to oi
+  auto &oi = obc->obs.oi;
+  if (data_digest) {
+    oi.set_data_digest(*data_digest);
+    DEBUGDPP("set data_digest=0x{:x} on {}", pg, *data_digest, oid);
+  }
+  if (omap_digest) {
+    oi.set_omap_digest(*omap_digest);
+    DEBUGDPP("set omap_digest=0x{:x} on {}", pg, *omap_digest, oid);
+  }
+
+  // Build the transaction: write updated OI_ATTR
+  ceph::os::Transaction txn;
+  {
+    ceph::bufferlist bl;
+    oi.encode(bl, pg.get_osdmap()->get_features(CEPH_ENTITY_TYPE_OSD, nullptr));
+    txn.setattr(
+      pg.get_collection_ref()->get_cid(),
+      ghobject_t{soid, ghobject_t::NO_GEN, shard_id_t::NO_SHARD},
+      OI_ATTR,
+      bl);
+  }
+
+  // Build MODIFY log entry (mirrors PrimaryLogScrub::submit_digest_fixes)
+  osd_op_params_t osd_op_p;
+  osd_op_p.at_version = pg.get_next_version();
+  osd_op_p.mtime = ceph_clock_now();
+
+  eversion_t prior_version = oi.version;
+  oi.prior_version = prior_version;
+  oi.version = osd_op_p.at_version;
+
+  std::vector<pg_log_entry_t> log_entries;
+  log_entries.emplace_back(
+    pg_log_entry_t::MODIFY,
+    soid,
+    oi.version,
+    prior_version,
+    oi.user_version,
+    osd_reqid_t(),
+    osd_op_p.mtime,
+    0);
+
+  if (clone_snaps) {
+    encode(*clone_snaps, log_entries.back().snaps);
+  }
+
+  auto [submitted, all_completed] = co_await pg.submit_transaction(
+    ObjectContextRef(obc),
+    nullptr,
+    std::move(txn),
+    std::move(osd_op_p),
+    std::move(log_entries));
+  co_await std::move(submitted);
+
+  DEBUGDPP("digest update submitted for {}", pg, oid);
+
+  // Release submit_lock before waiting for all_completed
+  unlock_submit.cancel();
+  pg.submit_lock.unlock();
+
+  co_await std::move(all_completed);
+  DEBUGDPP("digest update complete for {}", pg, oid);
+}
+
+template class ScrubAsyncOpT<ScrubDigestUpdate>;
 
 ScrubSleep::ifut<> ScrubSleep::run(PG &pg)
 {

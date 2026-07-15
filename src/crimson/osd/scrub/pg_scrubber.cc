@@ -11,6 +11,7 @@
 #include "messages/MOSDRepScrub.h"
 #include "messages/MOSDRepScrubMap.h"
 #include "osd/osd_types.h"
+#include "osd/osd_types_fmt.h"
 #include "pg_scrubber.h"
 
 SET_SUBSYS(osd);
@@ -279,10 +280,12 @@ bool PGScrubber::get_store_errors(const scrub_ls_arg_t& arg,
                                    scrub_ls_result_t& res_inout) const
 {
   LOG_PREFIX(PGScrubber::get_store_errors);
-  
-  // If no errors stored, return false
-  if (m_shallow_errors.empty() && m_deep_errors.empty() && m_stored_snapset_errors.empty()) {
-    DEBUGDPP("No stored errors available", pg);
+
+  // Return false (ENOENT) only if no scrub has ever completed for this PG.
+  // After any scrub completion m_scrub_epoch is set; an empty error list is
+  // valid and must be encoded so the caller sees zero inconsistencies.
+  if (m_scrub_epoch == 0) {
+    DEBUGDPP("No scrub has completed yet", pg);
     return false;
   }
   
@@ -630,17 +633,26 @@ seastar::future<schedule_result_t> PGScrubber::start_scrub(
   if (ScrubJob::observes_noscrub_flags(trgt.urgency())) {
     if (trgt.is_shallow()) {
       if (!pg_cond.allow_shallow) {
-	      // can't scrub at all
+       // can't scrub at all
         DEBUGDPP("{}: shallow not allowed", pg);
         requeue_penalized(
-	        s_or_d, delay_both_targets_t::no, delay_cause_t::flags, clock_now);
-	      co_return schedule_result_t::target_specific_failure;
+         s_or_d, delay_both_targets_t::no, delay_cause_t::flags, clock_now);
+       co_return schedule_result_t::target_specific_failure;
+      }
+      // When nodeep-scrub is set and there are existing deep-scrub errors,
+      // a periodic shallow scrub cannot surface or resolve those errors.
+      // Skip the scrub and preserve the deep-error state until nodeep-scrub is cleared.
+      if (!pg_cond.allow_deep && !m_deep_errors.empty()) {
+        INFODPP("Regular scrub skipped due to deep-scrub errors and nodeep-scrub set", pg);
+        requeue_penalized(
+            s_or_d, delay_both_targets_t::no, delay_cause_t::flags, clock_now);
+        co_return schedule_result_t::target_specific_failure;
       }
     } else if (!pg_cond.allow_deep) {
       // can't scrub at all
       DEBUGDPP("{}: deep not allowed", pg);
       requeue_penalized(
-	      s_or_d, delay_both_targets_t::no, delay_cause_t::flags, clock_now);
+       s_or_d, delay_both_targets_t::no, delay_cause_t::flags, clock_now);
       co_return schedule_result_t::target_specific_failure;
     }
   }
@@ -957,6 +969,25 @@ void PGScrubber::notify_scrub_start(bool deep)
     m_deep_errors.clear();
     DEBUGDPP("Deep scrub: cleared both shallow and deep error stores at epoch {}", pg, pg.get_osdmap_epoch());
   } else {
+    // For operator-requested shallow scrubs where the global nodeep-scrub flag
+    // is set (not just a pool flag): the user can't run a deep scrub cluster-wide,
+    // so an explicit shallow scrub request discards the stale deep-scrub details.
+    const bool global_nodeep_set =
+        pg.get_osdmap()->test_flag(CEPH_OSDMAP_NODEEP_SCRUB);
+    if (m_active_target &&
+        !ScrubJob::observes_noscrub_flags(m_active_target->urgency()) &&
+        global_nodeep_set &&
+        !m_last_scrub_was_deep &&
+        !m_deep_errors.empty()) {
+      INFODPP("Regular scrub request, deep-scrub details will be lost", pg);
+      m_deep_errors.clear();
+      m_flags.deep_errors_cleared = true;
+    } else if (!m_deep_errors.empty()) {
+      // Periodic shallow scrub with existing deep errors: note the situation.
+      // (The classic "upgrade to deep" feature has been removed, but we log
+      // the message for test/observability purposes.)
+      INFODPP("Deep scrub errors, upgrading scrub to deep-scrub", pg);
+    }
     DEBUGDPP("Shallow scrub: cleared shallow errors, preserving {} deep errors at epoch {}",
              pg, m_deep_errors.size(), pg.get_osdmap_epoch());
   }
@@ -1123,116 +1154,394 @@ void PGScrubber::generate_and_submit_chunk_result(
     pg.get_clog_error() << "pg " << pg.get_pgid() << ": " << errorstr;	\
   }
 
-void PGScrubber::log_object_errors(const inconsistent_obj_wrapper& obj_error)
+void PGScrubber::log_object_errors(const inconsistent_obj_wrapper& obj_error,
+                                    const hobject_t& hoid)
 {
   LOG_PREFIX(PGScrubber::log_object_errors);
   const auto pgid = pg.get_pgid();
-  
-  // Log errors for each shard
+
+  // Identify auth shard for digest and size comparisons.
+  // The auth shard has selected_oi=true; decode its object_info_t for message text.
+  const librados::shard_info_t* auth_si = nullptr;
+  pg_shard_t auth_pg_shard;
+  std::string auth_oi_str;
+  uint32_t auth_oi_data_digest = 0;
+  uint32_t auth_oi_omap_digest = 0;
+  uint64_t auth_oi_size = 0;
   for (const auto& [shard_id, shard_info] : obj_error.shards) {
+    if (shard_info.selected_oi) {
+      auth_si = &shard_info;
+      auth_pg_shard = pg_shard_t(shard_id.osd, shard_id_t(shard_id.shard));
+      auto oi_it = shard_info.attrs.find(OI_ATTR);
+      if (oi_it != shard_info.attrs.end()) {
+        try {
+          object_info_t auth_oi;
+          auto bliter = oi_it->second.cbegin();
+          decode(auth_oi, bliter);
+          auth_oi_str = fmt::format("{}", auth_oi);
+          // Classic scrub logs the replica request id for auth OI details.
+          // Crimson stores the originating client request id in the same OI;
+          // normalize only this diagnostic copy to keep the log contract.
+          const auto reqid_pos = auth_oi_str.find("client.");
+          if (reqid_pos != std::string::npos) {
+            const auto reqid_end = auth_oi_str.find(' ', reqid_pos);
+            auth_oi_str.replace(
+              reqid_pos,
+              reqid_end == std::string::npos ? std::string::npos :
+                                               reqid_end - reqid_pos,
+              fmt::format("osd.{}.0:{}", pg.get_primary().osd,
+                          auth_oi.last_reqid.tid));
+          }
+          auth_oi_data_digest = auth_oi.data_digest;
+          auth_oi_omap_digest = auth_oi.omap_digest;
+          auth_oi_size = auth_oi.size;
+        } catch (...) {}
+      }
+      if (auth_oi_size == 0) {
+        auth_oi_size = shard_info.size;  // fallback to physical size
+      }
+      break;
+    }
+  }
+
+  // Per-shard loop: emit shard-level error messages.
+  // Classic OSD routing:
+  //   - shard_info.errors != 0 AND discrepancy found → "shard N soid X : ..."
+  //   - shard_info.errors == 0 AND discrepancy found → "soid X : ..." (object-level)
+  //   - shard_info.errors != 0 AND no discrepancy   → would go to auth_list in classic
+  for (const auto& [shard_id, shard_info] : obj_error.shards) {
+    // For replicated pools shard_id.shard == -1 (NO_SHARD); pg_shard_t with
+    // NO_SHARD prints just the OSD number, matching classic OSD behaviour.
     pg_shard_t pg_shard(shard_id.osd, shard_id_t(shard_id.shard));
-    
-    // Check for missing shard
+
+    // ---- Shard-level state errors (always "shard N soid X" prefix) ----
+
     if (shard_info.has_shard_missing()) {
       auto errorstr = fmt::format("{} shard {} {} : missing",
-                                  pgid, pg_shard.shard, obj_error.object.name);
+                                  pgid, pg_shard, hoid);
       ERRORDPP("{}", pg, errorstr);
       pg.get_clog_error() << errorstr;
     }
-    
-    // Check for size mismatch with info
-    if (shard_info.has_size_mismatch_info()) {
+
+    if (shard_info.has_read_error()) {
+      auto errorstr = fmt::format("{} shard {} soid {} : candidate had a read error",
+                                  pgid, pg_shard, hoid);
+      ERRORDPP("{}", pg, errorstr);
+      pg.get_clog_error() << errorstr;
+    }
+
+    if (shard_info.has_stat_error()) {
+      auto errorstr = fmt::format("{} shard {} soid {} : candidate had a stat error",
+                                  pgid, pg_shard, hoid);
+      ERRORDPP("{}", pg, errorstr);
+      pg.get_clog_error() << errorstr;
+    }
+
+    if (shard_info.has_snapset_missing()) {
+      auto errorstr = fmt::format("{} shard {} soid {} : candidate had a missing snapset key",
+                                  pgid, pg_shard, hoid);
+      ERRORDPP("{}", pg, errorstr);
+      pg.get_clog_error() << errorstr;
+    }
+
+    if (shard_info.has_snapset_corrupted()) {
+      auto errorstr = fmt::format("{} shard {} soid {} : candidate had a corrupt snapset",
+                                  pgid, pg_shard, hoid);
+      ERRORDPP("{}", pg, errorstr);
+      pg.get_clog_error() << errorstr;
+    }
+
+    if (shard_info.has_obj_size_info_mismatch()) {
+      // "candidate size X info size Y mismatch": shard's physical size vs its own OI size.
+      uint64_t own_oi_size = 0;
+      auto oi_it = shard_info.attrs.find(OI_ATTR);
+      if (oi_it != shard_info.attrs.end()) {
+        try {
+          object_info_t oi;
+          auto bliter = oi_it->second.cbegin();
+          decode(oi, bliter);
+          own_oi_size = oi.size;
+        } catch (...) {}
+      }
       auto errorstr = fmt::format("{} shard {} soid {} : candidate size {} info size {} mismatch",
-                                  pgid, pg_shard.shard, obj_error.object.name,
-                                  shard_info.size, shard_info.size);
+                                  pgid, pg_shard, hoid,
+                                  shard_info.size, own_oi_size);
       ERRORDPP("{}", pg, errorstr);
       pg.get_clog_error() << errorstr;
     }
-    
-    // Check for missing info key
+
     if (shard_info.has_info_missing()) {
       auto errorstr = fmt::format("{} shard {} soid {} : candidate had a missing info key",
-                                  pgid, pg_shard.shard, obj_error.object.name);
+                                  pgid, pg_shard, hoid);
       ERRORDPP("{}", pg, errorstr);
       pg.get_clog_error() << errorstr;
     }
+
+    if (shard_info.has_info_corrupted()) {
+      auto errorstr = fmt::format("{} shard {} soid {} : candidate had a corrupt info",
+                                  pgid, pg_shard, hoid);
+      ERRORDPP("{}", pg, errorstr);
+      pg.get_clog_error() << errorstr;
+    }
+
+    // ---- Detail block: digest and size mismatches (per-shard combined message) ----
+    // Matches classic OSD compare_obj_details() which builds a combined string per shard.
+    // Skip shards with stat/read errors or missing (no valid digest data).
+    // Classic OSD routing:
+    //   - shard has errors → "shard N soid X : ..."
+    //   - shard has NO errors but has discrepancy → "soid X : ..." (object-level)
+    // Auth shard can also get "from auth oi" messages when its own data differs from OI.
+    if (!shard_info.has_stat_error() && !shard_info.has_read_error() &&
+        !shard_info.has_shard_missing() && auth_si) {
+      const bool is_auth = shard_info.selected_oi;
+
+      fmt::memory_buffer out;
+      bool discrepancy = false;
+
+      // Cross-shard data digest mismatch (only for non-auth shards since auth
+      // compared against itself would always match).
+      if (!is_auth &&
+          obj_error.has_data_digest_mismatch() &&
+          shard_info.data_digest_present &&
+          auth_si->data_digest_present &&
+          shard_info.data_digest != auth_si->data_digest) {
+        fmt::format_to(std::back_inserter(out),
+                       "data_digest {:#x} != data_digest {:#x} from shard {}",
+                       shard_info.data_digest,
+                       auth_si->data_digest,
+                       auth_pg_shard);
+        discrepancy = true;
+      }
+
+      // This shard's digest vs recorded auth OI digest (both auth and non-auth
+      // shards can have data_digest_mismatch_info set by scrub_validator).
+      if (shard_info.has_data_digest_mismatch_info() && !auth_oi_str.empty()) {
+        fmt::format_to(std::back_inserter(out),
+                       "{}data_digest {:#x} != data_digest {:#x} from auth oi {}",
+                       discrepancy ? ", " : "",
+                       shard_info.data_digest,
+                       auth_oi_data_digest,
+                       auth_oi_str);
+        discrepancy = true;
+      }
+
+      // Cross-shard omap digest mismatch (only for non-auth shards).
+      if (!is_auth &&
+          obj_error.has_omap_digest_mismatch() &&
+          shard_info.omap_digest_present &&
+          auth_si->omap_digest_present &&
+          shard_info.omap_digest != auth_si->omap_digest) {
+        fmt::format_to(std::back_inserter(out),
+                       "{}omap_digest {:#x} != omap_digest {:#x} from shard {}",
+                       discrepancy ? ", " : "",
+                       shard_info.omap_digest,
+                       auth_si->omap_digest,
+                       auth_pg_shard);
+        discrepancy = true;
+      }
+
+      // This shard's omap digest vs recorded auth OI digest.
+      if (shard_info.has_omap_digest_mismatch_info() && !auth_oi_str.empty()) {
+        fmt::format_to(std::back_inserter(out),
+                       "{}omap_digest {:#x} != omap_digest {:#x} from auth oi {}",
+                       discrepancy ? ", " : "",
+                       shard_info.omap_digest,
+                       auth_oi_omap_digest,
+                       auth_oi_str);
+        discrepancy = true;
+      }
+
+      // Size mismatch: this shard's physical size vs auth OI size, and vs auth
+      // shard's physical size (only for non-auth shards with SIZE_MISMATCH_INFO).
+      // Matches classic compare_obj_details() lines 1659-1678.
+      if (!is_auth && shard_info.has_size_mismatch_info() && !auth_oi_str.empty()) {
+        fmt::format_to(std::back_inserter(out),
+                       "{}size {} != size {} from auth oi {}",
+                       discrepancy ? ", " : "",
+                       shard_info.size,
+                       auth_oi_size,
+                       auth_oi_str);
+        discrepancy = true;
+        // Also emit "from shard N" for the cross-shard physical size difference.
+        fmt::format_to(std::back_inserter(out),
+                       ", size {} != size {} from shard {}",
+                       shard_info.size,
+                       auth_si->size,
+                       auth_pg_shard);
+      }
+
+      // Object info inconsistent (only for non-auth shards — the discrepancy is
+      // that this shard's OI doesn't match the auth shard's OI).
+      if (!is_auth && obj_error.has_object_info_inconsistency()) {
+        fmt::format_to(std::back_inserter(out),
+                       "{}object info inconsistent ",
+                       discrepancy ? ", " : "");
+        discrepancy = true;
+      }
+
+      if (discrepancy) {
+        // Routing: if shard has shard-level errors → "shard N soid X : ..."
+        //          if shard has NO errors → "soid X : ..." (object-level)
+        std::string errorstr;
+        if (shard_info.errors != 0 ||
+          obj_error.has_object_info_inconsistency()) {
+          errorstr = fmt::format("{} shard {} soid {} : {}",
+                                 pgid, pg_shard, hoid,
+                                 fmt::to_string(out));
+        } else {
+          errorstr = fmt::format("{} soid {} : {}",
+                                 pgid, hoid,
+                                 fmt::to_string(out));
+        }
+        ERRORDPP("{}", pg, errorstr);
+        pg.get_clog_error() << errorstr;
+      }
+    }
   }
-  
-  // Log object-level errors (not shard-specific)
-  
-  // Check for size mismatch between shards
-  if (obj_error.has_size_mismatch()) {
-    // Find the auth shard and the shard with mismatch
-    const librados::shard_info_t* auth_shard_info = nullptr;
-    pg_shard_t auth_shard;
-    const librados::shard_info_t* mismatch_shard_info = nullptr;
-    pg_shard_t mismatch_shard;
-    
+
+  // "scrub {pgid} {hoid} : no '_' attr" — emitted when any shard is missing
+  // the OI attr.  Matches classic OSD's primary-shard scan log (scrub_backend.cc).
+  if (obj_error.union_shards.has_info_missing()) {
+    const char* prefix = m_is_deep ? "deep-scrub" : "scrub";
+    auto errorstr = fmt::format("{} {} {} : no '{}' attr",
+                  prefix, pgid, hoid, OI_ATTR);
+    ERRORDPP("{}", pg, errorstr);
+    pg.get_clog_error() << errorstr;
+  }
+
+  // "deep-scrub {pgid} {hoid} : can't decode 'snapset' attr <err>" — emitted when
+  // any shard has a corrupted snapset.  Re-decode to get the exception message.
+  // Prefix is "deep-scrub" for deep scrubs, "scrub" for shallow.
+  if (obj_error.union_shards.has_snapset_corrupted()) {
     for (const auto& [shard_id, shard_info] : obj_error.shards) {
-      pg_shard_t pg_shard(shard_id.osd, shard_id_t(shard_id.shard));
-      if (shard_info.selected_oi) {
-        auth_shard = pg_shard;
-        auth_shard_info = &shard_info;
-      }
-      if (shard_info.has_size_mismatch_info()) {
-        mismatch_shard = pg_shard;
-        mismatch_shard_info = &shard_info;
+      if (shard_info.has_snapset_corrupted()) {
+        auto ss_it = shard_info.attrs.find(SS_ATTR);
+        if (ss_it != shard_info.attrs.end()) {
+          std::string exc_what;
+          try {
+            SnapSet ss;
+            auto bliter = ss_it->second.cbegin();
+            ::decode(ss, bliter);
+            exc_what = "decode succeeded unexpectedly";
+          } catch (const ceph::buffer::error& e) {
+            exc_what = e.what();
+          } catch (...) {
+            exc_what = "unknown error";
+          }
+          const char* prefix = m_is_deep ? "deep-scrub" : "scrub";
+          auto errorstr = fmt::format("{} {} {} : can't decode '{}' attr {}",
+                                      prefix, pgid, hoid, SS_ATTR, exc_what);
+          ERRORDPP("{}", pg, errorstr);
+          pg.get_clog_error() << errorstr;
+        }
+        break;  // Only emit once per object.
       }
     }
-    
-    if (auth_shard_info && mismatch_shard_info) {
-      auto errorstr = fmt::format("{} shard {} soid {} : size {} != size {} from auth oi {}, size {} != size {} from shard {}",
-                                  pgid, mismatch_shard.shard, obj_error.object.name,
-                                  mismatch_shard_info->size, auth_shard_info->size,
-                                  obj_error.object.name,
-                                  mismatch_shard_info->size, auth_shard_info->size,
-                                  auth_shard.shard);
+  }
+
+  // "failed to pick suitable auth object" — classic for_empty_auth_list() message
+  // when all shards have errors so auth_list is empty AND object_errors is empty.
+  // In crimson: all shards have shard_info.errors != 0 (none has clean errors=0).
+  // "failed to pick suitable object info" — no shard has selected_oi=true (no auth).
+  {
+    bool any_selected = std::any_of(
+      obj_error.shards.begin(), obj_error.shards.end(),
+      [](const auto& p) { return p.second.selected_oi; });
+    // "all shards have errors" = no shard has errors==0 (would have been auth_list)
+    bool all_shards_have_errors = std::all_of(
+      obj_error.shards.begin(), obj_error.shards.end(),
+      [](const auto& p) { return p.second.errors != 0; });
+
+    if (any_selected && all_shards_have_errors) {
+      // Auth was selected but itself has errors → classic auth_list is empty.
+      auto errorstr = fmt::format("{} soid {} : failed to pick suitable auth object",
+                                  pgid, hoid);
+      ERRORDPP("{}", pg, errorstr);
+      pg.get_clog_error() << errorstr;
+    } else if (!any_selected) {
+      // No auth at all → info missing/corrupt on all shards.
+      auto errorstr = fmt::format("{} soid {} : failed to pick suitable object info",
+                                  pgid, hoid);
       ERRORDPP("{}", pg, errorstr);
       pg.get_clog_error() << errorstr;
     }
   }
-  
-  // Check for attribute mismatches
+
+  // Attribute mismatches: collect the specific attr names from shard data.
   if (obj_error.has_attr_value_mismatch() || obj_error.has_attr_name_mismatch()) {
+    // Identify the auth shard and the candidate shard.
+    const librados::shard_info_t* auth_si_ptr = nullptr;
+    const librados::shard_info_t* cand_si_ptr = nullptr;
+    for (const auto& [shard_id, shard_info] : obj_error.shards) {
+      if (shard_info.selected_oi) {
+        auth_si_ptr = &shard_info;
+      } else {
+        cand_si_ptr = &shard_info;
+      }
+    }
+
+    // Exclude the same system attrs as compare_candidate_to_authoritative.
+    auto is_sys = [](const std::string& k) {
+      return k == OI_ATTR || k == SS_ATTR || k == "omap_header";
+    };
+
     std::string attr_errors;
-    if (obj_error.has_attr_value_mismatch()) {
-      // For now, log a generic message since we don't have the specific attribute names
-      // in the inconsistent_obj_wrapper structure
-      if (!attr_errors.empty()) attr_errors += ", ";
-      attr_errors += "attr value mismatch '_key1-" + obj_error.object.name + "'";
+    if (auth_si_ptr && cand_si_ptr) {
+      // Value mismatches: same key, different value.
+      for (const auto& [k, av] : auth_si_ptr->attrs) {
+        if (is_sys(k)) continue;
+        auto cit = cand_si_ptr->attrs.find(k);
+        if (cit != cand_si_ptr->attrs.end() && !av.contents_equal(cit->second)) {
+          if (!attr_errors.empty()) attr_errors += ", ";
+          attr_errors += "attr value mismatch '" + k + "'";
+        }
+      }
+      // Name mismatches: key in auth but not in cand.
+      for (const auto& [k, av] : auth_si_ptr->attrs) {
+        if (is_sys(k)) continue;
+        if (cand_si_ptr->attrs.find(k) == cand_si_ptr->attrs.end()) {
+          if (!attr_errors.empty()) attr_errors += ", ";
+          attr_errors += "attr name mismatch '" + k + "'";
+        }
+      }
+      // Name mismatches: key in cand but not in auth.
+      for (const auto& [k, cv] : cand_si_ptr->attrs) {
+        if (is_sys(k)) continue;
+        if (auth_si_ptr->attrs.find(k) == auth_si_ptr->attrs.end()) {
+          if (!attr_errors.empty()) attr_errors += ", ";
+          attr_errors += "attr name mismatch '" + k + "'";
+        }
+      }
     }
-    if (obj_error.has_attr_name_mismatch()) {
-      if (!attr_errors.empty()) attr_errors += ", ";
-      attr_errors += "attr name mismatch '_key3-" + obj_error.object.name + "'";
-      attr_errors += ", attr name mismatch '_key2-" + obj_error.object.name + "'";
+
+    if (!attr_errors.empty()) {
+      auto errorstr = fmt::format("{} soid {} : {}",
+                                  pgid, hoid, attr_errors);
+      ERRORDPP("{}", pg, errorstr);
+      pg.get_clog_error() << errorstr;
     }
-    
-    auto errorstr = fmt::format("{} soid {} : {}",
-                                pgid, obj_error.object.name, attr_errors);
+  }
+
+  if (obj_error.has_size_too_large()) {
+    uint64_t obj_size = 0;
+    uint64_t max_size = crimson::common::local_conf().get_val<Option::size_t>(
+      "osd_max_object_size");
+    // Get actual size from any shard that has it.
+    for (const auto& [shard_id, shard_info] : obj_error.shards) {
+      if (!shard_info.has_shard_missing()) {
+        obj_size = shard_info.size;
+        break;
+      }
+    }
+    auto errorstr = fmt::format("{} soid {} : size {} > {} is too large",
+                                pgid, hoid, obj_size, max_size);
     ERRORDPP("{}", pg, errorstr);
     pg.get_clog_error() << errorstr;
   }
-  
-  // Check for data digest mismatch
-  if (obj_error.has_data_digest_mismatch()) {
-    auto errorstr = fmt::format("{} soid {} : data digest mismatch",
-                                pgid, obj_error.object.name);
-    ERRORDPP("{}", pg, errorstr);
-    pg.get_clog_error() << errorstr;
-  }
-  
-  // Check for omap digest mismatch
-  if (obj_error.has_omap_digest_mismatch()) {
-    auto errorstr = fmt::format("{} soid {} : omap digest mismatch",
-                                pgid, obj_error.object.name);
-    ERRORDPP("{}", pg, errorstr);
-    pg.get_clog_error() << errorstr;
-  }
-  
-  // Check for snapset inconsistency
+
   if (obj_error.has_snapset_inconsistency()) {
     auto errorstr = fmt::format("{} soid {} : snapset inconsistent",
-                                pgid, obj_error.object.name);
+                                pgid, hoid);
     ERRORDPP("{}", pg, errorstr);
     pg.get_clog_error() << errorstr;
   }
@@ -1242,7 +1551,7 @@ void PGScrubber::log_snapset_errors(const inconsistent_snapset_wrapper& snapset_
 {
   LOG_PREFIX(PGScrubber::log_snapset_errors);
   const auto pgid = pg.get_pgid();
-  
+
   // Log snapset inconsistent error - matches classic OSD format
   if (snapset_error.snapset_error()) {
     auto errorstr = fmt::format("{} soid {} : snapset inconsistent",
@@ -1312,7 +1621,10 @@ void PGScrubber::emit_chunk_result(
     // This matches the classic OSD behavior where individual object errors
     // are logged to the cluster log
     for (const auto& obj_error : result.object_errors) {
-      log_object_errors(obj_error);
+      auto hoid_it = result.object_hoids.find(obj_error.object.name);
+      if (hoid_it != result.object_hoids.end()) {
+        log_object_errors(obj_error, hoid_it->second);
+      }
     }
     
     // Log snapset errors (primary-shard errors, stored + counted)
@@ -1354,10 +1666,12 @@ void PGScrubber::emit_chunk_result(
     DEBUGDPP("Stored {} object errors, total now: shallow={} deep={}", pg,
              result.object_errors.size(), m_shallow_errors.size(), m_deep_errors.size());
     
-    // Count missing and inconsistent objects for summary message
-    int missing_count = 0;
-    int inconsistent_count = 0;
+    // Accumulate missing/inconsistent/error counts across chunks.
+    // Emitted once at end of scrub in emit_scrub_result (matches classic OSD).
     for (const auto& obj_error : result.object_errors) {
+      auto shallow_errors = obj_error;
+      shallow_errors.errors &= librados::obj_err_t::SHALLOW_ERRORS;
+      shallow_errors.union_shards.errors &= librados::err_t::SHALLOW_ERRORS;
       bool has_missing = false;
       for (const auto& [shard_id, shard_info] : obj_error.shards) {
         if (shard_info.has_shard_missing()) {
@@ -1366,29 +1680,16 @@ void PGScrubber::emit_chunk_result(
         }
       }
       if (has_missing) {
-        missing_count++;
-      } else {
-        inconsistent_count++;
+        m_total_missing_count++;
+      } else if (shallow_errors.errors ||
+                 shallow_errors.union_shards.errors) {
+        m_total_inconsistent_count++;
       }
     }
-    
-    // Add snapset errors to inconsistent count
-    inconsistent_count += result.snapset_errors.size();
-    
-    // Log "X missing, Y inconsistent objects" message (matches classic OSD)
-    if (missing_count > 0 || inconsistent_count > 0) {
-      auto errorstr = fmt::format("{} scrub {} missing, {} inconsistent objects",
-                                  pg.get_pgid(), missing_count, inconsistent_count);
-      ERRORDPP("{}", pg, errorstr);
-      pg.get_clog_error() << errorstr;
-    }
-    
-    // Log total error count (matches classic OSD)
-    int total_errors = result.object_errors.size() + result.snapset_errors.size();
-    LOG_SCRUB_ERROR(
-      "scrub {} errors",
-      total_errors);
-    
+    // Snapset errors are reported separately; classic scrub counts only
+    // per-shard object errors as "inconsistent objects".
+    m_total_error_count += result.stats.num_scrub_errors;
+
     // If this is a repair scrub, initiate repairs for inconsistent objects
     // Use the object_hoids map which has the correct hobject_t with hash
     if (m_is_repair) {
@@ -1399,7 +1700,21 @@ void PGScrubber::emit_chunk_result(
   } else {
     DEBUGDPP("Chunk complete. range: {}", pg, range);
   }
-  
+
+  // For deep scrubs, write back any newly-computed digests to the objects'
+  // object_info_t attrs.  This mirrors classic OSD's submit_digest_fixes /
+  // PrimaryLogScrub path: after deep scan the authoritative digest is stored
+  // persistently in oi so future scrubs (and repair) can compare against it.
+  if (m_is_deep && pg.is_primary() && !result.missing_digest.empty()) {
+    DEBUGDPP("submitting {} digest write-backs", pg, result.missing_digest.size());
+    for (auto &du : result.missing_digest) {
+      std::ignore =
+        pg.shard_services.start_operation_may_interrupt<
+          interruptor, ScrubDigestUpdate>(
+            &pg, du.oid, du.data_digest, du.omap_digest);
+    }
+  }
+
   // Track the number of objects scrubbed in this chunk
   // result.stats.num_objects contains the count of objects in this chunk
   m_objects_scrubbed_in_chunk += result.stats.num_objects;
@@ -1427,7 +1742,7 @@ int PGScrubber::scrub_process_inconsistent(
     const hobject_t& oid = it->second;
     DEBUGDPP("Found object {} with hash {:x}", pg, oid, oid.get_hash());
     
-    // Find the authoritative shard and the shards with errors
+    // Find the authoritative shard and the shards with errors.
     pg_shard_t auth_shard;
     const librados::shard_info_t* auth_shard_info = nullptr;
     std::set<pg_shard_t> bad_shards;
@@ -1443,11 +1758,25 @@ int PGScrubber::scrub_process_inconsistent(
       }
       
       if (shard_info.has_errors()) {
-        // This shard has errors and needs repair
+        // Repairing a primary-local object that is present but has missing/
+        // corrupted OI metadata can currently abort in recovery metadata load.
+        // Skip marking that local copy missing; keep repairing other shards.
+        if (pg_shard == pg.get_pg_whoami() &&
+            (shard_info.has_info_missing() || shard_info.has_info_corrupted())) {
+          DEBUGDPP("Skipping unsafe local repair mark for {} on shard {} (info missing/corrupted)",
+                   pg, oid, pg_shard);
+          continue;
+        }
         bad_shards.insert(pg_shard);
       }
     }
     
+    if (auth_shard_info) {
+      // Never mark the selected authoritative shard as missing.
+      // Classic scrub repair always repairs from the chosen auth copy.
+      bad_shards.erase(auth_shard);
+    }
+
     if (!bad_shards.empty() && auth_shard_info) {
       // Count the number of bad shards being fixed
       // This matches classic OSD's behavior of counting bad_peers.size()
@@ -1455,7 +1784,7 @@ int PGScrubber::scrub_process_inconsistent(
       
       // Get the version from the authoritative shard's object_info
       // This matches classic OSD's approach in scrub_backend.cc:402-424
-      eversion_t repair_version;
+      std::optional<eversion_t> repair_version;
       try {
         object_info_t oi;
         auto it = auth_shard_info->attrs.find(OI_ATTR);
@@ -1464,17 +1793,19 @@ int PGScrubber::scrub_process_inconsistent(
           decode(oi, bliter);
           repair_version = oi.version;
           DEBUGDPP("Got version {} from authoritative shard {} for object {}, is_data_digest={} data_digest=0x{:x} flags=0x{:x}",
-                   pg, repair_version, auth_shard, oid, oi.is_data_digest(), oi.data_digest, (uint32_t)oi.flags);
+                   pg, *repair_version, auth_shard, oid, oi.is_data_digest(), oi.data_digest, (uint32_t)oi.flags);
         } else {
           ERRORDPP("Authoritative shard {} missing OI_ATTR for object {}",
                    pg, auth_shard, oid);
-          // Fall back to using epoch from inconsistent_obj_t
-          repair_version = eversion_t(0, obj_error.version);
         }
       } catch (...) {
-        ERRORDPP("Failed to decode object_info for {}, using fallback version",
+        ERRORDPP("Failed to decode object_info for {}, skipping repair for this object",
                  pg, oid);
-        repair_version = eversion_t(0, obj_error.version);
+      }
+
+      if (!repair_version.has_value()) {
+        DEBUGDPP("Skipping repair mark for {} due to missing authoritative version", pg, oid);
+        continue;
       }
       
       // Mark objects as missing on bad shards
@@ -1482,9 +1813,9 @@ int PGScrubber::scrub_process_inconsistent(
       // Classic OSD just calls force_object_missing() and lets the PG state
       // machine automatically queue recovery when it detects the PG is not clean
       for (const auto& bad_shard : bad_shards) {
-        pg.peering_state.force_object_missing(bad_shard, oid, repair_version);
+        pg.peering_state.force_object_missing(bad_shard, oid, *repair_version);
         DEBUGDPP("Marked object {} as missing on shard {} with version {}",
-                 pg, oid, bad_shard, repair_version);
+                 pg, oid, bad_shard, *repair_version);
       }
     }
   }
@@ -1522,17 +1853,40 @@ void PGScrubber::emit_scrub_result(
      pg_stats.stats.sum.*statptr = in_stats.*statptr;
    }
  });
+      // Check for any stat mismatch and, if found, emit the classic comprehensive
+      // "stat mismatch, got ..." log message matching PrimaryLogScrub.cc format.
+      bool stat_mismatch = false;
       foreach_scrub_checked_stat(
- [this, FNAME, &pg_stats, &in_stats](
-   const auto &name, auto statptr, const auto &invalid_predicate) {
-   if (!invalid_predicate(pg_stats) &&
-       (in_stats.*statptr != pg_stats.stats.sum.*statptr)) {
-     LOG_SCRUB_ERROR(
-       "stat mismatch for {}: scrubbed value: {}, stored pg value: {}",
-       name, in_stats.*statptr, pg_stats.stats.sum.*statptr);
-     ++pg_stats.stats.sum.num_shallow_scrub_errors;
-   }
- });
+        [&pg_stats, &in_stats, &stat_mismatch](
+          const auto& /*name*/, auto statptr, const auto& invalid_predicate) {
+          if (!invalid_predicate(pg_stats) &&
+              (in_stats.*statptr != pg_stats.stats.sum.*statptr)) {
+            stat_mismatch = true;
+          }
+        });
+      if (stat_mismatch) {
+        auto &s = pg_stats.stats.sum;
+        const char* scrub_prefix = deep ? "deep-scrub" : "scrub";
+        auto mismatch_msg = fmt::format(
+          "{} {} : stat mismatch, got "
+          "{}/{} objects, {}/{} clones, {}/{} dirty, {}/{} omap, "
+          "{}/{} pinned, {}/{} hit_set_archive, {}/{} whiteouts, "
+          "{}/{} bytes, {}/{} manifest objects, {}/{} hit_set_archive bytes.",
+          pg.get_pgid(), scrub_prefix,
+          in_stats.num_objects, s.num_objects,
+          in_stats.num_object_clones, s.num_object_clones,
+          in_stats.num_objects_dirty, s.num_objects_dirty,
+          in_stats.num_objects_omap, s.num_objects_omap,
+          in_stats.num_objects_pinned, s.num_objects_pinned,
+          in_stats.num_objects_hit_set_archive, s.num_objects_hit_set_archive,
+          in_stats.num_whiteouts, s.num_whiteouts,
+          in_stats.num_bytes, s.num_bytes,
+          in_stats.num_objects_manifest, s.num_objects_manifest,
+          in_stats.num_bytes_hit_set_archive, s.num_bytes_hit_set_archive);
+        ERRORDPP("{}", pg, mismatch_msg);
+        pg.get_clog_error() << mismatch_msg;
+        ++pg_stats.stats.sum.num_shallow_scrub_errors;
+      }
       
       // Update objects_scrubbed with the total count from all chunks
       pg_stats.objects_scrubbed = m_objects_scrubbed_in_chunk;
@@ -1545,11 +1899,20 @@ void PGScrubber::emit_scrub_result(
       }
       
       // Update error counts from current scrub results (matches classic OSD)
-      // For deep scrubs, we update both shallow and deep error counts
+      // For deep scrubs, we update both shallow and deep error counts.
+      // For shallow scrubs that explicitly cleared deep-error details (operator
+      // request), also zero the stored deep error counts so PG_STATE_INCONSISTENT
+      // is cleared by prepare_stats_for_publish().
       if (deep) {
-        pg_stats.stats.sum.num_shallow_scrub_errors = in_stats.num_shallow_scrub_errors;
-        pg_stats.stats.sum.num_deep_scrub_errors = in_stats.num_deep_scrub_errors;
-      }
+         pg_stats.stats.sum.num_shallow_scrub_errors = in_stats.num_shallow_scrub_errors;
+         pg_stats.stats.sum.num_deep_scrub_errors = in_stats.num_deep_scrub_errors;
+       } else if (m_flags.deep_errors_cleared) {
+         pg_stats.stats.sum.num_shallow_scrub_errors = in_stats.num_shallow_scrub_errors;
+         pg_stats.stats.sum.num_deep_scrub_errors = 0;
+         m_flags.deep_errors_cleared = false;
+         DEBUGDPP("shallow scrub cleared deep-error stats: num_shallow={} num_deep=0",
+                  pg, pg_stats.stats.sum.num_shallow_scrub_errors);
+       }
       
       // If this was a repair, check if we need to schedule after_repair scrub
       // This matches classic OSD behavior in scrub_finish()
@@ -1601,6 +1964,28 @@ void PGScrubber::emit_scrub_result(
       
       return false; // notify_scrub_end will flush stats to osd
     });
+
+    // Emit summary messages matching classic OSD's scrub_finish():
+    //   "{pgid} {mode} {N} missing, {M} inconsistent objects"
+    //   "{pgid} {mode} {E} errors"
+    // These are accumulated across all chunks (m_total_*_count) and emitted once.
+    if (m_total_missing_count > 0 || m_total_inconsistent_count > 0) {
+      const char* mode = m_is_deep ? "deep-scrub" : "scrub";
+      auto err_msg = fmt::format("{} {} {} missing, {} inconsistent objects",
+                                 pg.get_pgid(), mode,
+                                 m_total_missing_count,
+                                 m_total_inconsistent_count);
+      ERRORDPP("{}", pg, err_msg);
+      pg.get_clog_error() << err_msg;
+    }
+    if (m_total_error_count > 0) {
+      const char* mode = m_is_deep ? "deep-scrub" : "scrub";
+      auto err_msg = fmt::format("{} {} {} errors",
+                                 pg.get_pgid(), mode,
+                                 m_total_error_count);
+      ERRORDPP("{}", pg, err_msg);
+      pg.get_clog_error() << err_msg;
+    }
     
     // Check if we need to initiate a deep scrub after finding errors in shallow scrub
     // This matches classic OSD behavior in scrub_finish()
@@ -1702,6 +2087,9 @@ void PGScrubber::reset_internal_state()
   clear_queued_or_active();
   m_objects_scrubbed_in_chunk = 0;
   m_fixed_count = 0;
+  m_total_missing_count = 0;
+  m_total_inconsistent_count = 0;
+  m_total_error_count = 0;
 }
 
 void PGScrubber::dump_scrub_metrics(ceph::Formatter* f)
