@@ -291,6 +291,13 @@ struct object_evaluation_t {
 
   size_t omap_keys{0};
   size_t omap_bytes{0};
+
+  // Digests from the authoritative shard's scan — used by validate_chunk
+  // to populate chunk_result_t::missing_digest when they differ from oi.
+  bool auth_data_digest_present{false};
+  uint32_t auth_data_digest{0};
+  bool auth_omap_digest_present{false};
+  uint32_t auth_omap_digest{0};
 };
 object_evaluation_t evaluate_object(
   const chunk_validation_policy_t &policy,
@@ -413,6 +420,17 @@ object_evaluation_t evaluate_object(
       if (!has_blocking_errors) {
         actual_auth->shard_info.selected_oi = true;
       }
+    }
+
+    // Record auth shard's computed digests so validate_chunk can decide
+    // whether to write them back to the object_info_t (missing_digest).
+    if (actual_auth->shard_info.data_digest_present) {
+      ret.auth_data_digest_present = true;
+      ret.auth_data_digest = actual_auth->shard_info.data_digest;
+    }
+    if (actual_auth->shard_info.omap_digest_present) {
+      ret.auth_omap_digest_present = true;
+      ret.auth_omap_digest = actual_auth->shard_info.omap_digest;
     }
     
     // Compare all other shards against the authoritative one
@@ -785,6 +803,29 @@ chunk_result_t validate_chunk(
       ret.object_errors.push_back(*eval.inconsistency);
       ret.object_hoids[oid.oid.name] = oid;
     }
+
+    // Check whether we need to write back computed digests to oi.
+    // Matches classic ScrubBackend::should_fix_digest / missing_digest logic:
+    // if the deep scan produced a digest that the stored oi doesn't have (or
+    // has a different value), record it so emit_chunk_result can write it back.
+    if (eval.object_info) {
+      digest_update_t du;
+      du.oid = oid;
+      bool needs_update = false;
+
+      if (eval.auth_data_digest_present && !eval.object_info->is_data_digest()) {
+        du.data_digest = eval.auth_data_digest;
+        needs_update = true;
+      }
+      if (eval.auth_omap_digest_present && !eval.object_info->is_omap_digest()) {
+        du.omap_digest = eval.auth_omap_digest;
+        needs_update = true;
+      }
+      if (needs_update) {
+        ret.missing_digest.push_back(std::move(du));
+      }
+    }
+
     evals.emplace(oid, std::move(eval));
   }
 

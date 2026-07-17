@@ -1019,7 +1019,7 @@ function TEST_corrupt_scrub_replicated() {
     ERRORS=0
     declare -a s_err_strings
     err_strings[0]=".*[0-9]*[.]0 shard 1 soid 3:30259878:::ROBJ15:head : candidate had a missing info key"
-    err_strings[1]=".*[0-9]*[.]0 soid 3:33aca486:::ROBJ18:head : object info inconsistent "
+    err_strings[1]=".*[0-9]*[.]0 shard 0 soid 3:33aca486:::ROBJ18:head : object info inconsistent "
     err_strings[2]=".*[0-9]*[.]0 shard 1 soid 3:5c7b2c47:::ROBJ16:head : candidate had a corrupt snapset"
     err_strings[3]=".*[0-9]*[.]0 shard 0 soid 3:5c7b2c47:::ROBJ16:head : candidate had a missing snapset key"
     err_strings[4]=".*[0-9]*[.]0 soid 3:5c7b2c47:::ROBJ16:head : failed to pick suitable object info"
