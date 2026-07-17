@@ -1429,7 +1429,21 @@ void PGScrubber::emit_chunk_result(
   } else {
     DEBUGDPP("Chunk complete. range: {}", pg, range);
   }
-  
+
+  // For deep scrubs, write back any newly-computed digests to the objects'
+  // object_info_t attrs.  This mirrors classic OSD's submit_digest_fixes /
+  // PrimaryLogScrub path: after deep scan the authoritative digest is stored
+  // persistently in oi so future scrubs (and repair) can compare against it.
+  if (m_is_deep && !result.missing_digest.empty()) {
+    DEBUGDPP("submitting {} digest write-backs", pg, result.missing_digest.size());
+    for (auto &du : result.missing_digest) {
+      std::ignore =
+        pg.shard_services.start_operation_may_interrupt<
+          interruptor, ScrubDigestUpdate>(
+            &pg, du.oid, du.data_digest, du.omap_digest);
+    }
+  }
+
   // Track the number of objects scrubbed in this chunk
   // result.stats.num_objects contains the count of objects in this chunk
   m_objects_scrubbed_in_chunk += result.stats.num_objects;

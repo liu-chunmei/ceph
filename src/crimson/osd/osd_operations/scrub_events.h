@@ -259,6 +259,33 @@ protected:
   ifut<> run(PG &pg) final;
 };
 
+class ScrubDigestUpdate : public ScrubAsyncOpT<ScrubDigestUpdate> {
+  hobject_t oid;
+  std::optional<uint32_t> data_digest;
+  std::optional<uint32_t> omap_digest;
+
+public:
+  static constexpr OperationTypeCode type = OperationTypeCode::scrub_digest_update;
+
+  ScrubDigestUpdate(
+    Ref<PG> pg,
+    const hobject_t &oid,
+    std::optional<uint32_t> data_digest,
+    std::optional<uint32_t> omap_digest)
+    : ScrubAsyncOpT(pg), oid(oid),
+      data_digest(data_digest), omap_digest(omap_digest) {}
+
+  void print(std::ostream &out) const final {
+    out << "(oid=" << oid << ")";
+  }
+  void dump_detail(ceph::Formatter *f) const final {
+    f->dump_stream("oid") << oid;
+  }
+
+protected:
+  ifut<> run(PG &pg) final;
+};
+
 struct obj_scrub_progress_t {
   // nullopt once complete
   std::optional<uint64_t> offset = 0;
@@ -329,6 +356,9 @@ template <> struct fmt::formatter<crimson::osd::ScrubScan>
   : fmt::ostream_formatter {};
 
 template <> struct fmt::formatter<crimson::osd::ScrubSleep>
+  : fmt::ostream_formatter {};
+
+template <> struct fmt::formatter<crimson::osd::ScrubDigestUpdate>
   : fmt::ostream_formatter {};
 
 #endif
