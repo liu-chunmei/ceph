@@ -242,6 +242,12 @@ public:
   /// Track the number of object copies fixed during repair scrub
   int m_fixed_count{0};
 
+  /// Accumulated missing/inconsistent/error counts across all chunks.
+  /// Emitted once in emit_scrub_result to match classic OSD's scrub_finish() summary.
+  int m_total_missing_count{0};
+  int m_total_inconsistent_count{0};
+  int m_total_error_count{0};
+
   /// Store scrub results for retrieval by rados list-inconsistent-obj
   epoch_t m_scrub_epoch{0};
   // Dual-store approach matching classic OSD's shallow_db and deep_db
@@ -316,8 +322,11 @@ private:
    * are logged with specific details about what's wrong.
    *
    * @param obj_error The inconsistent object with error details
+   * @param hoid      Full hobject_t (with hash) for the object — used to
+   *                  produce the canonical oid string in log messages.
    */
-  void log_object_errors(const inconsistent_obj_wrapper& obj_error);
+  void log_object_errors(const inconsistent_obj_wrapper& obj_error,
+                         const hobject_t& hoid);
 
   /**
    * log_snapset_errors
