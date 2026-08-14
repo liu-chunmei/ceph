@@ -3999,8 +3999,8 @@ EOF
     err_strings[0]="ERROR.*PGScrubber::log_object_errors: 3.0 soid [0-9]*:.*:::ROBJ1:head : snapset inconsistent"
     err_strings[1]="ERROR.*PGScrubber::log_object_errors: 3.0 soid [0-9]*:.*:::ROBJ2:head : snapset inconsistent"
     err_strings[2]="ERROR.*PGScrubber::log_snapset_errors: scrub 3.0 [0-9]*:.*:::ROBJ1:1 : is an unexpected clone"
-    err_strings[3]="ERROR.*PGScrubber::emit_scrub_result: 3.0 scrub : stat mismatch, got 4/4 objects, 1/2 clones, 4/2 dirty, 0/4 omap, 0/0 pinned, 0/0 hit_set_archive, 0/0 whiteouts, 49/42 bytes, 0/0 manifest objects, 0/0 hit_set_archive bytes."
-    err_strings[4]="ERROR.*PGScrubber::emit_scrub_result: 3.0 scrub 0 missing, 4 inconsistent objects"
+    err_strings[3]="ERROR.*PGScrubber::emit_scrub_result: 3.0 scrub : stat mismatch, got 3/4 objects, 1/2 clones, 3/4 dirty, 3/4 omap, 0/0 pinned, 0/0 hit_set_archive, 0/0 whiteouts, 49/56 bytes, 0/0 manifest objects, 0/0 hit_set_archive bytes."
+    err_strings[4]="ERROR.*PGScrubber::emit_scrub_result: 3.0 scrub 0 missing, 2 inconsistent objects"
     err_strings[5]="ERROR.*PGScrubber::emit_scrub_result: 3.0 scrub 4 errors"
 
     for err_string in "${err_strings[@]}"

@@ -865,7 +865,6 @@ OpsExecuter::flush_changes_and_submit(
     ceph_assert(want_mutate);
   }
 
-  apply_stats();
   if (want_mutate) {
     osd_op_params->at_version = pg->get_next_version();
     osd_op_params->pg_trim_to = pg->get_pg_trim_to();
@@ -880,6 +879,10 @@ OpsExecuter::flush_changes_and_submit(
 
     log_entries.emplace_back(prepare_head_update(ops, txn));
 
+    // must follow prepare_head_update(): it accounts for the bytes the newest
+    // clone now holds on to.
+    apply_stats();
+
     if (auto log_rit = log_entries.rbegin(); log_rit != log_entries.rend()) {
       ceph_assert(log_rit->version == osd_op_params->at_version);
     }
@@ -893,6 +896,8 @@ OpsExecuter::flush_changes_and_submit(
 
     submitted = std::move(_submitted);
     all_completed = std::move(_all_completed);
+  } else {
+    apply_stats();
   }
 
   if (op_effects.size()) [[unlikely]] {
@@ -1023,8 +1028,17 @@ void OpsExecuter::prepare_cloning_ctx(
   cloning_ctx->clone_obc = prepare_clone(cloning_ctx->coid, initial_obs);
 
   delta_stats.num_objects++;
+  if (cloning_ctx->clone_obc->obs.oi.is_dirty()) {
+    delta_stats.num_objects_dirty++;
+  }
   if (cloning_ctx->clone_obc->obs.oi.is_omap()) {
     delta_stats.num_objects_omap++;
+  }
+  if (cloning_ctx->clone_obc->obs.oi.is_cache_pinned()) {
+    delta_stats.num_objects_pinned++;
+  }
+  if (cloning_ctx->clone_obc->obs.oi.has_manifest()) {
+    delta_stats.num_objects_manifest++;
   }
   delta_stats.num_object_clones++;
   // newsnapset is obc's ssc

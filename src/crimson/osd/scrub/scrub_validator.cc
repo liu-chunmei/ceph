@@ -866,32 +866,48 @@ snapset_evaluation_result_t evaluate_snapset(
 
 void add_object_to_stats(
   const chunk_validation_policy_t &policy,
+  const hobject_t &oid,
   const object_evaluation_t &eval,
+  const std::optional<SnapSet> &head_snapset,
   object_stat_sum_t *out)
 {
-  auto &ss = eval.snapset;
   ceph_assert(out);
   out->num_objects++;
+
+  if (oid.nspace == policy.hitset_namespace) {
+    out->num_objects_hit_set_archive++;
+  }
+  if (oid.is_snap()) {
+    out->num_object_clones++;
+  }
+
   if (!eval.object_info) {
     return;
   }
   auto &oi = *eval.object_info;
-  out->num_bytes += oi.size;
-  if (ss) {
-    for (auto clone : ss->clones) {
-      // Only call get_clone_bytes if clone_size and clone_overlap exist
-      // to avoid assertion failures with corrupted snapsets
-      if (ss->clone_size.count(clone) && ss->clone_overlap.count(clone)) {
-        out->num_bytes += ss->get_clone_bytes(clone);
-      }
-      out->num_object_clones++;
+
+  if (oid.is_snap()) {
+    // A clone's size comes from the head's snapset, not from its own oi.
+    if (head_snapset &&
+        head_snapset->clone_size.count(oid.snap) &&
+        head_snapset->clone_overlap.count(oid.snap)) {
+      out->num_bytes += head_snapset->get_clone_bytes(oid.snap);
     }
-    if (oi.is_whiteout()) {
-      out->num_whiteouts++;
-    }
+  } else {
+    out->num_bytes += oi.size;
   }
+  if (oid.nspace == policy.hitset_namespace) {
+    out->num_bytes_hit_set_archive += oi.size;
+  }
+
   if (oi.is_dirty()) {
     out->num_objects_dirty++;
+  }
+  if (oi.is_whiteout()) {
+    out->num_whiteouts++;
+  }
+  if (oi.is_omap()) {
+    out->num_objects_omap++;
   }
   if (oi.is_cache_pinned()) {
     out->num_objects_pinned++;
@@ -900,16 +916,8 @@ void add_object_to_stats(
     out->num_objects_manifest++;
   }
 
-  if (oi.is_omap()) {
-    out->num_objects_omap++;
-  }
   out->num_omap_keys += eval.omap_keys;
   out->num_omap_bytes += eval.omap_bytes;
-
-  if (oi.soid.nspace == policy.hitset_namespace) {
-    out->num_objects_hit_set_archive++;
-    out->num_bytes_hit_set_archive += oi.size;
-  }
 
   if (eval.omap_keys > policy.omap_key_limit ||
       eval.omap_bytes > policy.omap_bytes_limit) {
@@ -931,7 +939,6 @@ chunk_result_t validate_chunk(
   std::map<hobject_t, object_evaluation_t> evals;
   for (const auto &oid: object_set) {
     object_evaluation_t eval = evaluate_object(policy, oid, in);
-    add_object_to_stats(policy, eval, &ret.stats);
     if (eval.inconsistency) {
       ret.object_errors.push_back(*eval.inconsistency);
       ret.object_hoids[oid.oid.name] = oid;
@@ -1194,6 +1201,37 @@ chunk_result_t validate_chunk(
     }
     clone_error.set_headless();
     ret.snapset_errors.push_back(clone_error);
+  }
+
+  // Accumulate stats last: classic scrub skips an unexpected (headless) clone
+  // entirely rather than counting it against the pg's object stats.
+  std::set<hobject_t> headless_clones;
+  for (const auto &se : ret.snapset_errors) {
+    if (!se.headless()) {
+      continue;
+    }
+    for (const auto &oid : object_set) {
+      if (oid.is_snap() &&
+          oid.oid.name == se.object.name &&
+          oid.nspace == se.object.nspace &&
+          oid.snap == snapid_t{se.object.snap}) {
+        headless_clones.insert(oid);
+      }
+    }
+  }
+
+  for (const auto &oid : object_set) {
+    if (headless_clones.count(oid)) {
+      continue;
+    }
+    std::optional<SnapSet> head_snapset;
+    if (oid.is_snap()) {
+      auto head_it = evals.find(oid.get_head());
+      if (head_it != evals.end()) {
+        head_snapset = head_it->second.snapset;
+      }
+    }
+    add_object_to_stats(policy, oid, evals.at(oid), head_snapset, &ret.stats);
   }
 
   for (const auto &i: ret.object_errors) {

@@ -1686,7 +1686,8 @@ void PGScrubber::emit_chunk_result(
         m_total_inconsistent_count++;
       }
     }
-    m_total_inconsistent_count += result.snapset_errors.size();
+    // Snapset errors are reported separately; classic scrub counts only
+    // per-shard object errors as "inconsistent objects".
     m_total_error_count += result.stats.num_scrub_errors;
 
     // If this is a repair scrub, initiate repairs for inconsistent objects
