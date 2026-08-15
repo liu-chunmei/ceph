@@ -1614,6 +1614,9 @@ void PGScrubber::emit_chunk_result(
   chunk_result_t &&result)
 {
   LOG_PREFIX(PGScrubber::emit_chunk_result);
+  ++m_digest_updates_generation;
+  const auto digest_updates_generation = m_digest_updates_generation;
+  m_digest_updates_pending = 0;
   if (result.has_errors()) {
     ERRORDPP("Scrub errors found. range: {}, result: {}", pg, range, result);
     
@@ -1707,17 +1710,30 @@ void PGScrubber::emit_chunk_result(
   // persistently in oi so future scrubs (and repair) can compare against it.
   if (m_is_deep && pg.is_primary() && !result.missing_digest.empty()) {
     DEBUGDPP("submitting {} digest write-backs", pg, result.missing_digest.size());
+    m_digest_updates_pending = result.missing_digest.size();
     for (auto &du : result.missing_digest) {
-      std::ignore =
-        pg.shard_services.start_operation_may_interrupt<
-          interruptor, ScrubDigestUpdate>(
-            &pg, du.oid, du.data_digest, du.omap_digest);
+      std::ignore = pg.shard_services.start_operation_may_interrupt<
+        interruptor, ScrubDigestUpdate>(
+          &pg, du.oid, du.data_digest, du.omap_digest,
+          digest_updates_generation);
     }
   }
 
   // Track the number of objects scrubbed in this chunk
   // result.stats.num_objects contains the count of objects in this chunk
   m_objects_scrubbed_in_chunk += result.stats.num_objects;
+}
+
+void PGScrubber::on_digest_update_complete(uint64_t generation)
+{
+  if (generation != m_digest_updates_generation) {
+    return;
+  }
+
+  ceph_assert(m_digest_updates_pending > 0);
+  if (--m_digest_updates_pending == 0) {
+    handle_event(ScrubContext::digest_updates_complete_t{});
+  }
 }
 
 int PGScrubber::scrub_process_inconsistent(
@@ -2084,6 +2100,8 @@ void PGScrubber::clear_pgscrub_state()
 
 void PGScrubber::reset_internal_state()
 {
+  ++m_digest_updates_generation;
+  m_digest_updates_pending = 0;
   clear_queued_or_active();
   m_objects_scrubbed_in_chunk = 0;
   m_fixed_count = 0;

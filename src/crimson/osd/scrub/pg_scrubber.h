@@ -219,6 +219,12 @@ public:
   
   /// Get scrub sleep time in milliseconds (like classic OSD)
   std::chrono::milliseconds get_scrub_sleep_time() const;
+
+  bool has_pending_digest_updates() const {
+    return m_digest_updates_pending != 0;
+  }
+
+  void on_digest_update_complete(uint64_t generation);
   
   /// Check if scrub should abort due to noscrub/nodeep-scrub flags
   bool should_abort() const;
@@ -238,6 +244,9 @@ public:
 
   /// Track the total number of objects scrubbed across all chunks
   int64_t m_objects_scrubbed_in_chunk{0};
+
+  unsigned m_digest_updates_pending{0};
+  uint64_t m_digest_updates_generation{0};
 
   /// Track the number of object copies fixed during repair scrub
   int m_fixed_count{0};

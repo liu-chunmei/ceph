@@ -419,6 +419,10 @@ ScrubDigestUpdate::ifut<> ScrubDigestUpdate::run(PG &pg)
   LOG_PREFIX(ScrubDigestUpdate::run);
   DEBUGDPP("oid: {}", pg, oid);
 
+  auto notify_complete = seastar::defer([&pg, generation = generation] {
+    pg.scrubber.on_digest_update_complete(generation);
+  });
+
   // Use a fresh orderer scoped to this operation
   auto obc_orderer = pg.obc_loader.get_obc_orderer(oid);
   auto obc_manager = pg.obc_loader.get_obc_manager(

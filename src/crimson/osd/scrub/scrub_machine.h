@@ -240,6 +240,8 @@ struct ScrubContext {
     const request_range_result_t &range,
     chunk_result_t &&result) = 0;
 
+  SIMPLE_EVENT(digest_updates_complete_t);
+
   /// notifies implementation of full scrub results
   virtual void emit_scrub_result(
     bool deep,
@@ -699,6 +701,17 @@ struct ScanRange : ScrubState<ScanRange, ChunkState> {
     >;
 
   sc::result react(const ScrubContext::scan_range_complete_t &);
+};
+
+struct WaitDigestUpdate : ScrubState<WaitDigestUpdate, ChunkState> {
+  static constexpr std::string_view state_name = "WaitDigestUpdate";
+  explicit WaitDigestUpdate(my_context ctx);
+
+  using reactions = boost::mpl::list<
+    sc::custom_reaction<ScrubContext::digest_updates_complete_t>
+    >;
+
+  sc::result react(const ScrubContext::digest_updates_complete_t &);
 };
 
 // -------- for replicas -----------------------------------------------------
