@@ -110,33 +110,47 @@ sc::result ScanRange::react(const ScrubContext::scan_range_complete_t &event)
  *(context<ChunkState>().range),
  std::move(results));
     }
-    LOG_PREFIX(ScanRange::react);
-    bool is_last = context<ChunkState>().range->end.is_max();
-    SUBDEBUGDPP(osd, "scan complete, is_last_chunk={}", dpp, is_last);
-    if (is_last) {
-      SUBDEBUGDPP(osd, "last chunk, completing scrub", dpp);
-      auto& scrubbing = context<Scrubbing>();
-      get_scrub_context().emit_scrub_result(
- scrubbing.deep,
- scrubbing.stats);
-      // Update metrics for successful scrub completion
-      if (auto* metrics = scrubbing.get_metrics()) {
-        // Calculate elapsed time in milliseconds, similar to classic scrub_machine
-        auto duration = ScrubClock::now() - scrubbing.scrub_start_time;
-        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-          duration).count();
-        metrics->inc_successful(elapsed_ms);
-      }
-      return transit<PrimaryActive>();
-    } else {
-      LOG_PREFIX(ScanRange::react);
-      auto range_end = context<ChunkState>().range->end;
-      SUBDEBUGDPP(osd, "chunk complete at range end {}, advancing to next chunk", dpp, range_end);
-      context<Scrubbing>().advance_current(range_end);
-      // Transition to PendingTimer to sleep before next chunk
-      return transit<PendingTimer>();
-    }
+    return transit<WaitDigestUpdate>();
   }
+}
+
+WaitDigestUpdate::WaitDigestUpdate(my_context ctx) : ScrubState(ctx)
+{
+  DECLARE_LOCALS;
+
+  if (!m_scrbr->has_pending_digest_updates()) {
+    post_event(ScrubContext::digest_updates_complete_t{});
+  }
+}
+
+sc::result WaitDigestUpdate::react(
+  const ScrubContext::digest_updates_complete_t &)
+{
+  DECLARE_LOCALS;
+
+  ceph_assert(context<ChunkState>().range);
+  LOG_PREFIX(WaitDigestUpdate::react);
+  bool is_last = context<ChunkState>().range->end.is_max();
+  SUBDEBUGDPP(osd, "digest updates complete, is_last_chunk={}", dpp, is_last);
+  if (is_last) {
+    SUBDEBUGDPP(osd, "last chunk, completing scrub", dpp);
+    auto& scrubbing = context<Scrubbing>();
+    get_scrub_context().emit_scrub_result(
+      scrubbing.deep,
+      scrubbing.stats);
+    if (auto* metrics = scrubbing.get_metrics()) {
+      auto duration = ScrubClock::now() - scrubbing.scrub_start_time;
+      auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        duration).count();
+      metrics->inc_successful(elapsed_ms);
+    }
+    return transit<PrimaryActive>();
+  }
+
+  auto range_end = context<ChunkState>().range->end;
+  SUBDEBUGDPP(osd, "chunk complete at range end {}, advancing to next chunk", dpp, range_end);
+  context<Scrubbing>().advance_current(range_end);
+  return transit<PendingTimer>();
 }
 
 Scrubbing::Scrubbing(my_context ctx)

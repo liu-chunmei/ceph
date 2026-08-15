@@ -263,6 +263,7 @@ class ScrubDigestUpdate : public ScrubAsyncOpT<ScrubDigestUpdate> {
   hobject_t oid;
   std::optional<uint32_t> data_digest;
   std::optional<uint32_t> omap_digest;
+  uint64_t generation;
 
 public:
   static constexpr OperationTypeCode type = OperationTypeCode::scrub_digest_update;
@@ -271,9 +272,11 @@ public:
     Ref<PG> pg,
     const hobject_t &oid,
     std::optional<uint32_t> data_digest,
-    std::optional<uint32_t> omap_digest)
+    std::optional<uint32_t> omap_digest,
+    uint64_t generation)
     : ScrubAsyncOpT(pg), oid(oid),
-      data_digest(data_digest), omap_digest(omap_digest) {}
+      data_digest(data_digest), omap_digest(omap_digest),
+      generation(generation) {}
 
   void print(std::ostream &out) const final {
     out << "(oid=" << oid << ")";
