@@ -194,11 +194,19 @@ seastar::future<> OperationThrottler::background_task() {
       if (auto when_ready = std::get_if<double>(&work_item)) {
         ceph::real_clock::time_point future_time = ceph::real_clock::from_double(*when_ready);
         auto now = ceph::real_clock::now();
-        ceph_assert(future_time > now);
+        if (future_time <= now) {
+          // Timestamp already elapsed (race between pull_request and now()).
+          // The item will be ready on the next dequeue; re-enter the inner loop.
+          continue;
+        }
         auto wait_duration = std::chrono::duration_cast<std::chrono::milliseconds>(future_time - now);
         INFO("No items ready. Retrying in {} ms", wait_duration.count());
+        // Break out of the inner loop before sleeping so that any wake()
+        // signals delivered during the sleep are not lost.  After the sleep,
+        // signal the cv ourselves to re-enter the outer wait properly.
         co_await seastar::sleep(wait_duration);
-        continue;
+        cv.signal();
+        break;
       }
       if (auto *item = std::get_if<crimson::osd::scheduler::item_t>(&work_item)) {
         DEBUG("Waking up a work item");
