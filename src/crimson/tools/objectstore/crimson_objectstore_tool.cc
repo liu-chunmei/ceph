@@ -390,6 +390,15 @@ static seastar::future<bool> resolve_operation_parameters(
 
     // Find shard for pgmeta object
     co_return co_await find_shard_for_object(st, config, "pgmeta");
+  } else if (op.object.has_value() &&
+             *op.object == ghobject_t::SNAPMAPPER_OID &&
+             op.pgid.has_value()) {
+    // "snapmapper" is a magic object name: resolve it directly via
+    // spg_t::make_snapmapper_oid() so the correct namespace
+    // (".internal_pg_local") is used.  A plain LookupGhobject search
+    // would miss it because it lives in a non-default namespace.
+    config.ghobj = config.pgid.make_snapmapper_oid();
+    co_return co_await find_shard_for_object(st, config, "snapmapper");
   } else {
     // 3. Handle non-empty object specification
     ghobject_t parsed_obj;
