@@ -7,6 +7,7 @@
 #include "crimson/osd/osd_operation.h"
 #include "crimson/osd/scrub/pg_scrubber.h"
 #include "osd/osd_types.h"
+#include "osd/SnapMapReaderI.h"
 #include "peering_event.h"
 
 namespace crimson::osd {
@@ -260,6 +261,39 @@ protected:
   ifut<> run(PG &pg) final;
 };
 
+/**
+ * ScrubSnapMapperRepair
+ *
+ * Background operation that validates and repairs a single clone's snap mapper
+ * entry.  Spawned by PGScrubber::scan_snaps() for each clone found in the
+ * scrub map.  All blocking KV reads and writes happen inside interruptor::async
+ * so they never run on the Seastar reactor thread.
+ */
+class ScrubSnapMapperRepair : public ScrubAsyncOpT<ScrubSnapMapperRepair> {
+  hobject_t hoid;
+  std::set<snapid_t> expected_snaps;  ///< canonical snaps from snapset SS_ATTR
+
+public:
+  static constexpr OperationTypeCode type =
+    OperationTypeCode::scrub_snap_mapper_repair;
+
+  ScrubSnapMapperRepair(
+    Ref<PG> pg,
+    const hobject_t &hoid,
+    const std::set<snapid_t> &expected_snaps)
+    : ScrubAsyncOpT(pg), hoid(hoid), expected_snaps(expected_snaps) {}
+
+  void print(std::ostream &out) const final {
+    out << "(hoid=" << hoid << ")";
+  }
+  void dump_detail(ceph::Formatter *f) const final {
+    f->dump_stream("hoid") << hoid;
+  }
+
+protected:
+  ifut<> run(PG &pg) final;
+};
+
 class ScrubDigestUpdate : public ScrubAsyncOpT<ScrubDigestUpdate> {
   hobject_t oid;
   std::optional<uint32_t> data_digest;
@@ -363,6 +397,9 @@ template <> struct fmt::formatter<crimson::osd::ScrubSleep>
   : fmt::ostream_formatter {};
 
 template <> struct fmt::formatter<crimson::osd::ScrubDigestUpdate>
+  : fmt::ostream_formatter {};
+
+template <> struct fmt::formatter<crimson::osd::ScrubSnapMapperRepair>
   : fmt::ostream_formatter {};
 
 #endif

@@ -12,6 +12,7 @@
 #include "messages/MOSDRepScrubMap.h"
 #include "osd/osd_types.h"
 #include "osd/osd_types_fmt.h"
+#include "osd/SnapMapper.h"
 #include "pg_scrubber.h"
 
 SET_SUBSYS(osd);
@@ -2068,6 +2069,61 @@ void PGScrubber::emit_scrub_result(
       pg.state_clear(PG_STATE_REPAIR);
       DEBUGDPP("Repair complete with no errors, clearing PG_STATE_REPAIR", pg);
     }
+}
+
+void PGScrubber::scan_snaps(const ScrubMap &map)
+{
+  LOG_PREFIX(PGScrubber::scan_snaps);
+  // Parse the scrub map and spawn one ScrubSnapMapperRepair per clone.
+  // The repair op does the blocking KV read + compare + write inside
+  // interruptor::async(), keeping this reactor-thread function non-blocking.
+
+  hobject_t head;
+  SnapSet snapset;
+
+  for (auto i = map.objects.rbegin(); i != map.objects.rend(); ++i) {
+    const hobject_t &hoid = i->first;
+
+    ceph_assert(!hoid.is_snapdir());
+
+    if (hoid.is_head()) {
+      auto ss_it = i->second.attrs.find(SS_ATTR);
+      if (ss_it == i->second.attrs.end()) {
+        head = hobject_t{};
+        continue;
+      }
+      try {
+        auto p = ss_it->second.cbegin();
+        decode(snapset, p);
+      } catch (...) {
+        DEBUGDPP("failed to decode snapset for {}", pg, hoid);
+        head = hobject_t{};
+        continue;
+      }
+      head = hoid.get_head();
+      continue;
+    }
+
+    if (hoid.snap < CEPH_MAXSNAP) {
+      if (hoid.get_head() != head) {
+        DEBUGDPP("no head for {} (have {})", pg, hoid, head);
+        continue;
+      }
+
+      auto p = snapset.clone_snaps.find(hoid.snap);
+      if (p == snapset.clone_snaps.end()) {
+        DEBUGDPP("no clone_snaps for {} in {}", pg, hoid, snapset);
+        continue;
+      }
+      std::set<snapid_t> obj_snaps{p->second.begin(), p->second.end()};
+
+      DEBUGDPP("spawning snap mapper check for {} expected snaps: {}",
+               pg, hoid, obj_snaps);
+      std::ignore = pg.get_shard_services().start_operation_may_interrupt<
+        interruptor, ScrubSnapMapperRepair>(
+          &pg, hoid, obj_snaps);
+    }
+  }
 }
 
 std::string_view PGScrubber::registration_state() const
