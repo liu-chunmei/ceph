@@ -1242,8 +1242,11 @@ void PGScrubber::log_object_errors(const inconsistent_obj_wrapper& obj_error,
     }
 
     if (shard_info.has_snapset_missing()) {
-      auto errorstr = fmt::format("{} {} {} : no '{}' attr",
-                                  m_mode_desc, pgid, hoid, SS_ATTR);
+      // Classic scrub_backend.cc:669: "candidate had a missing snapset key"
+      // (shard-level message; the "no 'snapset' attr" message is emitted
+      // separately by log_snapset_errors at the object level)
+      auto errorstr = fmt::format("{} shard {} soid {} : candidate had a missing snapset key",
+                                  pgid, pg_shard, hoid);
       ERRORDPP("{}", pg, errorstr);
       pg.get_clog_error() << errorstr;
     }
@@ -1256,8 +1259,8 @@ void PGScrubber::log_object_errors(const inconsistent_obj_wrapper& obj_error,
     }
 
     if (shard_info.has_obj_size_info_mismatch()) {
-      // Classic: "on disk size (X) does not match object info size (Y) adjusted for ondisk to (Z)"
-      // For replicated pools Z == Y; EC is not yet supported (FIXME).
+      // Classic scrub_backend.cc:772: "candidate size X info size Y mismatch"
+      // (shard-level short-form message, emitted first)
       uint64_t own_oi_size = 0;
       auto oi_it = shard_info.attrs.find(OI_ATTR);
       if (oi_it != shard_info.attrs.end()) {
@@ -1268,13 +1271,20 @@ void PGScrubber::log_object_errors(const inconsistent_obj_wrapper& obj_error,
           own_oi_size = oi.size;
         } catch (...) {}
       }
-      // logical_to_ondisk_size returns own_oi_size for replicated pools
       auto errorstr = fmt::format(
+        "{} shard {} soid {} : candidate size {} info size {} mismatch",
+        pgid, pg_shard, hoid, shard_info.size, own_oi_size);
+      ERRORDPP("{}", pg, errorstr);
+      pg.get_clog_error() << errorstr;
+      // Classic: also emits "on disk size (X) does not match object info size (Y)
+      // adjusted for ondisk to (Z)" from log_object_errors.
+      // For replicated pools Z == Y; EC is not yet supported (FIXME).
+      auto errorstr2 = fmt::format(
         "{} {} {} : on disk size ({}) does not match object info size ({}) adjusted for ondisk to ({})",
         m_mode_desc, pgid, hoid,
         shard_info.size, own_oi_size, own_oi_size);
-      ERRORDPP("{}", pg, errorstr);
-      pg.get_clog_error() << errorstr;
+      ERRORDPP("{}", pg, errorstr2);
+      pg.get_clog_error() << errorstr2;
     }
 
     if (shard_info.has_info_missing()) {
@@ -1707,10 +1717,20 @@ void PGScrubber::emit_chunk_result(
     
     // Accumulate missing/inconsistent/error counts across chunks.
     // Emitted once at end of scrub in emit_scrub_result (matches classic OSD).
+    //
+    // Classic OSD counts an object as inconsistent only when inconsistents()
+    // is called, which requires opt_ers.has_value() from for_empty_auth_list().
+    // Two cases cause opt_ers=nullopt (object NOT counted as inconsistent):
+    //   1. "failed to pick suitable object info": !is_auth_available — no shard
+    //      has selected_oi=true (all shards have blocking errors on OI).
+    //      (scrub_backend.cc:982-1001 — m_missing/m_inconsistent not populated)
+    //   2. "failed to pick suitable auth object": all shards have shard-level
+    //      errors (auth_list and obj_errors both empty → nullopt).
+    //      (scrub_backend.cc:1066-1070 — for_empty_auth_list returns nullopt)
+    // In crimson these cases are detectable via:
+    //   Case 1: no shard has selected_oi=true
+    //   Case 2: selected_oi is set (auth chosen) but ALL shards have errors
     for (const auto& obj_error : result.object_errors) {
-      auto shallow_errors = obj_error;
-      shallow_errors.errors &= librados::obj_err_t::SHALLOW_ERRORS;
-      shallow_errors.union_shards.errors &= librados::err_t::SHALLOW_ERRORS;
       bool has_missing = false;
       for (const auto& [shard_id, shard_info] : obj_error.shards) {
         if (shard_info.has_shard_missing()) {
@@ -1720,9 +1740,18 @@ void PGScrubber::emit_chunk_result(
       }
       if (has_missing) {
         m_total_missing_count++;
-      } else if (shallow_errors.errors ||
-                 shallow_errors.union_shards.errors) {
-        m_total_inconsistent_count++;
+      } else if (obj_error.errors || obj_error.union_shards.errors) {
+        // Match classic: skip objects where no auth was selected (case 1)
+        // or where all shards have errors so auth_list was empty (case 2).
+        const bool any_selected_oi = std::any_of(
+          obj_error.shards.begin(), obj_error.shards.end(),
+          [](const auto& p) { return p.second.selected_oi; });
+        const bool all_shards_have_errors = std::all_of(
+          obj_error.shards.begin(), obj_error.shards.end(),
+          [](const auto& p) { return p.second.errors != 0; });
+        if (any_selected_oi && !all_shards_have_errors) {
+          m_total_inconsistent_count++;
+        }
       }
     }
     // Snapset errors are reported separately; classic scrub counts only
