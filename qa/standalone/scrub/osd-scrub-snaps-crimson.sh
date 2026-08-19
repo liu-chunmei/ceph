@@ -142,13 +142,27 @@ function create_scenario() {
     rados -p $poolname mksnap snap${SNAP}
 
     rados -p $poolname rm obj4
+    rados -p $poolname rm obj16
     rados -p $poolname rm obj2
+
+    # Capture the PGIDs for obj5 and obj16 now, while the cluster is still
+    # running.  crimson-objectstore-tool requires --pgid when listing/modifying
+    # the per-PG "snapmapper" object (there is one snapmapper object per PG, so
+    # the name alone is ambiguous when the pool has more than one PG).
+    # This mirrors the approach used in osd-mapper-crimson.sh.
+    local OBJ5PGID OBJ16PGID
+    OBJ5PGID="$(ceph --format json osd map $poolname obj5  | jq -r '.pgid')"
+    OBJ16PGID="$(ceph --format json osd map $poolname obj16 | jq -r '.pgid')"
 
     kill_daemons $dir TERM osd || return 1
 
     # Don't need to use ceph_objectstore_tool() function because osd stopped
-    # Use crimson-objectstore-tool for Crimson OSDs and avoid BlueStore-only
-    # snapmap/kvstore assumptions.
+    # Use crimson-objectstore-tool for Crimson OSDs.
+    # The snap mapper is stored as omap keys on the "snapmapper" object in each
+    # PG collection.  crimson-objectstore-tool's "remove" does NOT call
+    # mapper.remove_oid(), so it behaves like ceph-objectstore-tool --rmtype nosnapmap.
+    # To replicate --rmtype snapmap we remove the SNA_/OBJ_ omap keys directly.
+    # Always pass --pgid so the tool addresses the correct per-PG snapmapper object.
 
     JSON="$(crimson-objectstore-tool --data-path $dir/${osd} --head --op list obj1)"
     crimson-objectstore-tool --data-path $dir/${osd} "$JSON" --force remove || return 1
@@ -158,8 +172,18 @@ function create_scenario() {
 
     JSON="$(crimson-objectstore-tool --data-path $dir/${osd} --op list obj5 | grep \"snapid\":1)"
     OBJ5SAVE="$JSON"
-    # Skip removing obj5:1 - SeaStore doesn't support --rmtype nosnapmap
-    # which was used in the original test to create orphaned snapmap entries
+    # Starts with a snapmap entry for obj5:1
+    crimson-objectstore-tool --data-path $dir/${osd} --pgid "$OBJ5PGID" snapmapper list-omap 2>/dev/null > $dir/drk.log
+    grep SNA_ $dir/drk.log
+    grep "SNA_.*\.1\.obj5\.\." $dir/drk.log || return 1
+    # Remove obj5:1 without touching the snap mapper (crimson tool's remove
+    # does not call mapper.remove_oid(), equivalent to --rmtype nosnapmap)
+    crimson-objectstore-tool --data-path $dir/${osd} "$JSON" remove || return 1
+    # Check that snapmap entry is still there
+    crimson-objectstore-tool --data-path $dir/${osd} --pgid "$OBJ5PGID" snapmapper list-omap 2>/dev/null > $dir/drk.log
+    grep SNA_ $dir/drk.log
+    grep "SNA_.*\.1\.obj5\.\." $dir/drk.log || return 1
+    rm -f $dir/drk.log
 
     JSON="$(crimson-objectstore-tool --data-path $dir/${osd} --op list obj5 | grep \"snapid\":4)"
     dd if=/dev/urandom of=$TESTDATA bs=256 count=18
@@ -171,6 +195,21 @@ function create_scenario() {
 
     JSON="$(crimson-objectstore-tool --data-path $dir/${osd} --op list obj4 | grep \"snapid\":7)"
     crimson-objectstore-tool --data-path $dir/${osd} "$JSON" remove || return 1
+
+    # Starts with a snapmap entry for obj16:7
+    crimson-objectstore-tool --data-path $dir/${osd} --pgid "$OBJ16PGID" snapmapper list-omap 2>/dev/null > $dir/drk.log
+    grep SNA_ $dir/drk.log
+    grep "SNA_.*\.7\.obj16\.\." $dir/drk.log || return 1
+    # Remove only the snap mapper omap entries for obj16 (equivalent to --rmtype snapmap):
+    # this leaves obj16:7 on disk but removes its SNA_ and OBJ_ snap mapper keys.
+    while IFS= read -r key; do
+        crimson-objectstore-tool --data-path $dir/${osd} --pgid "$OBJ16PGID" snapmapper rm-omap "$key" || return 1
+    done < <(grep "obj16" $dir/drk.log)
+    # Check that snapmap entry is now removed
+    crimson-objectstore-tool --data-path $dir/${osd} --pgid "$OBJ16PGID" snapmapper list-omap 2>/dev/null > $dir/drk.log
+    grep SNA_ $dir/drk.log
+    ! grep "SNA_.*\.7\.obj16\.\." $dir/drk.log || return 1
+    rm -f $dir/drk.log
 
     JSON="$(crimson-objectstore-tool --data-path $dir/${osd} --head --op list obj2)"
     crimson-objectstore-tool --data-path $dir/${osd} "$JSON" rm-attr snapset || return 1
@@ -537,7 +576,8 @@ EOF
     },
     {
       "missing": [
-        2
+        2,
+        1
       ],
       "extra clones": [
         7
@@ -670,35 +710,7 @@ EOF
 EOF
 
     jq "$jqfilter" $dir/json | python3 -c "$sortkeys" > $dir/csjson
-    
-    # Verify that checkcsjson and csjson have the same JSON format (same content, regardless of order)
-    if ! python3 -c "
-import json
-import sys
-
-with open('$dir/checkcsjson', 'r') as f:
-    expected = json.load(f)
-with open('$dir/csjson', 'r') as f:
-    actual = json.load(f)
-
-# Sort both lists by a consistent key to enable comparison
-def sort_key(item):
-    return (item.get('name', ''), str(item.get('snap', '')), item.get('nspace', ''), item.get('locator', ''))
-
-expected_sorted = sorted(expected, key=sort_key)
-actual_sorted = sorted(actual, key=sort_key)
-
-if expected_sorted != actual_sorted:
-    print('ERROR: checkcsjson and csjson have different content', file=sys.stderr)
-    sys.exit(1)
-print('SUCCESS: checkcsjson and csjson have the same format')
-"; then
-        echo "JSON format verification failed"
-        multidiff $dir/checkcsjson $dir/csjson || test $getjson = "yes" || return 1
-        if test $getjson != "yes"; then
-            return 1
-        fi
-    fi
+    multidiff $dir/checkcsjson $dir/csjson || test $getjson = "yes" || return 1
     if test $getjson = "yes"
     then
         jq '.' $dir/json > save1.json
@@ -750,63 +762,75 @@ print('SUCCESS: checkcsjson and csjson have the same format')
 
     kill_daemons $dir || return 1
 
-    # Crimson uses structured error reporting in chunk_result_t messages
-    # Check for expected error types and objects in the scrub results
-    if test $getjson != "yes"; then
-        # Extract scrub error messages
-        if ! grep "emit_chunk_result: Scrub errors found" $dir/osd.${primary}.log > /dev/null; then
-            echo "ERROR: No scrub errors found in log"
-            ERRORS=$(expr $ERRORS + 1)
-        else
-            # Verify we have the expected error types and objects
-            local scrub_output=$(grep "emit_chunk_result: Scrub errors found" $dir/osd.${primary}.log)
-            
-            # Check for expected error types
-            declare -a expected_errors=(
-                "CLONE_MISSING.*obj4"
-                "CLONE_MISSING.*obj5"
-                "SNAPSET_MISSING.*obj2"
-                "EXTRA_CLONES.*obj2"
-                "HEADLESS_CLONE.*obj2"
-                "EXTRA_CLONES.*obj5"
-                "HEADLESS_CLONE.*obj5"
-                "SIZE_MISMATCH.*obj5"
-                "SIZE_MISMATCH.*obj3"
-                "EXTRA_CLONES.*obj6"
-                "HEADLESS_CLONE.*obj6"
-                "EXTRA_CLONES.*obj7"
-                "HEADLESS_CLONE.*obj7"
-                "SNAP_ERROR.*obj8"
-                "SNAPSET_CORRUPTED.*obj15"
-                "SIZE_MISMATCH.*obj10"
-                "SIZE_MISMATCH.*obj14"
-                "EXTRA_CLONES.*obj11"
-                "HEADLESS_CLONE.*obj11"
-                "SIZE_MISMATCH.*obj9"
-                "HEADLESS_CLONE.*obj1"
-            )
-            
-            for expected in "${expected_errors[@]}"; do
-                if ! echo "$scrub_output" | grep -E "$expected" > /dev/null; then
-                    echo "Missing expected error: $expected"
-                    ERRORS=$(expr $ERRORS + 1)
-                fi
-            done
-            
-            # Verify total error count (should be 23 total: 14 + 9)
-            local total_errors=$(echo "$scrub_output" | grep -oP 'num_scrub_errors: \K\d+' | awk '{sum+=$1} END {print sum}')
-            if [ "$total_errors" != "23" ]; then
-                echo "ERROR: Expected 23 total scrub errors, found $total_errors"
-                ERRORS=$(expr $ERRORS + 1)
-            fi
-        fi
+    declare -a err_strings
+    # Crimson emits shard-level messages from log_object_errors() and
+    # snapset-level messages from log_snapset_errors().  The classic
+    # "is missing in clone_overlap/clone_size" and "no 'snapset' attr" and
+    # "clone ignored due to missing snapset" messages are replaced by the
+    # crimson equivalents below.  "N missing clone(s)" is now emitted by
+    # log_snapset_errors().  Snap-mapper repair is now implemented via
+    # PGScrubber::scan_snaps().
+    #
+    # [0]  obj10:1 — clone_overlap cleared → "is missing in clone_overlap" (classic)
+    err_strings[0]="scrub [0-9]*[.]0 .*obj10:.* : is missing in clone_overlap"
+    # [1]  obj5:7 — created without OI attr
+    err_strings[1]="scrub [0-9]*[.]0 .*obj5:7.* : no '_' attr"
+    # [2]  obj5:7 — extra clone (not in snapset)
+    err_strings[2]="scrub [0-9]*[.]0 .*obj5:7.* : is an unexpected clone"
+    # [3]  obj5:4 — on-disk size (18*256=4608) vs OI size (512)
+    err_strings[3]="scrub [0-9]*[.]0 .*obj5:4.* : on disk size [(]4608[)] does not match object info size [(]512[)] adjusted for ondisk to [(]512[)]"
+    # [4]  obj5:head — "expected clone obj5:2" (classic format, from evaluate_snapset)
+    err_strings[4]="scrub [0-9]*[.]0 .*obj5:head.* : expected clone .*obj5:2"
+    # [5]  obj5:head — "expected clone obj5:1" (classic format, from evaluate_snapset)
+    err_strings[5]="scrub [0-9]*[.]0 .*obj5:head.* : expected clone .*obj5:1"
+    # [6]  obj5:head — "2 missing clone(s)" summary (INF)
+    err_strings[6]="scrub [0-9]*[.]0 .*obj5:head.* : 2 missing clone[(]s[)]"
+    # [7]  obj8:head — snapset seq cleared → "snaps.seq not set" (classic)
+    err_strings[7]="scrub [0-9]*[.]0 .*obj8:head.* : snaps.seq not set"
+    # [8]  obj7:1 — extra clone (snapset clones cleared)
+    err_strings[8]="scrub [0-9]*[.]0 .*obj7:1.* : is an unexpected clone"
+    # [9]  obj3:head — on-disk size (15*256=3840) vs OI size (3*256=768)
+    err_strings[9]="scrub [0-9]*[.]0 .*obj3:head.* : on disk size [(]3840[)] does not match object info size [(]768[)] adjusted for ondisk to [(]768[)]"
+    # [10] obj6:1 — extra clone (snapset clones cleared)
+    err_strings[10]="scrub [0-9]*[.]0 .*obj6:1.* : is an unexpected clone"
+    # [11] obj2:head — snapset attr removed → "no 'snapset' attr" (classic)
+    err_strings[11]="scrub [0-9]*[.]0 .*obj2:head.* : no 'snapset' attr"
+    # [12] obj2:7 — clone ignored due to missing snapset (classic)
+    err_strings[12]="scrub [0-9]*[.]0 .*obj2:7.* : clone ignored due to missing snapset"
+    # [13] obj2:4 — clone ignored due to missing snapset (classic)
+    err_strings[13]="scrub [0-9]*[.]0 .*obj2:4.* : clone ignored due to missing snapset"
+    # [14] obj4:head — "expected clone obj4:7" (classic format, from evaluate_snapset)
+    err_strings[14]="scrub [0-9]*[.]0 .*obj4:head.* : expected clone .*obj4:7"
+    # [15] obj4:head — "1 missing clone(s)" summary (INF)
+    err_strings[15]="scrub [0-9]*[.]0 .*obj4:head.* : 1 missing clone[(]s[)]"
+    # [16] obj1:1 — extra clone (head removed, clone remains)
+    err_strings[16]="scrub [0-9]*[.]0 .*obj1:1.* : is an unexpected clone"
+    # [17] obj9:1 — clone_size cleared → "is missing in clone_size" (classic)
+    err_strings[17]="scrub [0-9]*[.]0 .*obj9:1.* : is missing in clone_size"
+    # [18] obj11:1 — extra clone (snapset clones cleared)
+    err_strings[18]="scrub [0-9]*[.]0 .*obj11:1.* : is an unexpected clone"
+    # [19] obj14:1 — clone_size mismatch 1032 vs 1033 → "size 1032 != clone_size 1033" (classic)
+    err_strings[19]="scrub [0-9]*[.]0 .*obj14:1.* : size 1032 != clone_size 1033"
+    # [20] total error count
+    err_strings[20]="[0-9]*[.]0 scrub 20 errors"
+    # [21] obj15:head — snapset attr corrupted
+    err_strings[21]="scrub [0-9]*[.]0 .*obj15:head.* : can't decode 'snapset' attr "
+    # [22] obj16:7 — snap mapper missing entry repaired (implemented via scan_snaps)
+    err_strings[22]="osd[.][0-9]* found snap mapper error on pg 1.0 oid 1:461f8b5e:::obj16:7 snaps missing in mapper, should be: {1, 2, 3, 4, 5, 6, 7} .*.repaired"
 
-        if [ $ERRORS != "0" ]; then
-            echo "TEST FAILED WITH $ERRORS ERRORS"
-            return 1
+    for err_string in "${err_strings[@]}"
+    do
+        if ! grep "$err_string" $dir/osd.${primary}.log > /dev/null;
+        then
+            echo "Missing log message '$err_string'"
+            ERRORS=$(expr $ERRORS + 1)
         fi
-    else
-        echo "Skipping error string validation (getjson mode)"
+    done
+
+    if [ $ERRORS != "0" ];
+    then
+        echo "TEST FAILED WITH $ERRORS ERRORS"
+        return 1
     fi
 
     echo "TEST PASSED"
@@ -885,7 +909,7 @@ function _scrub_snaps_multi() {
     # Since all of the snapshots on the primary is consistent there are no errors here
     if [ $which = "replica" ];
     then
-        scruberrors="14"
+        scruberrors="20"
         jq "$jqfilter" << EOF | python3 -c "$sortkeys" > $dir/checkcsjson
 {
     "epoch": 23,
@@ -894,7 +918,7 @@ function _scrub_snaps_multi() {
 EOF
 
 else
-        scruberrors="29"
+        scruberrors="30"
         jq "$jqfilter" << EOF | python3 -c "$sortkeys" > $dir/checkcsjson
 {
     "epoch": 23,
@@ -1150,35 +1174,7 @@ EOF
 fi
 
     jq "$jqfilter" $dir/json | python3 -c "$sortkeys" > $dir/csjson
-    
-    # Verify that checkcsjson and csjson have the same JSON format (same content, regardless of order)
-    if ! python3 -c "
-import json
-import sys
-
-with open('$dir/checkcsjson', 'r') as f:
-    expected = json.load(f)
-with open('$dir/csjson', 'r') as f:
-    actual = json.load(f)
-
-# Sort both lists by a consistent key to enable comparison
-def sort_key(item):
-    return (item.get('name', ''), str(item.get('snap', '')), item.get('nspace', ''), item.get('locator', ''))
-
-expected_sorted = sorted(expected, key=sort_key)
-actual_sorted = sorted(actual, key=sort_key)
-
-if expected_sorted != actual_sorted:
-    print('ERROR: checkcsjson and csjson have different content', file=sys.stderr)
-    sys.exit(1)
-print('SUCCESS: checkcsjson and csjson have the same format')
-"; then
-        echo "JSON format verification failed"
-        multidiff $dir/checkcsjson $dir/csjson || test $getjson = "yes" || return 1
-        if test $getjson != "yes"; then
-            return 1
-        fi
-    fi
+    multidiff $dir/checkcsjson $dir/csjson || test $getjson = "yes" || return 1
     if test $getjson = "yes"
     then
         jq '.' $dir/json > save1.json
@@ -1235,69 +1231,40 @@ print('SUCCESS: checkcsjson and csjson have the same format')
 
     kill_daemons $dir || return 1
 
-    # Crimson uses structured error reporting in chunk_result_t messages
-    # Check for expected error types and objects in the scrub results
-    if test $getjson != "yes"; then
-        # Extract scrub error messages
-        if ! grep "emit_chunk_result: Scrub errors found" $dir/osd.${primary}.log > /dev/null; then
-            echo "ERROR: No scrub errors found in log"
-            ERRORS=$(expr $ERRORS + 1)
-        else
-            # Verify we have the expected error types and objects
-            local scrub_output=$(grep "emit_chunk_result: Scrub errors found" $dir/osd.${primary}.log)
-            
-            # Check for expected error types (excluding obj1 and obj5:2 which were removed)
-            # Note: Use specific patterns to ensure error and object are paired:
-            # - For main error field: "error: TYPE, object: //name"
-            # - For shard errors: "object: //name ... shard_info_t(error: TYPE"
-            # - For snapset errors: "errors: TYPE, object: //name"
-            declare -a expected_errors=(
-                "obj4.*SHARD_MISSING"
-                "error: SIZE_MISMATCH, object: //obj3"
-                "error: SIZE_MISMATCH, object: //obj5"
-                "HEADLESS_CLONE.*object: //obj5"
-                "error: SNAPSET_INCONSISTENCY, object: //obj6"
-                "errors: EXTRA_CLONES, object: //obj6"
-                "errors: HEADLESS_CLONE, object: //obj6"
-                "error: SNAPSET_INCONSISTENCY, object: //obj7"
-                "errors: EXTRA_CLONES, object: //obj7"
-                "errors: HEADLESS_CLONE, object: //obj7"
-                "error: SNAPSET_INCONSISTENCY, object: //obj8"
-                "errors: SNAP_ERROR, object: //obj8"
-                "error: SNAPSET_INCONSISTENCY, object: //obj13"
-                "error: SNAPSET_INCONSISTENCY, object: //obj10"
-                "errors: SIZE_MISMATCH, object: //obj10"
-                "error: SNAPSET_INCONSISTENCY, object: //obj14"
-                "errors: SIZE_MISMATCH, object: //obj14"
-                "error: SNAPSET_INCONSISTENCY, object: //obj11"
-                "errors: EXTRA_CLONES, object: //obj11"
-                "errors: HEADLESS_CLONE, object: //obj11"
-                "error: SNAPSET_INCONSISTENCY, object: //obj9"
-                "errors: SIZE_MISMATCH, object: //obj9"
-            )
-            
-            for expected in "${expected_errors[@]}"; do
-                if ! echo "$scrub_output" | grep -E "$expected" > /dev/null; then
-                    echo "Missing expected error: $expected"
-                    ERRORS=$(expr $ERRORS + 1)
-                fi
-            done
-            
-            # Verify total error count matches scruberrors variable
-            local total_errors=$(echo "$scrub_output" | grep -oP 'num_scrub_errors: \K\d+' | awk '{sum+=$1} END {print sum}')
-            if [ "$total_errors" != "${scruberrors}" ]; then
-                echo "ERROR: Expected ${scruberrors} total scrub errors, found $total_errors"
-                ERRORS=$(expr $ERRORS + 1)
-            fi
-        fi
-    else
-        echo "Skipping error string validation (getjson mode)"
-    fi
+    declare -a err_strings
+    # Crimson shard-missing format (replicated pool, 2 OSDs):
+    #   "{pgid} shard {shard} {hoid} : missing"  (no "soid" prefix for missing)
+    # Crimson cross-shard size-mismatch format (replica shard vs auth shard OI):
+    #   "{pgid} shard {shard} soid {hoid} : size X != size Y from auth oi ...,
+    #                                        size X != size Y from shard ..."
+    err_strings[0]="[0-9]*[.]0 shard [0-1] .*obj4:7.* : missing"
+    # obj3:head — replica's on-disk size (3840) vs auth OI size (768)
+    err_strings[1]="[0-9]*[.]0 shard [0-1] soid .*obj3:head.* : size 3840 != size 768 from auth oi"
+    err_strings[2]="[0-9]*[.]0 shard [0-1] .*obj5:1.* : missing"
+    err_strings[3]="[0-9]*[.]0 shard [0-1] .*obj5:2.* : missing"
+    # obj5:4 — replica's on-disk size (4608) vs auth OI size (512)
+    err_strings[4]="[0-9]*[.]0 shard [0-1] soid .*obj5:4.* : size 4608 != size 512 from auth oi"
+    err_strings[5]="[0-9]*[.]0 soid .*obj5:7.* : failed to pick suitable object info"
+    err_strings[6]="[0-9]*[.]0 shard [0-1] .*obj1:head.* : missing"
+    err_strings[7]="[0-9]*[.]0 scrub ${scruberrors} errors"
 
-    # Check replica specific messages
+    for err_string in "${err_strings[@]}"
+    do
+        if ! grep "$err_string" $dir/osd.${primary}.log > /dev/null;
+        then
+            echo "Missing log message '$err_string'"
+            ERRORS=$(expr $ERRORS + 1)
+        fi
+    done
+
+    # Check per-OSD snap-mapper repair messages.
+    # In the replica scenario: obj16's snap mapper entries were removed on the
+    # replica OSD — that OSD logs the repair when it runs scan_snaps() locally.
+    # In the primary scenario: the scenario is applied to the primary, so the
+    # primary OSD logs the repair.
     declare -a rep_err_strings
     osd=$(eval echo \$$which)
-    # No replica-specific error strings for Crimson after removing kvstore-tool checks
+    rep_err_strings[0]="osd[.][0-9]* found snap mapper error on pg 1.0 oid 1:461f8b5e:::obj16:7 snaps missing in mapper, should be: {1, 2, 3, 4, 5, 6, 7} .*.repaired"
     for err_string in "${rep_err_strings[@]}"
     do
         if ! grep "$err_string" $dir/osd.${osd}.log > /dev/null;

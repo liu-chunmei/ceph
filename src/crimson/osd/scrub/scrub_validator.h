@@ -27,6 +27,10 @@ struct chunk_validation_policy_t {
   uint64_t omap_key_limit;
   size_t omap_bytes_limit;
 
+  // PG identity and scrub mode description, used to generate classic-format
+  // log messages in evaluate_snapset() (e.g. "scrub 1.0 ... : snaps.seq not set")
+  spg_t pgid;
+  std::string mode_desc;  // "scrub" or "deep-scrub"
 
   bool is_ec() const {
     // FIXME: See scrub_backend in classic for reference.
@@ -74,6 +78,12 @@ struct chunk_result_t {
   std::vector<inconsistent_snapset_wrapper> snapset_errors;
   std::vector<inconsistent_obj_wrapper> object_errors;
 
+  // Classic-compatible log messages emitted while SnapSet data is available
+  // in evaluate_snapset().  Replayed by emit_chunk_result() in pg_scrubber.cc
+  // so the OSD log matches the classic scrubber line for line.
+  // Each entry is (level, message) where level is 'E' (error) or 'I' (info).
+  std::vector<std::pair<char, std::string>> snapset_log_messages;
+
   // Digests computed during deep scrub that must be written back to oi.
   // Populated when auth shard has omap/data digest present but oi does not.
   std::vector<digest_update_t> missing_digest;
@@ -85,9 +95,10 @@ struct chunk_result_t {
   // SNAPSET_INCONSISTENCY in object_errors.
   std::vector<inconsistent_snapset_wrapper> replica_snapset_errors;
 
-  // Map from object name to hobject_t for repair
-  // This preserves the correct hash value for each inconsistent object
-  std::map<std::string, hobject_t> object_hoids;
+  // Map from hobject_t to itself, keyed by full object identity (including snap).
+  // Using the full hobject_t as key avoids collisions when multiple clones of the
+  // same base object each have errors (e.g. obj5:1 and obj5:2 both missing).
+  std::map<hobject_t, hobject_t> object_hoids;
 
   bool has_errors() const {
     return !snapset_errors.empty() || !object_errors.empty() ||

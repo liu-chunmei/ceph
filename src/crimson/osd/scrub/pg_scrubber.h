@@ -367,12 +367,12 @@ private:
    * Spawns async repair operations in the background.
    *
    * @param object_errors Vector of inconsistent objects with error details
-   * @param object_hoids Map from object name to hobject_t with correct hash
+   * @param object_hoids Map from full hobject_t to hobject_t with correct hash
    * @return Number of object copies being repaired
    */
   int scrub_process_inconsistent(
     const std::vector<inconsistent_obj_wrapper>& object_errors,
-    const std::map<std::string, hobject_t>& object_hoids);
+    const std::map<hobject_t, hobject_t>& object_hoids);
 
   /**
    * repair_object
