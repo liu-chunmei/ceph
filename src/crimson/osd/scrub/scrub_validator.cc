@@ -268,7 +268,7 @@ librados::obj_err_t compare_candidate_to_authoritative(
       // Both successfully decoded - compare raw SS_ATTR contents
       auto aiter = auth_si.attrs.find(SS_ATTR);
       auto citer = cand_si.attrs.find(SS_ATTR);
-      
+
       if (aiter != auth_si.attrs.end() && citer != cand_si.attrs.end()) {
         if (!aiter->second.contents_equal(citer->second)) {
           ret.errors |= obj_err_t::SNAPSET_INCONSISTENCY;
@@ -278,7 +278,9 @@ librados::obj_err_t compare_candidate_to_authoritative(
         ret.errors |= obj_err_t::SNAPSET_INCONSISTENCY;
       }
     }
-    // If either side has missing/corrupted, skip comparison (handled elsewhere)
+    // If either side has missing/corrupted, the shard-level error is already
+    // in cand.shard_info.errors and will surface via union_shards — no need
+    // to set an additional object-level SNAPSET_INCONSISTENCY.
   }
 
   if (policy.is_ec()) {
@@ -600,9 +602,28 @@ object_evaluation_t evaluate_object(
     !is_single_copy && has_snapset_shard_errors && !has_selected_auth &&
     !has_reportable_shard_errors;
 
+  // In replicated (non-single-copy) pools, when a REPLICA shard (not the primary)
+  // has SNAPSET_MISSING or SNAPSET_CORRUPTED, that shard-level error must appear
+  // in object_errors so the per-shard error count matches classic OSD behavior
+  // (shard_map[srd].errors != 0 → shallow_errors++, scrub_backend.cc:1334-1341).
+  // Primary-shard snapset errors are already counted via snapset_errors (they go
+  // to ret.snapset_errors in the snapshot-validation path, not replica_snapset_errors),
+  // so we must not double-count them here.
+  bool has_replica_snapset_shard_errors = !is_single_copy && std::any_of(
+    shards.begin(), shards.end(),
+    [](const auto &cand) {
+      if (cand.is_primary()) return false;
+      const auto shard_errors = cand.shard_info.errors;
+      const auto snapset_mask =
+        static_cast<uint64_t>(librados::err_t::SNAPSET_MISSING) |
+        static_cast<uint64_t>(librados::err_t::SNAPSET_CORRUPTED);
+      return (shard_errors & snapset_mask) != 0;
+    });
+
   if (has_comparison_errors ||
       should_promote_snapset_only_error ||
-      (has_reportable_shard_errors && !is_single_copy)) {
+      (has_reportable_shard_errors && !is_single_copy) ||
+      has_replica_snapset_shard_errors) {
     for (auto &eval : shards) {
       iow.shards.emplace(
  librados::osd_shard_t{eval.source.osd, static_cast<int8_t>(eval.source.shard)},
@@ -634,10 +655,16 @@ using all_clones_list_t = std::list<clone_info_t>;
 struct snapset_evaluation_result_t {
   std::optional<inconsistent_snapset_wrapper> head_error;
   std::vector<inconsistent_snapset_wrapper> clone_errors;
+  // Classic-compatible log messages generated while the SnapSet is in scope.
+  // ERR messages first, then INF messages (N missing clone(s) summary).
+  // Stored as (level, message) pairs where level is 'E' or 'I'.
+  std::vector<std::pair<char, std::string>> log_messages;
 };
 
 snapset_evaluation_result_t evaluate_snapset(
   DoutPrefixProvider &dpp,
+  const spg_t &pgid,
+  const std::string &mode_desc,
   const hobject_t &hoid,
   const std::optional<SnapSet> &maybe_snapset,
   snapset_status_t snapset_status,
@@ -672,6 +699,10 @@ snapset_evaluation_result_t evaluate_snapset(
       }
       clone_error.set_headless();
       result.clone_errors.push_back(clone_error);
+      // Classic: "clone ignored due to missing snapset"
+      result.log_messages.emplace_back('E',
+        fmt::format("{} {} {} : clone ignored due to missing snapset",
+                    mode_desc, pgid, clone->hoid));
     }
     result.head_error = ret;
     return result;
@@ -697,9 +728,15 @@ snapset_evaluation_result_t evaluate_snapset(
   
   auto snapset = *maybe_snapset;
 
-  // Check head size mismatch
+  // Check head size mismatch vs OI-recorded size.
+  // Classic: "on disk size (X) does not match object info size (Y) adjusted for ondisk to (Z)"
   if (head_oi && head_actual_size != head_oi->size) {
     ret.set_size_mismatch();
+    result.log_messages.emplace_back('E',
+      fmt::format("{} {} {} : on disk size ({}) does not match object info size ({}) "
+                  "adjusted for ondisk to ({})",
+                  mode_desc, pgid, hoid,
+                  head_actual_size, head_oi->size, head_oi->size));
   }
 
   // When snapset exists but clones list is empty while clones exist,
@@ -762,8 +799,12 @@ snapset_evaluation_result_t evaluate_snapset(
   }
 
   // Check for snapset_error: seq == 0 but has clones
+  // Classic: "scrub {pgid} {hoid} : snaps.seq not set"
   if (!snapset.clones.empty() && snapset.seq == 0) {
     ret.set_snapset_error();
+    result.log_messages.emplace_back('E',
+      fmt::format("{} {} {} : snaps.seq not set",
+                  mode_desc, pgid, hoid));
   }
 
   std::vector<clone_info_t> actual_clones(clones.begin(), clones.end());
@@ -813,17 +854,48 @@ snapset_evaluation_result_t evaluate_snapset(
     bool clone_error = false;
     auto size_it = snapset.clone_size.find(snap);
     if (size_it == snapset.clone_size.end()) {
-      if (it->has_info()) clone_error = true;
+      if (it->has_info()) {
+        clone_error = true;
+        // Classic: "is missing in clone_size"
+        result.log_messages.emplace_back('E',
+          fmt::format("{} {} {} : is missing in clone_size",
+                      mode_desc, pgid, it->hoid));
+      }
     } else {
       // Prefer observed clone size from scrub map. This catches data-size
       // corruption even when object_info still carries the old logical size.
+      bool size_mismatch = false;
       if (it->size.has_value()) {
+        // Classic: "on disk size (X) does not match object info size (Y)..."
+        // emitted when the on-disk size differs from the OI-recorded size.
+        if (it->oi && *it->size != it->oi->size) {
+          result.log_messages.emplace_back('E',
+            fmt::format("{} {} {} : on disk size ({}) does not match object info size ({}) "
+                        "adjusted for ondisk to ({})",
+                        mode_desc, pgid, it->hoid,
+                        *it->size, it->oi->size, it->oi->size));
+        }
         if (size_it->second != *it->size) {
-          clone_error = true;
+          size_mismatch = true;
+          // Classic: "size X != clone_size Y" (using oi->size as classic does)
+          uint64_t oi_size = it->oi ? it->oi->size : *it->size;
+          result.log_messages.emplace_back('E',
+            fmt::format("{} {} {} : size {} != clone_size {}",
+                        mode_desc, pgid, it->hoid,
+                        oi_size, size_it->second));
         }
       } else if (!it->has_info() || size_it->second != it->oi->size) {
-        clone_error = true;
+        size_mismatch = true;
+        if (it->has_info()) {
+          // Classic: "size X != clone_size Y"
+          result.log_messages.emplace_back('E',
+            fmt::format("{} {} {} : size {} != clone_size {}",
+                        mode_desc, pgid, it->hoid,
+                        it->oi->size, size_it->second));
+        }
       }
+      if (size_mismatch) clone_error = true;
+
       // Check overlap consistency
       auto overlap_it = snapset.clone_overlap.find(snap);
       if (overlap_it != snapset.clone_overlap.end()) {
@@ -836,7 +908,13 @@ snapset_evaluation_result_t evaluate_snapset(
           remaining -= it2.get_len();
         }
       } else {
-        if (it->has_info()) clone_error = true;
+        if (it->has_info()) {
+          clone_error = true;
+          // Classic: "is missing in clone_overlap"
+          result.log_messages.emplace_back('E',
+            fmt::format("{} {} {} : is missing in clone_overlap",
+                        mode_desc, pgid, it->hoid));
+        }
       }
     }
     if (clone_error) {
@@ -847,7 +925,27 @@ snapset_evaluation_result_t evaluate_snapset(
   }
   // Apply missing and extra clones in descending order to match expected output
   std::sort(missing_snaps.begin(), missing_snaps.end(), std::greater<snapid_t>());
-  for (auto snap : missing_snaps) ret.set_clone_missing(snap);
+  // Classic: one "expected clone {clone} N missing" ERR per missing clone
+  // (N increments from 1 as each missing clone is found, matching classic's
+  //  m_missing counter in ScrubBackend::process_clones_to()), then an INF
+  // "N missing clone(s)" summary — both emitted from the head hoid.
+  {
+    int missing_count = 0;
+    for (auto snap : missing_snaps) {
+      ret.set_clone_missing(snap);
+      ++missing_count;
+      hobject_t clone_hoid = hoid;
+      clone_hoid.snap = snap;
+      result.log_messages.emplace_back('E',
+        fmt::format("{} {} {} : expected clone {} {} missing",
+                    mode_desc, pgid, hoid, clone_hoid, missing_count));
+    }
+    if (missing_count > 0) {
+      result.log_messages.emplace_back('I',
+        fmt::format("{} {} {} : {} missing clone(s)",
+                    mode_desc, pgid, hoid, missing_count));
+    }
+  }
   std::sort(extra_snaps.begin(), extra_snaps.end(), std::greater<snapid_t>());
   for (auto snap : extra_snaps) ret.set_clone(snap);
 
@@ -941,7 +1039,7 @@ chunk_result_t validate_chunk(
     object_evaluation_t eval = evaluate_object(policy, oid, in);
     if (eval.inconsistency) {
       ret.object_errors.push_back(*eval.inconsistency);
-      ret.object_hoids[oid.oid.name] = oid;
+      ret.object_hoids[oid] = oid;
     }
 
     // Check whether we need to write back computed digests to oi.
@@ -1097,6 +1195,8 @@ chunk_result_t validate_chunk(
 
       auto result = evaluate_snapset(
         dpp,
+        policy.pgid,
+        policy.mode_desc,
         oid,
         shard_snapset,
         shard_snapset_status,
@@ -1104,6 +1204,13 @@ chunk_result_t validate_chunk(
         shard_clones,
         shard_head_oi,
         shard_head_size);
+      // Accumulate classic-format log messages only from the primary shard
+      // (replica shard messages would be duplicates and are not expected by tests)
+      if (is_primary) {
+        for (auto &msg : result.log_messages) {
+          ret.snapset_log_messages.emplace_back(std::move(msg));
+        }
+      }
 
       // Route errors: primary shard → snapset_errors (stored + counted);
       //               replica shards → replica_snapset_errors (logged only).
@@ -1234,15 +1341,55 @@ chunk_result_t validate_chunk(
     add_object_to_stats(policy, oid, evals.at(oid), head_snapset, &ret.stats);
   }
 
+  // Count errors matching classic OSD's scrub_backend.cc:
+  //   (a) Per-shard: +1 for each shard whose shard_info has shallow/deep errors.
+  //       Classic: shard_map[srd].errors != 0 → shallow_errors++ or deep_errors++
+  //       (scrub_backend.cc:1334-1341, 1372)
+  //   (b) Per-object: +1 if the object-level error flags (iow.errors) have
+  //       shallow/deep errors (e.g. SIZE_MISMATCH, SNAPSET_INCONSISTENCY).
+  //       Classic: object_error.has_shallow_errors() → shallow_errors++
+  //       (scrub_backend.cc:1041-1045)
+  // These two are additive — an object with a shard-level SIZE_MISMATCH_INFO
+  // AND object-level SIZE_MISMATCH counts as 2 errors (one per category).
   for (const auto &i: ret.object_errors) {
-    ret.stats.num_shallow_scrub_errors +=
-      (i.has_shallow_errors() || i.union_shards.has_shallow_errors());
-    ret.stats.num_deep_scrub_errors +=
-      (i.has_deep_errors() || i.union_shards.has_deep_errors());
+    for (const auto &[shard_id, shard_info] : i.shards) {
+      if (shard_info.has_shallow_errors()) {
+        ++ret.stats.num_shallow_scrub_errors;
+      } else if (shard_info.has_deep_errors()) {
+        ++ret.stats.num_deep_scrub_errors;
+      }
+    }
+    if (i.has_shallow_errors()) {
+      ++ret.stats.num_shallow_scrub_errors;
+    } else if (i.has_deep_errors()) {
+      ++ret.stats.num_deep_scrub_errors;
+    }
   }
-  ret.stats.num_shallow_scrub_errors += ret.snapset_errors.size();
+  // Count only snapset entries that actually carry errors (entries with
+  // errors==0 are head records emitted purely to carry the snapset payload
+  // for clone errors, and must not inflate the error count).
+  for (const auto &se : ret.snapset_errors) {
+    if (se.errors) {
+      ++ret.stats.num_shallow_scrub_errors;
+    }
+  }
   ret.stats.num_scrub_errors = ret.stats.num_shallow_scrub_errors +
     ret.stats.num_deep_scrub_errors;
+
+  // Sort snapset_errors to match the classic OSD's omap-key order:
+  // (snap ascending, then name ascending).  The classic ScrubStore writes
+  // all snapset entries with the same fixed hash (0x77777777), so the omap
+  // key reduces to (snap_hex, name) in lexicographic order — equivalent to
+  // numeric snap ascending then name ascending.  Maintaining this order
+  // ensures that rados list-inconsistent-snapset output matches expectations.
+  std::sort(ret.snapset_errors.begin(), ret.snapset_errors.end(),
+    [](const inconsistent_snapset_wrapper &a,
+       const inconsistent_snapset_wrapper &b) {
+      if (a.object.snap != b.object.snap) {
+        return a.object.snap < b.object.snap;
+      }
+      return a.object.name < b.object.name;
+    });
 
   return ret;
 }

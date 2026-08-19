@@ -1,6 +1,7 @@
 // -*- mode:C++; tab-width:8; c-basic-offset:2; indent-tabs-mode:nil -*-
 // vim: ts=8 sw=2 sts=2 expandtab expandtab
 
+#include <algorithm>
 #include <fmt/ranges.h>
 #include <seastar/core/sleep.hh>
 
@@ -1052,7 +1053,9 @@ chunk_validation_policy_t PGScrubber::get_policy() const
     crimson::common::local_conf().get_val<Option::size_t>(
       "osd_deep_scrub_large_omap_object_value_sum_threshold"),
     crimson::common::local_conf().get_val<uint64_t>(
-      "osd_deep_scrub_large_omap_object_key_threshold")
+      "osd_deep_scrub_large_omap_object_key_threshold"),
+    pg.get_pgid(),
+    m_is_deep ? std::string("deep-scrub") : std::string("scrub")
   };
 }
 
@@ -1239,8 +1242,8 @@ void PGScrubber::log_object_errors(const inconsistent_obj_wrapper& obj_error,
     }
 
     if (shard_info.has_snapset_missing()) {
-      auto errorstr = fmt::format("{} shard {} soid {} : candidate had a missing snapset key",
-                                  pgid, pg_shard, hoid);
+      auto errorstr = fmt::format("{} {} {} : no '{}' attr",
+                                  m_mode_desc, pgid, hoid, SS_ATTR);
       ERRORDPP("{}", pg, errorstr);
       pg.get_clog_error() << errorstr;
     }
@@ -1253,7 +1256,8 @@ void PGScrubber::log_object_errors(const inconsistent_obj_wrapper& obj_error,
     }
 
     if (shard_info.has_obj_size_info_mismatch()) {
-      // "candidate size X info size Y mismatch": shard's physical size vs its own OI size.
+      // Classic: "on disk size (X) does not match object info size (Y) adjusted for ondisk to (Z)"
+      // For replicated pools Z == Y; EC is not yet supported (FIXME).
       uint64_t own_oi_size = 0;
       auto oi_it = shard_info.attrs.find(OI_ATTR);
       if (oi_it != shard_info.attrs.end()) {
@@ -1264,9 +1268,11 @@ void PGScrubber::log_object_errors(const inconsistent_obj_wrapper& obj_error,
           own_oi_size = oi.size;
         } catch (...) {}
       }
-      auto errorstr = fmt::format("{} shard {} soid {} : candidate size {} info size {} mismatch",
-                                  pgid, pg_shard, hoid,
-                                  shard_info.size, own_oi_size);
+      // logical_to_ondisk_size returns own_oi_size for replicated pools
+      auto errorstr = fmt::format(
+        "{} {} {} : on disk size ({}) does not match object info size ({}) adjusted for ondisk to ({})",
+        m_mode_desc, pgid, hoid,
+        shard_info.size, own_oi_size, own_oi_size);
       ERRORDPP("{}", pg, errorstr);
       pg.get_clog_error() << errorstr;
     }
@@ -1552,59 +1558,65 @@ void PGScrubber::log_snapset_errors(const inconsistent_snapset_wrapper& snapset_
 {
   LOG_PREFIX(PGScrubber::log_snapset_errors);
   const auto pgid = pg.get_pgid();
+  const char* prefix = m_is_deep ? "deep-scrub" : "scrub";
 
-  // Log snapset inconsistent error - matches classic OSD format
-  if (snapset_error.snapset_error()) {
-    auto errorstr = fmt::format("{} soid {} : snapset inconsistent",
-                                pgid, snapset_error.object.name);
+  // Build the hobject_t from the object_id fields.
+  hobject_t hoid;
+  hoid.oid.name = snapset_error.object.name;
+  hoid.set_key(snapset_error.object.locator);
+  hoid.nspace = snapset_error.object.nspace;
+  hoid.snap = snapid_t{snapset_error.object.snap};
+  hoid.pool = pgid.pgid.pool();
+
+  // "no 'snapset' attr" — head with SNAPSET_MISSING.
+  // Classic: "scrub {pgid} {head_hoid} : no 'snapset' attr"
+  if (snapset_error.snapset_missing()) {
+    auto errorstr = fmt::format("{} {} {} : no '{}' attr",
+                                prefix, pgid, hoid, SS_ATTR);
     ERRORDPP("{}", pg, errorstr);
     pg.get_clog_error() << errorstr;
   }
-  
-  // Log unexpected clone errors (extra clones that shouldn't exist)
+
+  // "can't decode 'snapset' attr" — head with SNAPSET_CORRUPTED.
+  // Classic: "scrub {pgid} {head_hoid} : can't decode 'snapset' attr <err>"
+  if (snapset_error.snapset_corrupted()) {
+    auto errorstr = fmt::format("{} {} {} : can't decode '{}' attr decode error",
+                                prefix, pgid, hoid, SS_ATTR);
+    ERRORDPP("{}", pg, errorstr);
+    pg.get_clog_error() << errorstr;
+  }
+
+  // "is an unexpected clone" — two sources:
+  //   (a) extra clones listed in the HEAD wrapper's clones vector.
+  //       Classic: "scrub {pgid} {clone_hoid} : is an unexpected clone"
+  //   (b) orphan headless clones (head absent from object_set); their
+  //       snapset_error entry is a clone entry with headless() set.
   for (const auto& clone_snap : snapset_error.clones) {
-    // Construct hobject_t for the clone
     hobject_t clone_obj;
     clone_obj.oid.name = snapset_error.object.name;
     clone_obj.set_key(snapset_error.object.locator);
     clone_obj.nspace = snapset_error.object.nspace;
     clone_obj.snap = clone_snap;
     clone_obj.pool = pgid.pgid.pool();
-    
+
     auto errorstr = fmt::format("scrub {} {} : is an unexpected clone",
                                 pgid, clone_obj);
     ERRORDPP("{}", pg, errorstr);
     pg.get_clog_error() << errorstr;
   }
-  
-  // Log missing clone errors
-  for (const auto& missing_snap : snapset_error.missing) {
-    // Construct hobject_t for the missing clone
-    hobject_t missing_obj;
-    missing_obj.oid.name = snapset_error.object.name;
-    missing_obj.set_key(snapset_error.object.locator);
-    missing_obj.nspace = snapset_error.object.nspace;
-    missing_obj.snap = missing_snap;
-    missing_obj.pool = pgid.pgid.pool();
-    
-    auto errorstr = fmt::format("scrub {} {} : missing clone",
-                                pgid, missing_obj);
+  // (b): orphan headless clone entry — the snap is in the object itself.
+  if (snapset_error.headless() && hoid.is_snap()) {
+    auto errorstr = fmt::format("scrub {} {} : is an unexpected clone",
+                                pgid, hoid);
     ERRORDPP("{}", pg, errorstr);
     pg.get_clog_error() << errorstr;
   }
-  
-  // Log size mismatch errors
-  if (snapset_error.size_mismatch()) {
-    auto errorstr = fmt::format("{} soid {} : size mismatch in snapset",
-                                pgid, snapset_error.object.name);
-    ERRORDPP("{}", pg, errorstr);
-    pg.get_clog_error() << errorstr;
-  }
-  
-  // Log headless clone errors
-  if (snapset_error.headless()) {
-    auto errorstr = fmt::format("{} soid {} : headless clone",
-                                pgid, snapset_error.object.name);
+
+  // "no '_' attr" — clone with INFO_MISSING (no OI attr found on any shard).
+  // Classic: "scrub {pgid} {clone_hoid} : no '_' attr"
+  if (snapset_error.info_missing() && hoid.is_snap()) {
+    auto errorstr = fmt::format("{} {} {} : no '{}' attr",
+                                prefix, pgid, hoid, OI_ATTR);
     ERRORDPP("{}", pg, errorstr);
     pg.get_clog_error() << errorstr;
   }
@@ -1625,12 +1637,35 @@ void PGScrubber::emit_chunk_result(
     // This matches the classic OSD behavior where individual object errors
     // are logged to the cluster log
     for (const auto& obj_error : result.object_errors) {
-      auto hoid_it = result.object_hoids.find(obj_error.object.name);
+      // Look up the full hobject_t by matching name + snap + nspace.
+      // The map is keyed by hobject_t so we can't use a name-only lookup;
+      // find the first entry whose hobject_t components match the error's
+      // object_id fields.
+      auto hoid_it = std::find_if(
+        result.object_hoids.begin(), result.object_hoids.end(),
+        [&obj_error](const auto& kv) {
+          return kv.first.oid.name == obj_error.object.name &&
+                 kv.first.snap == snapid_t{obj_error.object.snap} &&
+                 kv.first.nspace == obj_error.object.nspace;
+        });
       if (hoid_it != result.object_hoids.end()) {
         log_object_errors(obj_error, hoid_it->second);
       }
     }
-    
+
+    // Replay classic-format snapset log messages generated in evaluate_snapset()
+    // while the SnapSet data was in scope.  These match the line-for-line output
+    // of classic's scrub_backend.cc and are what the test scripts grep for.
+    for (const auto& [level, msg] : result.snapset_log_messages) {
+      if (level == 'I') {
+        INFODPP("{}", pg, msg);
+        pg.get_clog_info() << msg;
+      } else {
+        ERRORDPP("{}", pg, msg);
+        pg.get_clog_error() << msg;
+      }
+    }
+
     // Log snapset errors (primary-shard errors, stored + counted)
     for (const auto& snapset_error : result.snapset_errors) {
       log_snapset_errors(snapset_error);
@@ -1739,7 +1774,7 @@ void PGScrubber::on_digest_update_complete(uint64_t generation)
 
 int PGScrubber::scrub_process_inconsistent(
   const std::vector<inconsistent_obj_wrapper>& object_errors,
-  const std::map<std::string, hobject_t>& object_hoids)
+  const std::map<hobject_t, hobject_t>& object_hoids)
 {
   LOG_PREFIX(PGScrubber::scrub_process_inconsistent);
   DEBUGDPP("Processing {} inconsistent objects for repair",
@@ -1748,8 +1783,14 @@ int PGScrubber::scrub_process_inconsistent(
   int fixed_count = 0;
   
   for (const auto& obj_error : object_errors) {
-    // Get the hobject_t from the map - it has the correct hash
-    auto it = object_hoids.find(obj_error.object.name);
+    // Find the full hobject_t by matching name + snap + nspace.
+    auto it = std::find_if(
+      object_hoids.begin(), object_hoids.end(),
+      [&obj_error](const auto& kv) {
+        return kv.first.oid.name == obj_error.object.name &&
+               kv.first.snap == snapid_t{obj_error.object.snap} &&
+               kv.first.nspace == obj_error.object.nspace;
+      });
     if (it == object_hoids.end()) {
       ERRORDPP("Could not find hobject_t for inconsistent object: name={}",
                pg, obj_error.object.name);
@@ -1846,7 +1887,20 @@ void PGScrubber::emit_scrub_result(
 {
   LOG_PREFIX(PGScrubber::emit_scrub_result);
   DEBUGDPP("objects_scrubbed: {}", pg, m_objects_scrubbed_in_chunk);
-  
+
+  // Sort snapset errors to match classic OSD's omap-key order across all chunks:
+  // (snap ascending, then name ascending).  Per-chunk sort was already applied in
+  // validate_chunk, but cross-chunk ordering requires a final global sort here
+  // once all chunks have been accumulated into m_stored_snapset_errors.
+  std::sort(m_stored_snapset_errors.begin(), m_stored_snapset_errors.end(),
+    [](const inconsistent_snapset_wrapper &a,
+       const inconsistent_snapset_wrapper &b) {
+      if (a.object.snap != b.object.snap) {
+        return a.object.snap < b.object.snap;
+      }
+      return a.object.name < b.object.name;
+    });
+
   // Log repair results if this was a repair scrub
   if (m_is_repair && m_fixed_count > 0) {
     INFODPP("Scrub repair completed: {} object copies fixed", pg, m_fixed_count);

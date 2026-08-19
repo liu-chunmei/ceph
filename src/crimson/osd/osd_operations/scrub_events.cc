@@ -209,11 +209,12 @@ ScrubScan::ifut<> ScrubScan::run(PG &pg)
       ghobject_t(object, ghobject_t::NO_GEN, pg.get_pgid().shard));
   }
 
+  // Always run scan_snaps on every OSD (both primary and replica) so that
+  // snap-mapper inconsistencies are detected and repaired locally regardless
+  // of which shard holds the corrupt mapper entries.
+  pg.scrubber.scan_snaps(ret);
+
   if (local) {
-    // Primary path: validate and repair the local SnapMapper before submitting
-    // the scan result.  Runs only on the primary to avoid cleaning up snap
-    // mapper entries that the test wants to inspect via crimson-objectstore-tool.
-    pg.scrubber.scan_snaps(ret);
     DEBUGDPP("complete, submitting local event", pg);
     pg.scrubber.handle_event(
       scrub::ScrubContext::scan_range_complete_t(
@@ -230,9 +231,9 @@ ScrubScan::ifut<> ScrubScan::run(PG &pg)
       scrub::ScrubContext::generate_and_submit_chunk_result_complete_t{});
     co_await interruptor::make_interruptible(
       pg.shard_services.send_to_osd(
-	pg.get_primary().osd,
-	std::move(m),
-	pg.get_osdmap_epoch()));
+ pg.get_primary().osd,
+ std::move(m),
+ pg.get_osdmap_epoch()));
   }
 }
 
