@@ -1405,22 +1405,45 @@ chunk_result_t validate_chunk(
     }
   }
   // Count replica-shard snapset errors (SNAPSET_MISSING or SNAPSET_CORRUPTED)
-  // only when the corresponding head object was NOT promoted into object_errors
-  // by has_replica_snapset_shard_errors.  When an object IS in object_errors its
-  // replica shard errors are already counted by the per-shard loop above, so
-  // counting them here again would double-count.
+  // only when the primary shard is ALSO unable to provide a clean snapset
+  // (i.e. no shard has selected_oi=true for that head object).
+  //
+  // When the primary CAN decode its snapset (selected_oi exists), the replica's
+  // snapset attr error is already counted via the per-shard loop above
+  // (has_replica_snapset_shard_errors promotes the object into object_errors and
+  // the shard's SNAPSET_MISSING/CORRUPTED is incremented there).  Adding it here
+  // again would double-count (obj2, obj15 in the snaps-replica test).
+  //
+  // When NO shard has selected_oi=true (ROBJ16 in the repair test: both OSD0 and
+  // OSD1 have snapset attr errors), the replica's shard error is still counted by
+  // the per-shard loop, but the no-auth loop above adds one extra count for the
+  // "failed to pick suitable object info" error.  In that case classic scrub also
+  // increments shallow_errors once from _scan_snaps for the unreadable snapset;
+  // we replicate that by counting the replica_snapset_errors entry here when the
+  // corresponding head has no selected_oi shard.
+  //
   // Note: inconsistent_snapset_t uses its own enum (SNAPSET_MISSING=1<<0,
   // SNAPSET_CORRUPTED=1<<1), distinct from err_t::SNAPSET_MISSING (1<<16).
-  // Classic scrub counts replica-path snapset attr failures even when the head
-  // is also present in object_errors, so count them unconditionally here.
   {
+    // Build a set of head names whose object_errors entry has a selected_oi shard.
+    // For those objects the replica shard error is already counted; skip them.
+    std::set<std::string> heads_with_selected_oi;
+    for (const auto &i : ret.object_errors) {
+      if (i.object.snap != CEPH_NOSNAP) continue;
+      const bool has_sel = std::any_of(
+        i.shards.begin(), i.shards.end(),
+        [](const auto &p) { return p.second.selected_oi; });
+      if (has_sel) {
+        heads_with_selected_oi.insert(i.object.name);
+      }
+    }
     constexpr uint64_t snapset_attr_errors =
       static_cast<uint64_t>(librados::inconsistent_snapset_t::SNAPSET_MISSING) |
       static_cast<uint64_t>(librados::inconsistent_snapset_t::SNAPSET_CORRUPTED);
     for (const auto &se : ret.replica_snapset_errors) {
-      if (se.errors & snapset_attr_errors) {
-        ++ret.stats.num_shallow_scrub_errors;
-      }
+      if (!(se.errors & snapset_attr_errors)) continue;
+      if (heads_with_selected_oi.count(se.object.name)) continue;
+      ++ret.stats.num_shallow_scrub_errors;
     }
   }
   for (const auto &i : ret.object_errors) {
