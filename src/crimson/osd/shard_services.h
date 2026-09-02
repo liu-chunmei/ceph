@@ -586,6 +586,15 @@ public:
       });
   }
 
+  /// Returns the store_index for the PG that owns pgid, or META_STORE_INDEX
+  /// if the mapping is not yet known (falls back gracefully).
+  seastar::future<store_index_t> get_pg_store_index(spg_t pgid) {
+    return pg_to_shard_mapping.get_or_create_pg_mapping(pgid).then(
+      [](std::pair<core_id_t, store_index_t> mapping) {
+        return mapping.second;
+      });
+  }
+
   auto remove_pg(spg_t pgid) {
     local_state.pg_map.remove_pg(pgid);
     return pg_to_shard_mapping.remove_pg_mapping(pgid);
