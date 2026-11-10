@@ -1332,7 +1332,10 @@ public:
     LOG_PREFIX(Cache::alloc_new_non_data_extent);
     SUBTRACET(seastore_cache, "allocate {} 0x{:x}B, opt.hint={}, gen={}",
               t, T::TYPE, length, opt.hint, rewrite_gen_printer_t{opt.gen});
+    auto alloc_start = std::chrono::steady_clock::now();
     auto result = epm.alloc_new_non_data_extent(t, T::TYPE, length, opt);
+    t.get_phase_durations().alloc_data +=
+      std::chrono::steady_clock::now() - alloc_start;
     ExtentPlacementManager::alloc_fail_t fail_status = ExtentPlacementManager::alloc_fail_t::none;
     if (!result) {
       if (epm.is_full()) {
@@ -1377,7 +1380,10 @@ public:
     LOG_PREFIX(Cache::alloc_new_data_extents);
     SUBTRACET(seastore_cache, "allocate {} 0x{:x}B, hint={}, gen={}",
               t, T::TYPE, length, opt.hint, rewrite_gen_printer_t{opt.gen});
+    auto alloc_start = std::chrono::steady_clock::now();
     auto results = epm.alloc_new_data_extents(t, T::TYPE, length, opt);
+    t.get_phase_durations().alloc_data +=
+      std::chrono::steady_clock::now() - alloc_start;
     ExtentPlacementManager::alloc_fail_t fail_status = ExtentPlacementManager::alloc_fail_t::none;
     if (results.empty()) {
       if (epm.is_full()) {
