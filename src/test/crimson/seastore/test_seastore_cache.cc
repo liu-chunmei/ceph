@@ -158,10 +158,11 @@ TEST_F(cache_test_t, test_addr_fixup)
     int csum = 0;
     {
       auto t = get_transaction();
-      auto extent = cache->alloc_new_non_data_extent<TestBlockPhysical>(
+      auto [extent, status] = cache->alloc_new_non_data_extent<TestBlockPhysical>(
 	*t,
 	TestBlockPhysical::SIZE,
-	{placement_hint_t::HOT, 0});
+	{.hint = placement_hint_t::HOT, .gen = 0});
+      ASSERT_TRUE(extent);
       extent->set_contents('c');
       csum = extent->calc_crc32c();
       submit_transaction(std::move(t)).get();
@@ -188,10 +189,11 @@ TEST_F(cache_test_t, test_dirty_extent)
     {
       // write out initial test block
       auto t = get_transaction();
-      auto extent = cache->alloc_new_non_data_extent<TestBlockPhysical>(
+      auto [extent, status] = cache->alloc_new_non_data_extent<TestBlockPhysical>(
 	*t,
 	TestBlockPhysical::SIZE,
-	{placement_hint_t::HOT, 0});
+	{.hint = placement_hint_t::HOT, .gen = 0});
+      ASSERT_TRUE(extent);
       extent->set_contents('c');
       csum = extent->calc_crc32c();
       auto reladdr = extent->get_paddr();

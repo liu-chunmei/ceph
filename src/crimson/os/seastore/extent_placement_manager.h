@@ -473,6 +473,9 @@ public:
     bool is_tracked;
     paddr_t paddr_hint = P_ADDR_NULL;
     write_policy_t write_policy = write_policy_t::WRITE_BACK;
+    // If true, buffers are zero-filled (for clone-range/zero paths)
+    // If false, buffers are uninitialized (for data paths where caller fully overwrites)
+    bool zero_fill = true;
 #ifdef UNIT_TESTS_BUILT
     std::optional<paddr_t> external_paddr = std::nullopt;
 #endif
@@ -563,7 +566,10 @@ public:
           if (max_data_allocation_size) {
             len = std::min(max_data_allocation_size, len);
           }
-          auto bp = create_extent_ptr_zero(len);
+          // Use zero_fill flag to skip zeroing on hot data path (~100ns/4KiB saved)
+          auto bp = opt.zero_fill ?
+                    create_extent_ptr_zero(len) :
+                    create_extent_ptr_rand(len);
           auto start = ext.start.is_delayed()
                         ? ext.start
                         : ext.start + (ext.len - left);

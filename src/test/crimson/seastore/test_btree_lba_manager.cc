@@ -327,10 +327,16 @@ struct lba_btree_test : btree_test_base {
     ceph_assert(check.count(addr) == 0);
     check.emplace(addr, get_map_val(len, TestBlock::TYPE));
     lba_btree_update([=, this](auto &btree, auto &t) {
-      auto extents = cache->alloc_new_data_extents<TestBlock>(
+      auto [extents, status] = cache->alloc_new_data_extents<TestBlock>(
 	  t, TestBlock::SIZE,
-	  {placement_hint_t::HOT, 0, false, P_ADDR_NULL,
-	   write_policy_t::WRITE_BACK, get_paddr()});
+	  {.hint = placement_hint_t::HOT,
+	   .gen = 0,
+	   .is_tracked = false,
+	   .paddr_hint = P_ADDR_NULL,
+	   .write_policy = write_policy_t::WRITE_BACK,
+	   .zero_fill = false,
+	   .external_paddr = get_paddr()});
+      ceph_assert(!extents.empty());
       return seastar::do_with(
 	std::move(extents),
 	[this, addr, &t, len, &btree](auto &extents) {
@@ -450,10 +456,11 @@ struct btree_lba_manager_test : btree_test_base {
       test_lba_mappings
     };
     if (create_fake_extent) {
-      cache->alloc_new_non_data_extent<TestBlockPhysical>(
+      auto [extent, status] = cache->alloc_new_non_data_extent<TestBlockPhysical>(
           *t.t,
           TestBlockPhysical::SIZE,
-          {placement_hint_t::HOT, 0});
+          {.hint = placement_hint_t::HOT, .gen = 0});
+      ceph_assert(extent);
     };
     return t;
   }
@@ -547,10 +554,16 @@ struct btree_lba_manager_test : btree_test_base {
     auto rets = with_trans_intr(
       *t.t,
       [=, this](auto &t) {
-	auto extents = cache->alloc_new_data_extents<TestBlock>(
+	auto [extents, status] = cache->alloc_new_data_extents<TestBlock>(
 	    t, TestBlock::SIZE,
-	    {placement_hint_t::HOT, 0, false, P_ADDR_NULL,
-	     write_policy_t::WRITE_BACK, get_paddr()});
+	    {.hint = placement_hint_t::HOT,
+	     .gen = 0,
+	     .is_tracked = false,
+	     .paddr_hint = P_ADDR_NULL,
+	     .write_policy = write_policy_t::WRITE_BACK,
+	     .zero_fill = false,
+	     .external_paddr = get_paddr()});
+	ceph_assert(!extents.empty());
 	return seastar::do_with(
 	  std::vector<LogicalChildNodeRef>(
 	    extents.begin(), extents.end()),
