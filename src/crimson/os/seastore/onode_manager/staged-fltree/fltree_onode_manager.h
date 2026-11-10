@@ -345,7 +345,7 @@ struct FLTreeOnode final : Onode, Value {
 	  &mlayout.ss[0],
 	  ss_bl.c_str(),
 	  ss_bl.length(),
-	  onode_layout_t::MAX_OI_LENGTH);
+	  onode_layout_t::MAX_SS_LENGTH);
 	mlayout.ss_size = ss_bl.length();
 	if (recorder) {
 	  recorder->encode_update(
