@@ -237,6 +237,12 @@ std::optional<interval_set<rbm_abs_addr>> AvlAllocator::alloc_extents(
   {
     rbm_abs_addr start = hint;
     while (alloc_size) {
+      // Check if we've exceeded the max intervals ceiling
+      if (result.num_intervals() >= max_intervals_per_alloc) {
+        DEBUG("fragmentation ceiling reached: {} intervals >= max_intervals_per_alloc ({})",
+          result.num_intervals(), max_intervals_per_alloc);
+        return alloc_size;  // Return remaining size to caller
+      }
       extent_len_t len = find_block(std::min(max_alloc_size, alloc_size), start);
       ceph_assert(len);
       _remove_from_tree(start, len);
@@ -245,10 +251,14 @@ std::optional<interval_set<rbm_abs_addr>> AvlAllocator::alloc_extents(
       result.insert(start, len);
       alloc_size -= len;
     }
-    return 0;
+    return 0UL;
   };
-  
-  try_to_alloc_block(size);
+
+  uint64_t remaining = try_to_alloc_block(size);
+  if (remaining > 0) {
+    DEBUG("allocation capped at {} intervals, returning {} size early",
+      result.num_intervals(), remaining);
+  }
 
   assert(!result.empty());
   for (auto p : result) {
