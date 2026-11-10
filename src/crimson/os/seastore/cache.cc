@@ -1340,7 +1340,8 @@ CachedExtentRef Cache::alloc_remapped_extent_by_type(
   }
 }
 
-CachedExtentRef Cache::alloc_new_non_data_extent_by_type(
+std::pair<CachedExtentRef, ExtentPlacementManager::alloc_fail_t>
+Cache::alloc_new_non_data_extent_by_type(
   Transaction &t,        ///< [in, out] current transaction
   extent_types_t type,   ///< [in] type tag
   extent_len_t length,   ///< [in] length
@@ -1358,43 +1359,55 @@ CachedExtentRef Cache::alloc_new_non_data_extent_by_type(
   switch (type) {
   case extent_types_t::ROOT:
     ceph_assert(0 == "ROOT is never directly alloc'd");
-    return CachedExtentRef();
-  case extent_types_t::LADDR_INTERNAL:
-    return alloc_new_non_data_extent<lba::LBAInternalNode>(t, length, opt);
-  case extent_types_t::LADDR_LEAF:
-    return alloc_new_non_data_extent<lba::LBALeafNode>(
-      t, length, opt);
-  case extent_types_t::ROOT_META:
-    return alloc_new_non_data_extent<RootMetaBlock>(
-      t, length, opt);
-  case extent_types_t::ONODE_BLOCK_STAGED:
-    return alloc_new_non_data_extent<onode::SeastoreNodeExtent>(
-      t, length, opt);
-  case extent_types_t::OMAP_INNER:
-    return alloc_new_non_data_extent<omap_manager::OMapInnerNode>(
-      t, length, opt);
-  case extent_types_t::OMAP_LEAF:
-    return alloc_new_non_data_extent<omap_manager::OMapLeafNode>(
-      t, length, opt);
-  case extent_types_t::COLL_BLOCK:
-    return alloc_new_non_data_extent<collection_manager::FlatCollectionNode>(
-      t, length, opt);
-  case extent_types_t::TEST_BLOCK_PHYSICAL:
-    return alloc_new_non_data_extent<TestBlockPhysical>(t, length, opt);
-  case extent_types_t::LOG_NODE:
-     return alloc_new_non_data_extent<log_manager::LogNode>(
-       t, length, opt);
+    return {CachedExtentRef(), ExtentPlacementManager::alloc_fail_t::none};
+  case extent_types_t::LADDR_INTERNAL: {
+    auto [ext, fail] = alloc_new_non_data_extent<lba::LBAInternalNode>(t, length, opt);
+    return {std::move(ext), fail};
+  }
+  case extent_types_t::LADDR_LEAF: {
+    auto [ext, fail] = alloc_new_non_data_extent<lba::LBALeafNode>(t, length, opt);
+    return {std::move(ext), fail};
+  }
+  case extent_types_t::ROOT_META: {
+    auto [ext, fail] = alloc_new_non_data_extent<RootMetaBlock>(t, length, opt);
+    return {std::move(ext), fail};
+  }
+  case extent_types_t::ONODE_BLOCK_STAGED: {
+    auto [ext, fail] = alloc_new_non_data_extent<onode::SeastoreNodeExtent>(t, length, opt);
+    return {std::move(ext), fail};
+  }
+  case extent_types_t::OMAP_INNER: {
+    auto [ext, fail] = alloc_new_non_data_extent<omap_manager::OMapInnerNode>(t, length, opt);
+    return {std::move(ext), fail};
+  }
+  case extent_types_t::OMAP_LEAF: {
+    auto [ext, fail] = alloc_new_non_data_extent<omap_manager::OMapLeafNode>(t, length, opt);
+    return {std::move(ext), fail};
+  }
+  case extent_types_t::COLL_BLOCK: {
+    auto [ext, fail] = alloc_new_non_data_extent<collection_manager::FlatCollectionNode>(t, length, opt);
+    return {std::move(ext), fail};
+  }
+  case extent_types_t::TEST_BLOCK_PHYSICAL: {
+    auto [ext, fail] = alloc_new_non_data_extent<TestBlockPhysical>(t, length, opt);
+    return {std::move(ext), fail};
+  }
+  case extent_types_t::LOG_NODE: {
+    auto [ext, fail] = alloc_new_non_data_extent<log_manager::LogNode>(t, length, opt);
+    return {std::move(ext), fail};
+  }
   case extent_types_t::NONE: {
     ceph_assert(0 == "NONE is an invalid extent type");
-    return CachedExtentRef();
+    return {CachedExtentRef(), ExtentPlacementManager::alloc_fail_t::none};
   }
   default:
     ceph_assert(0 == "impossible");
-    return CachedExtentRef();
+    return {CachedExtentRef(), ExtentPlacementManager::alloc_fail_t::none};
   }
 }
 
-std::vector<CachedExtentRef> Cache::alloc_new_data_extents_by_type(
+std::pair<std::vector<CachedExtentRef>, ExtentPlacementManager::alloc_fail_t>
+Cache::alloc_new_data_extents_by_type(
   Transaction &t,        ///< [in, out] current transaction
   extent_types_t type,   ///< [in] type tag
   extent_len_t length,   ///< [in] length
@@ -1409,21 +1422,21 @@ std::vector<CachedExtentRef> Cache::alloc_new_data_extents_by_type(
   switch (type) {
   case extent_types_t::OBJECT_DATA_BLOCK:
     {
-      auto extents = alloc_new_data_extents<
+      auto [extents, fail] = alloc_new_data_extents<
 	ObjectDataBlock>(t, length, std::move(opt));
       res.insert(res.begin(), extents.begin(), extents.end());
+      return {std::move(res), fail};
     }
-    return res;
   case extent_types_t::TEST_BLOCK:
     {
-      auto extents = alloc_new_data_extents<
+      auto [extents, fail] = alloc_new_data_extents<
 	TestBlock>(t, length, std::move(opt));
       res.insert(res.begin(), extents.begin(), extents.end());
+      return {std::move(res), fail};
     }
-    return res;
   default:
     ceph_assert(0 == "impossible");
-    return res;
+    return {res, ExtentPlacementManager::alloc_fail_t::none};
   }
 }
 

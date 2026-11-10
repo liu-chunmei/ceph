@@ -465,6 +465,8 @@ public:
     return background_process.start_background();
   }
 
+  enum class alloc_fail_t { none, enospc, retry };
+
   struct alloc_option_t {
     placement_hint_t hint;
     rewrite_gen_t gen;

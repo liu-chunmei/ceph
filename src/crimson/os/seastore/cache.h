@@ -1323,7 +1323,8 @@ public:
    * Note that epaddr can only be fed by the btree lba unittest for now
    */
   template <typename T>
-  TCachedExtentRef<T> alloc_new_non_data_extent(
+  std::pair<TCachedExtentRef<T>, ExtentPlacementManager::alloc_fail_t>
+  alloc_new_non_data_extent(
     Transaction &t,         ///< [in, out] current transaction
     extent_len_t length,    ///< [in] length
     alloc_option_t opt      ///< [in] allocation options
@@ -1332,13 +1333,15 @@ public:
     SUBTRACET(seastore_cache, "allocate {} 0x{:x}B, opt.hint={}, gen={}",
               t, T::TYPE, length, opt.hint, rewrite_gen_printer_t{opt.gen});
     auto result = epm.alloc_new_non_data_extent(t, T::TYPE, length, opt);
+    ExtentPlacementManager::alloc_fail_t fail_status = ExtentPlacementManager::alloc_fail_t::none;
     if (!result) {
       if (epm.is_full()) {
         SUBERRORT(seastore_cache, "insufficient space", t);
         std::rethrow_exception(crimson::ct_error::enospc::exception_ptr());
       } else {
         SUBERRORT(seastore_cache, "insufficient space, wait for demoting", t);
-        std::rethrow_exception(crimson::ct_error::eagain::exception_ptr());
+        fail_status = ExtentPlacementManager::alloc_fail_t::retry;
+        return {nullptr, fail_status};
       }
     }
     auto ret = CachedExtent::make_cached_extent_ref<T>(std::move(result->bp));
@@ -1356,7 +1359,7 @@ public:
               "allocated {} 0x{:x}B extent at {}, hint={}, gen={} -- {}",
               t, T::TYPE, length, result->paddr,
               opt.hint, rewrite_gen_printer_t{result->gen}, *ret);
-    return ret;
+    return {ret, fail_status};
   }
   /**
    * alloc_new_data_extents
@@ -1365,7 +1368,8 @@ public:
    * Note that epaddr can only be fed by the btree lba unittest for now
    */
   template <typename T>
-  std::vector<TCachedExtentRef<T>> alloc_new_data_extents(
+  std::pair<std::vector<TCachedExtentRef<T>>, ExtentPlacementManager::alloc_fail_t>
+  alloc_new_data_extents(
     Transaction &t,         ///< [in, out] current transaction
     extent_len_t length,    ///< [in] length
     alloc_option_t opt      ///< [in] allocation options
@@ -1374,13 +1378,15 @@ public:
     SUBTRACET(seastore_cache, "allocate {} 0x{:x}B, hint={}, gen={}",
               t, T::TYPE, length, opt.hint, rewrite_gen_printer_t{opt.gen});
     auto results = epm.alloc_new_data_extents(t, T::TYPE, length, opt);
+    ExtentPlacementManager::alloc_fail_t fail_status = ExtentPlacementManager::alloc_fail_t::none;
     if (results.empty()) {
       if (epm.is_full()) {
         SUBERRORT(seastore_cache, "insufficient space", t);
         std::rethrow_exception(crimson::ct_error::enospc::exception_ptr());
       } else {
         SUBERRORT(seastore_cache, "insufficient space, wait for demoting", t);
-        std::rethrow_exception(crimson::ct_error::eagain::exception_ptr());
+        fail_status = ExtentPlacementManager::alloc_fail_t::retry;
+        return {std::vector<TCachedExtentRef<T>>(), fail_status};
       }
     }
     std::vector<TCachedExtentRef<T>> extents;
@@ -1402,7 +1408,7 @@ public:
                 opt.hint, rewrite_gen_printer_t{result.gen}, *ret);
       extents.emplace_back(std::move(ret));
     }
-    return extents;
+    return {extents, fail_status};
   }
 
   /**
@@ -1475,8 +1481,10 @@ public:
    * alloc_new_non_data_extent_by_type
    *
    * Allocates a fresh non data extent.  addr will be relative until commit.
+   * Returns a pair of the extent and an alloc_fail_t status indicating retry or enospc.
    */
-  CachedExtentRef alloc_new_non_data_extent_by_type(
+  std::pair<CachedExtentRef, ExtentPlacementManager::alloc_fail_t>
+  alloc_new_non_data_extent_by_type(
     Transaction &t,        ///< [in, out] current transaction
     extent_types_t type,   ///< [in] type tag
     extent_len_t length,   ///< [in] length
@@ -1490,8 +1498,10 @@ public:
    * alloc_new_data_extents_by_type
    *
    * Allocates fresh data extents.  addr will be relative until commit.
+   * Returns a pair of the extents and an alloc_fail_t status indicating retry or enospc.
    */
-  std::vector<CachedExtentRef> alloc_new_data_extents_by_type(
+  std::pair<std::vector<CachedExtentRef>, ExtentPlacementManager::alloc_fail_t>
+  alloc_new_data_extents_by_type(
     Transaction &t,        ///< [in, out] current transaction
     extent_types_t type,   ///< [in] type tag
     extent_len_t length,   ///< [in] length

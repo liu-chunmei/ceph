@@ -1811,14 +1811,13 @@ public:
       TCachedExtentRef<std::remove_reference_t<
         decltype(fixed_kv_extent)>> n_fixed_kv_extent;
       while (!n_fixed_kv_extent) {
-        try {
-          n_fixed_kv_extent = c.cache.template alloc_new_non_data_extent<
-            std::remove_reference_t<decltype(fixed_kv_extent)>
-            >(
-            c.trans,
-            fixed_kv_extent.get_length(),
-            opt);
-        } catch (crimson::ct_error::eagain&) {}
+        auto [extent, fail] = c.cache.template alloc_new_non_data_extent<
+          std::remove_reference_t<decltype(fixed_kv_extent)>
+          >(
+          c.trans,
+          fixed_kv_extent.get_length(),
+          opt);
+        n_fixed_kv_extent = extent;
         if (!n_fixed_kv_extent) {
           c.cache.get_epm().maybe_wake_background();
           co_await trans_intr::make_interruptible(
