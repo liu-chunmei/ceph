@@ -714,11 +714,11 @@ public:
     assert(root_block->is_mutation_pending());
     LeafNodeRef root_leaf;
     while (!root_leaf) {
-      try {
-        root_leaf = c.cache.template alloc_new_non_data_extent<leaf_node_t>(
-          c.trans, node_size, {placement_hint_t::HOT, INIT_GENERATION});
-      } catch (crimson::ct_error::eagain&) {
-      } catch (crimson::ct_error::enospc&) {
+      auto [leaf, fail] = c.cache.template alloc_new_non_data_extent<leaf_node_t>(
+        c.trans, node_size, {placement_hint_t::HOT, INIT_GENERATION});
+      if (leaf) {
+        root_leaf = leaf;
+      } else if (fail == ExtentPlacementManager::alloc_fail_t::enospc) {
         ceph_abort("shouldn't have no space");
       }
       if (!root_leaf) {
@@ -2692,10 +2692,13 @@ private:
       assert(iter.is_full());
       InternalNodeRef nroot;
       while (!nroot) {
-        try {
-          nroot = c.cache.template alloc_new_non_data_extent<internal_node_t>(
-            c.trans, node_size, {placement_hint_t::HOT, INIT_GENERATION});
-        } catch (crimson::ct_error::eagain&) {}
+        auto [node, fail] = c.cache.template alloc_new_non_data_extent<internal_node_t>(
+          c.trans, node_size, {placement_hint_t::HOT, INIT_GENERATION});
+        if (node) {
+          nroot = node;
+        } else if (fail == ExtentPlacementManager::alloc_fail_t::retry) {
+          // retry case - wait for background
+        }
         if (!nroot) {
           c.cache.get_epm().maybe_wake_background();
           co_await trans_intr::make_interruptible(

@@ -100,7 +100,7 @@ extent_len_t AvlAllocator::find_block(
     max_size = p->end - p->start;
   }
   const auto compare = extent_tree.key_comp();
-  auto rs = extent_tree.lower_bound(extent_range_t{start, size}, compare);
+  auto rs = extent_tree.lower_bound(extent_range_t{start, start + size}, compare);
   if (rs != extent_tree.end()) {
     uint64_t offset = rs->start;
     if (offset + size <= rs->end) {
