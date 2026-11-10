@@ -581,10 +581,13 @@ public:
               t, T::TYPE, laddr_hint, len, placement_hint);
     TCachedExtentRef<T> ext;
     while (!ext) {
-      try {
-        ext = cache->alloc_new_non_data_extent<T>(
-          t, len, {placement_hint, INIT_GENERATION});
-      } catch(crimson::ct_error::eagain&) {}
+      auto [e, fail] = cache->alloc_new_non_data_extent<T>(
+        t, len, {placement_hint, INIT_GENERATION});
+      if (e) {
+        ext = e;
+      } else if (fail == ExtentPlacementManager::alloc_fail_t::retry) {
+        // retry case - wait for background
+      }
       if (!ext) {
         epm->maybe_wake_background();
         co_await trans_intr::make_interruptible(epm->wait_background());
@@ -625,14 +628,13 @@ public:
               t, T::TYPE, laddr_hint, len, placement_hint);
     std::vector<TCachedExtentRef<T>> exts;
     while (exts.empty()) {
-      try {
-        exts = cache->alloc_new_data_extents<T>(
-          t, len,
-          {
-            placement_hint, INIT_GENERATION, false, P_ADDR_NULL,
-            epm->get_write_policy(T::TYPE, len)
-          });
-      } catch (crimson::ct_error::eagain&) {}
+      auto [alloc_exts, fail] = cache->alloc_new_data_extents<T>(
+        t, len,
+        {
+          placement_hint, INIT_GENERATION, false, P_ADDR_NULL,
+          epm->get_write_policy(T::TYPE, len)
+        });
+      exts = std::move(alloc_exts);
       if (exts.empty()) {
         epm->maybe_wake_background();
         co_await trans_intr::make_interruptible(epm->wait_background());
