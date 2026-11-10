@@ -1452,7 +1452,9 @@ TransactionManager::promote_extent(
         co_await trans_intr::make_interruptible(epm->wait_background());
       }
     }
-    t.touch_laddr_prefix(orig_ext->get_laddr().get_object_prefix());
+    if (support_logical_bucket()) {
+      t.touch_laddr_prefix(orig_ext->get_laddr().get_object_prefix());
+    }
 
     promoted_extents.reserve(promoted_raw_extents.size());
 
@@ -1520,7 +1522,9 @@ TransactionManager::promote_extent(
     if (lext->get_paddr().is_absolute()) {
       assert(!cache->is_on_cold_tier(lext->get_paddr()));
     }
-    t.touch_laddr_prefix(orig_ext->get_laddr().get_object_prefix());
+    if (support_logical_bucket()) {
+      t.touch_laddr_prefix(orig_ext->get_laddr().get_object_prefix());
+    }
     //TODO: this memory copy should be saved
     orig_ext->get_bptr().copy_out(
       0,
