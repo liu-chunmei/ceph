@@ -332,9 +332,9 @@ struct FixedKVInternalNode
 
   std::tuple<Ref, Ref, NODE_KEY>
   make_split_children(op_context_t c) {
-    auto left = c.cache.template alloc_new_non_data_extent<node_type_t>(
+    auto [left, left_fail] = c.cache.template alloc_new_non_data_extent<node_type_t>(
       c.trans, node_size, {placement_hint_t::HOT, INIT_GENERATION});
-    auto right = c.cache.template alloc_new_non_data_extent<node_type_t>(
+    auto [right, right_fail] = c.cache.template alloc_new_non_data_extent<node_type_t>(
       c.trans, node_size, {placement_hint_t::HOT, INIT_GENERATION});
     this->split_child_ptrs(c.trans, *left, *right);
     auto pivot = this->split_into(*left, *right);
@@ -350,7 +350,7 @@ struct FixedKVInternalNode
   Ref make_full_merge(
     op_context_t c,
     Ref &right) {
-    auto replacement = c.cache.template alloc_new_non_data_extent<node_type_t>(
+    auto [replacement, replace_fail] = c.cache.template alloc_new_non_data_extent<node_type_t>(
       c.trans, node_size, {placement_hint_t::HOT, INIT_GENERATION});
     replacement->merge_child_ptrs(
       c.trans, static_cast<node_type_t&>(*this), *right);
@@ -368,9 +368,9 @@ struct FixedKVInternalNode
     uint32_t pivot_idx) {
     ceph_assert(_right->get_type() == this->get_type());
     auto &right = *_right->template cast<node_type_t>();
-    auto replacement_left = c.cache.template alloc_new_non_data_extent<node_type_t>(
+    auto [replacement_left, left_fail] = c.cache.template alloc_new_non_data_extent<node_type_t>(
       c.trans, node_size, {placement_hint_t::HOT, INIT_GENERATION});
-    auto replacement_right = c.cache.template alloc_new_non_data_extent<node_type_t>(
+    auto [replacement_right, right_fail] = c.cache.template alloc_new_non_data_extent<node_type_t>(
       c.trans, node_size, {placement_hint_t::HOT, INIT_GENERATION});
 
     // We should do full merge if pivot_idx == right.get_size().
@@ -753,9 +753,9 @@ struct FixedKVLeafNode
 
   std::tuple<Ref, Ref, NODE_KEY>
   make_split_children(op_context_t c) {
-    auto left = c.cache.template alloc_new_non_data_extent<node_type_t>(
+    auto [left, left_fail] = c.cache.template alloc_new_non_data_extent<node_type_t>(
       c.trans, node_size, {placement_hint_t::HOT, INIT_GENERATION});
-    auto right = c.cache.template alloc_new_non_data_extent<node_type_t>(
+    auto [right, right_fail] = c.cache.template alloc_new_non_data_extent<node_type_t>(
       c.trans, node_size, {placement_hint_t::HOT, INIT_GENERATION});
     this->on_split(c.trans, *left, *right);
     auto pivot = this->split_into(*left, *right);
@@ -780,7 +780,7 @@ struct FixedKVLeafNode
   Ref make_full_merge(
     op_context_t c,
     Ref &right) {
-    auto replacement = c.cache.template alloc_new_non_data_extent<node_type_t>(
+    auto [replacement, replace_fail] = c.cache.template alloc_new_non_data_extent<node_type_t>(
       c.trans, node_size, {placement_hint_t::HOT, INIT_GENERATION});
     replacement->on_merge(c.trans, static_cast<node_type_t&>(*this), *right);
     replacement->merge_from(*this, *right->template cast<node_type_t>());
@@ -812,9 +812,9 @@ struct FixedKVLeafNode
     uint32_t pivot_idx) {
     ceph_assert(_right->get_type() == this->get_type());
     auto &right = *_right->template cast<node_type_t>();
-    auto replacement_left = c.cache.template alloc_new_non_data_extent<node_type_t>(
+    auto [replacement_left, left_fail] = c.cache.template alloc_new_non_data_extent<node_type_t>(
       c.trans, node_size, {placement_hint_t::HOT, INIT_GENERATION});
-    auto replacement_right = c.cache.template alloc_new_non_data_extent<node_type_t>(
+    auto [replacement_right, right_fail] = c.cache.template alloc_new_non_data_extent<node_type_t>(
       c.trans, node_size, {placement_hint_t::HOT, INIT_GENERATION});
 
     this->on_balance(

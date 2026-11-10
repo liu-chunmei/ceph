@@ -985,17 +985,20 @@ TransactionManager::rewrite_logical_extent(
     cache->retire_extent(t, extent);
     LogicalChildNodeRef nextent;
     while (!nextent) {
-      try {
-        nextent = cache->alloc_new_non_data_extent_by_type(
-          t,
-          extent->get_type(),
-          extent->get_length(),
-          extent->get_user_hint(),
-          // get target rewrite generation
-          extent->get_rewrite_generation(),
-          paddr_hint,
-          is_tracked)->cast<LogicalChildNode>();
-      } catch (crimson::ct_error::eagain&) {}
+      auto [ext, fail] = cache->alloc_new_non_data_extent_by_type(
+        t,
+        extent->get_type(),
+        extent->get_length(),
+        extent->get_user_hint(),
+        // get target rewrite generation
+        extent->get_rewrite_generation(),
+        paddr_hint,
+        is_tracked);
+      if (ext) {
+        nextent = ext->cast<LogicalChildNode>();
+      } else if (fail == ExtentPlacementManager::alloc_fail_t::retry) {
+        // retry case - wait for background
+      }
       if (!nextent) {
         epm->maybe_wake_background();
         co_await trans_intr::make_interruptible(epm->wait_background());
@@ -1041,23 +1044,24 @@ TransactionManager::rewrite_logical_extent(
     assert(extent->is_fully_loaded());
     cache->retire_extent(t, extent);
     std::vector<CachedExtentRef> extents;
+    auto fail_status = ExtentPlacementManager::alloc_fail_t::none;
     while (extents.empty()) {
-      try {
-        extents = cache->alloc_new_data_extents_by_type(
-          t,
-          extent->get_type(),
-          extent->get_length(),
-          {
-            extent->get_user_hint(),
-            // get target rewrite generation
-            extent->get_rewrite_generation(),
-            is_tracked,
-            paddr_hint,
-            // WRITH_THROUGH is only effective for client io, so
-            // always set the write policy to WRITE_BACK here
-            write_policy_t::WRITE_BACK
-          });
-      } catch (crimson::ct_error::eagain&) {}
+      auto [alloc_extents, fail] = cache->alloc_new_data_extents_by_type(
+        t,
+        extent->get_type(),
+        extent->get_length(),
+        {
+          extent->get_user_hint(),
+          // get target rewrite generation
+          extent->get_rewrite_generation(),
+          is_tracked,
+          paddr_hint,
+          // WRITH_THROUGH is only effective for client io, so
+          // always set the write policy to WRITE_BACK here
+          write_policy_t::WRITE_BACK
+        });
+      extents = std::move(alloc_extents);
+      fail_status = fail;
       if (extents.empty()) {
         epm->maybe_wake_background();
         co_await trans_intr::make_interruptible(epm->wait_background());
@@ -1428,20 +1432,21 @@ TransactionManager::promote_extent(
 
   if (get_extent_category(extent->get_type()) == data_category_t::DATA) {
     std::vector<CachedExtentRef> promoted_raw_extents;
+    auto fail_status = ExtentPlacementManager::alloc_fail_t::none;
     while (promoted_raw_extents.empty()) {
-      try {
-        promoted_raw_extents = cache->alloc_new_data_extents_by_type(
-          t,
-          orig_ext->get_type(),
-          orig_ext->get_length(),
-          {
-            placement_hint_t::HOT,
-            INIT_GENERATION,
-            true,
-            P_ADDR_NULL,
-            write_policy_t::WRITE_BACK
-          });
-      } catch (crimson::ct_error::eagain&) {}
+      auto [alloc_extents, fail] = cache->alloc_new_data_extents_by_type(
+        t,
+        orig_ext->get_type(),
+        orig_ext->get_length(),
+        {
+          placement_hint_t::HOT,
+          INIT_GENERATION,
+          true,
+          P_ADDR_NULL,
+          write_policy_t::WRITE_BACK
+        });
+      promoted_raw_extents = std::move(alloc_extents);
+      fail_status = fail;
       if (promoted_raw_extents.empty()) {
         epm->maybe_wake_background();
         co_await trans_intr::make_interruptible(epm->wait_background());
@@ -1491,16 +1496,19 @@ TransactionManager::promote_extent(
   } else {
     CachedExtentRef promoted_extent;
     while (!promoted_extent) {
-      try {
-        promoted_extent = cache->alloc_new_non_data_extent_by_type(
-          t,
-          orig_ext->get_type(),
-          orig_ext->get_length(),
-          placement_hint_t::HOT,
-          INIT_GENERATION,
-          P_ADDR_NULL,
-          true);
-      } catch (crimson::ct_error::eagain&) {}
+      auto [ext, fail] = cache->alloc_new_non_data_extent_by_type(
+        t,
+        orig_ext->get_type(),
+        orig_ext->get_length(),
+        placement_hint_t::HOT,
+        INIT_GENERATION,
+        P_ADDR_NULL,
+        true);
+      if (ext) {
+        promoted_extent = ext;
+      } else if (fail == ExtentPlacementManager::alloc_fail_t::retry) {
+        // retry case - wait for background
+      }
       if (!promoted_extent) {
         epm->maybe_wake_background();
         co_await trans_intr::make_interruptible(epm->wait_background());
