@@ -131,6 +131,15 @@ public:
     return base_addr + total_size;
   }
 
+  // Get the size of the largest free extent
+  uint64_t get_largest_free_extent() const {
+    if (extent_size_tree.empty()) {
+      return 0;
+    }
+    auto p = extent_size_tree.rbegin();
+    return p->end - p->start;
+  }
+
 private:
   void _add_to_tree(rbm_abs_addr start, size_t size);
 
@@ -174,6 +183,8 @@ private:
   uint64_t total_size = 0;
   uint64_t base_addr = 0;
   uint64_t max_alloc_size = 4 << 20;
+  // Cap on intervals per allocation to bound fragmentation explosion
+  uint32_t max_intervals_per_alloc = 256;
   bool detailed;
   interval_set<rbm_abs_addr> reserved_extent_tracker; 
 };
