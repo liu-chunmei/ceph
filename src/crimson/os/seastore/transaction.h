@@ -537,6 +537,7 @@ public:
   // Time spent in each sub-phase of submit_transaction, accumulated across retries
   struct phase_durations_t {
     std::chrono::steady_clock::duration reserve{0};         // enter reserve + epm reserve
+    std::chrono::steady_clock::duration alloc_data{0};      // alloc_data_extents + alloc_non_data_extent
     std::chrono::steady_clock::duration ool_write{0};       // delayed + preallocated OOL writes
     std::chrono::steady_clock::duration lba_update{0};      // update_lba_mappings
     std::chrono::steady_clock::duration prepare_enter{0};   // enter(prepare) pipeline stage
