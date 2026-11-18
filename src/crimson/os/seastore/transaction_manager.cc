@@ -1211,7 +1211,8 @@ TransactionManager::alloc_and_copy_data_extents(
   ceph::bufferlist bl)
 {
   auto extents = co_await alloc_data_extents<ObjectDataBlock>(
-    t, laddr_hint_t::create_as_fixed(dst_key), length, dst
+    t, laddr_hint_t::create_as_fixed(dst_key), length, dst,
+    placement_hint_t::HOT, false
   ).handle_error_interruptible(
     move_region_iertr::pass_further(),
     crimson::ct_error::assert_all("invalid error"));

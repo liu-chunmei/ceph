@@ -285,7 +285,9 @@ ObjectDataHandler::write_ret do_zero(
       laddr_hint_t::create_as_fixed(
         (overwrite_range.aligned_end - ctx.tm.get_block_size()).checked_to_laddr()),
       ctx.tm.get_block_size(),
-      std::move(zero_pos)
+      std::move(zero_pos),
+      placement_hint_t::HOT,
+      false
     ).handle_error_interruptible(
       crimson::ct_error::enospc::assert_failure{"unexpected enospc"},
       TransactionManager::get_pin_iertr::pass_further{}
@@ -334,10 +336,12 @@ ObjectDataHandler::write_ret do_zero(
     data.headbl->append_zero(
       ctx.tm.get_block_size() - data.headbl->length());
     auto extents = co_await ctx.tm.alloc_data_extents<ObjectDataBlock>(
-	ctx.t,
-	laddr_hint_t::create_as_fixed(overwrite_range.aligned_begin),
-	ctx.tm.get_block_size(),
-	std::move(zero_pos)
+ ctx.t,
+ laddr_hint_t::create_as_fixed(overwrite_range.aligned_begin),
+ ctx.tm.get_block_size(),
+ std::move(zero_pos),
+ placement_hint_t::HOT,
+ false
     ).handle_error_interruptible(
       crimson::ct_error::enospc::assert_failure{"unexpected enospc"},
       TransactionManager::get_pin_iertr::pass_further{}
@@ -374,7 +378,9 @@ ObjectDataHandler::clone_ret do_clonerange(
       ctx.t,
       laddr_hint_t::create_as_fixed(overwrite_range.aligned_begin),
       ctx.tm.get_block_size(),
-      std::move(write_pos)
+      std::move(write_pos),
+      placement_hint_t::HOT,
+      false
     ).handle_error_interruptible(
       crimson::ct_error::enospc::assert_failure{"unexpected enospc"},
       TransactionManager::get_pin_iertr::pass_further{}
@@ -426,10 +432,12 @@ ObjectDataHandler::clone_ret do_clonerange(
     auto extents = co_await ctx.tm.alloc_data_extents<ObjectDataBlock>(
       ctx.t,
       laddr_hint_t::create_as_fixed(
-	(overwrite_range.aligned_end - ctx.tm.get_block_size()
-	 ).checked_to_laddr()),
+ (overwrite_range.aligned_end - ctx.tm.get_block_size()
+  ).checked_to_laddr()),
       ctx.tm.get_block_size(),
-      std::move(write_pos)
+      std::move(write_pos),
+      placement_hint_t::HOT,
+      false
     ).handle_error_interruptible(
       crimson::ct_error::enospc::assert_failure{"unexpected enospc"},
       TransactionManager::get_pin_iertr::pass_further{}
@@ -456,7 +464,9 @@ ObjectDataHandler::write_ret do_write(
     laddr_hint_t::create_as_fixed(overwrite_range.aligned_begin),
     overwrite_range.aligned_end.template get_byte_distance<
       extent_len_t>(overwrite_range.aligned_begin),
-    std::move(write_pos)
+    std::move(write_pos),
+    placement_hint_t::HOT,
+    false
   ).si_then([&overwrite_range, &data](auto extents) {
     auto off = overwrite_range.aligned_begin;
     auto left = overwrite_range.aligned_end.template get_byte_distance<

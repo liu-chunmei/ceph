@@ -682,7 +682,8 @@ public:
     laddr_hint_t laddr_hint,
     extent_len_t len,
     std::optional<LBAMapping> pos = std::nullopt,
-    placement_hint_t placement_hint = placement_hint_t::HOT) {
+    placement_hint_t placement_hint = placement_hint_t::HOT,
+    bool zero_fill = true) {
     static_assert(is_data_type(T::TYPE));
     LOG_PREFIX(TransactionManager::alloc_data_extents);
     SUBDEBUGT(seastore_tm, "{} hint {}~0x{:x} phint={} ...",
@@ -695,7 +696,8 @@ public:
          .gen = INIT_GENERATION,
          .is_tracked = false,
          .paddr_hint = P_ADDR_NULL,
-         .write_policy = epm->get_write_policy(T::TYPE, len)
+         .write_policy = epm->get_write_policy(T::TYPE, len),
+         .zero_fill = zero_fill
         });
       exts = std::move(alloc_exts);
       if (exts.empty()) {
