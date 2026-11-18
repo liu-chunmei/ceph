@@ -251,18 +251,15 @@ void ExtentPlacementManager::init(
     data_writers_by_gen.resize(num_writers, nullptr);
     for (rewrite_gen_t gen = OOL_GENERATION; gen < hot_tier_generations; ++gen) {
       writer_refs.emplace_back(std::make_unique<SegmentedOolWriter>(store_index,
-	    data_category_t::DATA, gen, *segment_cleaner,
+     data_category_t::DATA, gen, *segment_cleaner,
             *ool_segment_seq_allocator, *token_buckets.back()));
       data_writers_by_gen[generation_to_writer(gen)] = writer_refs.back().get();
     }
 
-    // METADATA
+    // METADATA (Consolidated with DATA writers to save active zones/segments)
     md_writers_by_gen.resize(num_writers, {});
     for (rewrite_gen_t gen = OOL_GENERATION; gen < hot_tier_generations; ++gen) {
-      writer_refs.emplace_back(std::make_unique<SegmentedOolWriter>(store_index,
-	    data_category_t::METADATA, gen, *segment_cleaner,
-            *ool_segment_seq_allocator, *token_buckets.back()));
-      md_writers_by_gen[generation_to_writer(gen)] = writer_refs.back().get();
+      md_writers_by_gen[generation_to_writer(gen)] = data_writers_by_gen[generation_to_writer(gen)];
     }
 
     for (auto *device : segment_cleaner->get_segment_manager_group()
@@ -304,10 +301,7 @@ void ExtentPlacementManager::init(
         data_writers_by_gen[generation_to_writer(gen)] = writer_refs.back().get();
       }
       for (rewrite_gen_t gen = hot_tier_generations; gen <= dynamic_max_rewrite_generation; ++gen) {
-        writer_refs.emplace_back(std::make_unique<SegmentedOolWriter>(store_index,
-              data_category_t::METADATA, gen, *cold_segment_cleaner,
-              *ool_segment_seq_allocator, *token_buckets.back()));
-        md_writers_by_gen[generation_to_writer(gen)] = writer_refs.back().get();
+        md_writers_by_gen[generation_to_writer(gen)] = data_writers_by_gen[generation_to_writer(gen)];
       }
       for (auto *device : cold_segment_cleaner->get_segment_manager_group()
                                               ->get_segment_managers()) {
@@ -509,9 +503,20 @@ ExtentPlacementManager::open_for_write()
   DEBUG("started with {} devices", num_devices);
   ceph_assert(primary_device != nullptr);
 
+  std::set<ExtentOolWriter*> unique_writers;
+  for (auto *writer : data_writers_by_gen) {
+    if (writer) {
+      unique_writers.insert(writer);
+    }
+  }
+  for (auto *writer : md_writers_by_gen) {
+    if (writer) {
+      unique_writers.insert(writer);
+    }
+  }
+
 #ifndef UNIT_TESTS_BUILT
-  auto total_writers_num =
-    data_writers_by_gen.size() + md_writers_by_gen.size();
+  auto total_writers_num = unique_writers.size();
   if (auto segments = background_process.get_segments_info();
       segments && // Only valid for SegmentCleaner
       std::cmp_less(segments->get_num_empty(), total_writers_num)) {
@@ -522,17 +527,9 @@ ExtentPlacementManager::open_for_write()
   }
 #endif
 
-  DEBUG("opening DATA writers", num_devices);
-  for (auto& writer : data_writers_by_gen) {
-    if (writer) {
-      co_await writer->open();
-    }
-  }
-  DEBUG("opening METADATA writers", num_devices);
-  for (auto& writer : md_writers_by_gen) {
-    if (writer) {
-      co_await writer->open();
-    }
+  DEBUG("opening unique writers, count: {}", unique_writers.size());
+  for (auto* writer : unique_writers) {
+    co_await writer->open();
   }
 }
 
@@ -660,18 +657,19 @@ ExtentPlacementManager::close()
   for (auto &token_bucket : token_buckets) {
     token_bucket->stop();
   }
-  return crimson::do_for_each(data_writers_by_gen, [](auto &writer) {
+  std::set<ExtentOolWriter*> unique_writers;
+  for (auto *writer : data_writers_by_gen) {
     if (writer) {
-      return writer->close();
+      unique_writers.insert(writer);
     }
-    return close_ertr::now();
-  }).safe_then([this] {
-    return crimson::do_for_each(md_writers_by_gen, [](auto &writer) {
-      if (writer) {
-	return writer->close();
-      }
-      return close_ertr::now();
-    });
+  }
+  for (auto *writer : md_writers_by_gen) {
+    if (writer) {
+      unique_writers.insert(writer);
+    }
+  }
+  return crimson::do_for_each(unique_writers, [](auto &writer) {
+    return writer->close();
   });
 }
 
