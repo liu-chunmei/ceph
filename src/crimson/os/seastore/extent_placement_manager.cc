@@ -550,6 +550,11 @@ ExtentPlacementManager::dispatch_delayed_extents(Transaction &t)
     }
   }
 
+  ExtentOolWriter* last_writer = nullptr;
+  placement_hint_t last_hint = placement_hint_t::NUM_HINTS;
+  data_category_t last_category = data_category_t::METADATA;
+  rewrite_gen_t last_gen = INLINE_GENERATION;
+
   for (auto& extent : res.delayed_extents) {
     if (dispatch_delayed_extent(extent)) {
       res.usage.inline_usage += extent->get_length();
@@ -563,10 +568,21 @@ ExtentPlacementManager::dispatch_delayed_extents(Transaction &t)
         res.usage.cleaner_usage.cold_ool_usage += extent->get_length();
       }
       t.mark_delayed_extent_ool(extent);
-      auto writer_ptr = get_writer(
-          extent->get_user_hint(),
-          get_extent_category(extent->get_type()),
-          extent->get_rewrite_generation());
+
+      auto hint = extent->get_user_hint();
+      auto category = get_extent_category(extent->get_type());
+      auto gen = extent->get_rewrite_generation();
+
+      ExtentOolWriter* writer_ptr = nullptr;
+      if (last_writer && hint == last_hint && category == last_category && gen == last_gen) {
+        writer_ptr = last_writer;
+      } else {
+        writer_ptr = get_writer(hint, category, gen);
+        last_writer = writer_ptr;
+        last_hint = hint;
+        last_category = category;
+        last_gen = gen;
+      }
       res.alloc_map[writer_ptr].emplace_back(extent);
     }
   }
@@ -605,11 +621,26 @@ ExtentPlacementManager::write_preallocated_ool_extents(
   return seastar::do_with(
       std::map<ExtentOolWriter*, std::list<CachedExtentRef>>(),
       [this, &t, &extents](auto& alloc_map) {
+    ExtentOolWriter* last_writer = nullptr;
+    placement_hint_t last_hint = placement_hint_t::NUM_HINTS;
+    data_category_t last_category = data_category_t::METADATA;
+    rewrite_gen_t last_gen = INLINE_GENERATION;
+
     for (auto& extent : extents) {
-      auto writer_ptr = get_writer(
-          extent->get_user_hint(),
-          get_extent_category(extent->get_type()),
-          extent->get_rewrite_generation());
+      auto hint = extent->get_user_hint();
+      auto category = get_extent_category(extent->get_type());
+      auto gen = extent->get_rewrite_generation();
+
+      ExtentOolWriter* writer_ptr = nullptr;
+      if (last_writer && hint == last_hint && category == last_category && gen == last_gen) {
+        writer_ptr = last_writer;
+      } else {
+        writer_ptr = get_writer(hint, category, gen);
+        last_writer = writer_ptr;
+        last_hint = hint;
+        last_category = category;
+        last_gen = gen;
+      }
       alloc_map[writer_ptr].emplace_back(extent);
     }
     return trans_intr::do_for_each(alloc_map, [&t](auto& p) {
