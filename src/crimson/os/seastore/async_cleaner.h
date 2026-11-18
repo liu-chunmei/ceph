@@ -190,6 +190,10 @@ public:
     return (double)get_available_bytes() / (double)total_bytes;
   }
 
+  const std::set<segment_id_t>& get_empty_segments() const {
+    return empty_segments;
+  }
+
   journal_seq_t get_submitted_journal_head() const {
     if (unlikely(journal_segment_id == NULL_SEG_ID)) {
       return JOURNAL_SEQ_NULL;
@@ -282,6 +286,7 @@ private:
   std::size_t avail_bytes_in_open;
 
   std::multiset<sea_time_point> modify_times;
+  std::set<segment_id_t> empty_segments;
 };
 
 std::ostream &operator<<(std::ostream &, const segments_info_t &);
